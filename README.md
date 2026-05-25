@@ -8,7 +8,7 @@ Nimbus is early. Phase 1 (registry + reservations + vanilla redirect packet) is 
 
 - **Registry.** A small ASP.NET Core service that backends heartbeat into. Tracks online players, capacity, tags, and version info per backend.
 - **Reservations.** Short-lived single-use tokens that let a player join a specific backend without re-running auth against the wider network.
-- **Redirect path.** Uses the vanilla `Packet_ServerRedirect` so unmodded clients can be sent between backends with no mod install.
+- **Redirect path.** Uses the vanilla `Packet_ServerRedirect` to send a player between backends. ~~Works on unmodded clients with no install.~~ The vanilla client has a bug in `ClientMain.ExitAndSwitchServer` that crashes the next session, so the client currently needs [RedirectFix](https://github.com/trevorftp/redirectfix). In practice this is a non-issue: the server auto-distributes required mods on join, so the client downloads it the first time. The strikethrough comes off once the VS team patches the upstream bug.
 - **Proxy (phase 2).** TCP/UDP relay that speaks the VS protocol, so a player keeps one address and can be swapped between backends without a full world reload.
 - **`nimctl`.** A small CLI to drive the proxy's admin socket (list sessions, swap a player, drain a backend, etc).
 
