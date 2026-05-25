@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Nimbus.Proxy</RootNamespace>
+    <AssemblyName>Nimbus.Proxy</AssemblyName>
+    <Configurations>Debug;Release;PerfTest</Configurations>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nimbus.Shared\Nimbus.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="nimbus.proxy.json">
+      <CopyToOutputDirectory>PreserveNewer</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+</Project>

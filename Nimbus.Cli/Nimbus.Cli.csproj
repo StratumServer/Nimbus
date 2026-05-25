@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Nimbus.Cli</RootNamespace>
+    <AssemblyName>nimctl</AssemblyName>
+    <Configurations>Debug;Release;PerfTest</Configurations>
+  </PropertyGroup>
+</Project>

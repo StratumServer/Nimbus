@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Nimbus.Shared/Nimbus.Shared.csproj" />
+  <Project Path="Nimbus.Registry/Nimbus.Registry.csproj" />
+  <Project Path="Nimbus.Proxy/Nimbus.Proxy.csproj" />
+  <Project Path="Nimbus.Cli/Nimbus.Cli.csproj" />
+</Solution>

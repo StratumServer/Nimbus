@@ -1,0 +1,33 @@
+namespace Nimbus.Shared.Models;
+
+// Heartbeat payload sent by a Stratum backend to the Nimbus registry.
+public sealed class BackendHeartbeat
+{
+    public string ServerId { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public string PublicHost { get; set; } = "";
+    public int PublicPort { get; set; } = 42420;
+    public string[] Tags { get; set; } = Array.Empty<string>();
+
+    public int Players { get; set; }
+    public int MaxPlayers { get; set; }
+    public double Tps { get; set; }
+    public long UptimeSeconds { get; set; }
+
+    // True when the backend is draining or in maintenance, rejecting new joins.
+    public bool Maintenance { get; set; }
+
+    // True when the backend requires a valid reservation on identification.
+    public bool ReservationRequired { get; set; }
+
+    public string StratumVersion { get; set; } = "";
+    public string GameVersion { get; set; } = "";
+    public string[] RequiredClientMods { get; set; } = Array.Empty<string>();
+}
+
+public sealed class BackendHeartbeatResponse
+{
+    public bool Ok { get; set; } = true;
+    public int NextHeartbeatSeconds { get; set; } = 5;
+    public string? Message { get; set; }
+}

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Nimbus.Shared</RootNamespace>
+    <AssemblyName>Nimbus.Shared</AssemblyName>
+    <Configurations>Debug;Release;PerfTest</Configurations>
+  </PropertyGroup>
+</Project>
