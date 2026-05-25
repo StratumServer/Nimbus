@@ -1,0 +1,51 @@
+name: Bug report
+description: Something broke
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Heads up: Nimbus is a proof-of-concept and rough around the edges. Stratum (the backend integration this was built against) isn't out yet, so bug reports from people actually running it in anger are unlikely. If you are, thanks.
+
+  - type: input
+    id: component
+    attributes:
+      label: Component
+      description: Which project the bug is in.
+      placeholder: Nimbus.Proxy / Nimbus.Registry / Nimbus.Cli / Nimbus.Shared
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected to see instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log lines. Trim noise, paste the part around the failure. Code block please.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit / version
+      description: git rev-parse HEAD, or the tag you built from.
+    validations:
+      required: true

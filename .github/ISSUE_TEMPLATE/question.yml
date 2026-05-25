@@ -1,0 +1,15 @@
+name: Question or design discussion
+description: Ask about how something works, or push back on a design choice
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open-ended questions and design discussion go here. No template required for these, just write what's on your mind.
+
+  - type: textarea
+    id: body
+    attributes:
+      label: Question
+    validations:
+      required: true

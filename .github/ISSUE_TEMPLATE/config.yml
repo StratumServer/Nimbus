@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Nimbus is a proof-of-concept
+    url: https://github.com/trevorftp/Nimbus#status
+    about: Before opening an issue, check the status table in the README. Several parts are intentionally incomplete until Stratum ships.
