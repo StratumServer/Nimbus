@@ -100,4 +100,4 @@ If you find something broken or want to talk about a design choice, open an issu
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+See [LICENSE](LICENSE). Source-available, no resale, no rebrand-and-redistribute.
