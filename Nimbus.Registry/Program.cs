@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Nimbus.Registry.MasterServer;
 using Nimbus.Registry.Services;
 using Nimbus.Shared;
 using Nimbus.Shared.Models;
@@ -50,6 +51,7 @@ public static class Program
         builder.Services.AddSingleton<ReservationStore>();
         builder.Services.AddSingleton<NonceCache>();
         builder.Services.AddHostedService<RegistrySweeper>();
+        builder.Services.AddHostedService<MasterServerBroadcaster>();
 
         var app = builder.Build();
 

@@ -22,7 +22,7 @@ public sealed class BackendHeartbeat
 
     public string StratumVersion { get; set; } = "";
     public string GameVersion { get; set; } = "";
-    public string[] RequiredClientMods { get; set; } = Array.Empty<string>();
+    public BackendModInfo[] RequiredClientMods { get; set; } = Array.Empty<BackendModInfo>();
 }
 
 public sealed class BackendHeartbeatResponse

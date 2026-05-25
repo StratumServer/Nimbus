@@ -25,4 +25,5 @@ public sealed class BackendSnapshot
     public bool Stale { get; set; }
     public string StratumVersion { get; set; } = "";
     public string GameVersion { get; set; } = "";
+    public BackendModInfo[] RequiredClientMods { get; set; } = Array.Empty<BackendModInfo>();
 }

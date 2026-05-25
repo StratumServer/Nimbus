@@ -28,10 +28,65 @@ public sealed class RegistryConfig
     // If true, log every successful heartbeat at Information level.
     public bool LogHeartbeats { get; set; } = false;
 
+    // Identity advertised to the VS master server. The registry registers the whole
+    // network as a single entry. Off by default.
+    public ServerIdentityConfig Identity { get; set; } = new();
+
     public IEnumerable<string> AllSecrets()
     {
         if (!string.IsNullOrEmpty(SharedSecret)) yield return SharedSecret;
         foreach (var s in AcceptedSecrets)
             if (!string.IsNullOrEmpty(s)) yield return s;
     }
+}
+
+// Network identity published to the VS master server.
+public sealed class ServerIdentityConfig
+{
+    // Master server advertising kill switch. Off by default.
+    public bool AdvertiseOnMasterServer { get; set; } = false;
+
+    // Vanilla master server endpoint. Override only when self-hosting.
+    public string MasterServerUrl { get; set; } = "http://masterserver.vintagestory.at/api/v1/servers/";
+
+    // Public host/port clients connect to. Must be the proxy's reachable address.
+    public string PublicHost { get; set; } = "";
+    public ushort PublicPort { get; set; } = 42420;
+
+    public string ServerName { get; set; } = "Nimbus Network";
+    public string ServerDescription { get; set; } = "";
+    public string ServerUrl { get; set; } = "";
+    public string ServerIcon { get; set; } = "";
+    public string VhIdentifier { get; set; } = "";
+    public string GameVersion { get; set; } = "1.22.2";
+
+    // 0 = sum of live backend MaxPlayers.
+    public int MaxPlayersOverride { get; set; } = 0;
+
+    public PlaystyleConfig Playstyle { get; set; } = new();
+
+    // Mod list source for the registration packet:
+    //   "aggregate"          - union of every live backend's RequiredClientMods
+    //   "explicit"           - use ExplicitMods
+    //   "backend:<serverId>" - mirror one backend's mod list
+    public string ModSource { get; set; } = "aggregate";
+    public ExplicitMod[] ExplicitMods { get; set; } = Array.Empty<ExplicitMod>();
+
+    public bool Whitelisted { get; set; } = false;
+    public bool HasPassword { get; set; } = false;
+
+    // Master server heartbeat cadence. Vanilla uses 120s; do not go lower.
+    public int HeartbeatIntervalSeconds { get; set; } = 120;
+}
+
+public sealed class PlaystyleConfig
+{
+    public string Id { get; set; } = "surviveandbuild";
+    public string LangCode { get; set; } = "preset-surviveandbuild";
+}
+
+public sealed class ExplicitMod
+{
+    public string Id { get; set; } = "";
+    public string Version { get; set; } = "";
 }

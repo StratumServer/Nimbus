@@ -52,7 +52,8 @@ public sealed class BackendRegistry
                 LastSeenUnix = rec.LastSeenUnix,
                 Stale = stale,
                 StratumVersion = hb.StratumVersion,
-                GameVersion = hb.GameVersion
+                GameVersion = hb.GameVersion,
+                RequiredClientMods = hb.RequiredClientMods
             });
             if (!stale)
             {
