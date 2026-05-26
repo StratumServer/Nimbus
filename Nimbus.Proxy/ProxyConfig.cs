@@ -54,6 +54,14 @@ internal sealed class BackendEndpoint
     /// </summary>
     public string ServerId { get; set; } = "";
 
+    /// <summary>
+    /// When true, the proxy emits a PROXY protocol v2 header on every new TCP connection to
+    /// this backend before forwarding any client bytes. The backend must list this proxy's IP
+    /// in its TrustedProxyCidrs or the connection will be rejected. Opt-in per backend so
+    /// legacy backends still accept plain TCP.
+    /// </summary>
+    public bool ProxyProtocol { get; set; } = false;
+
     public override string ToString()
         => string.IsNullOrEmpty(ServerId) ? $"{Host}:{Port}" : $"{ServerId}@{Host}:{Port}";
 }

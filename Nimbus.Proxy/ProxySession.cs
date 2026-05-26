@@ -209,6 +209,11 @@ internal sealed class ProxySession
             Log.Warn($"[s{Id}] could not reach backend {target}: {ex.Message}");
             return false;
         }
+        if (!await TryWriteProxyProtocolAsync(up, target).ConfigureAwait(false))
+        {
+            try { up.Close(); } catch { }
+            return false;
+        }
         Log.Info($"[s{Id}] upstream connected to {target}");
         upstream = up;
         currentBackend = target;
@@ -228,6 +233,32 @@ internal sealed class ProxySession
                 udpOverrides.Set(ep.Address, target);
         }
         catch { }
+    }
+
+    // Emit a PROXY protocol v2 header to the upstream before any client bytes. Returns false
+    // on write failure so the caller can tear the socket down. No-op when the backend hasn't
+    // opted in.
+    private async Task<bool> TryWriteProxyProtocolAsync(TcpClient up, BackendEndpoint target)
+    {
+        if (!target.ProxyProtocol) return true;
+        if (client.Client?.RemoteEndPoint is not System.Net.IPEndPoint clientEp ||
+            up.Client?.LocalEndPoint is not System.Net.IPEndPoint upstreamEp)
+        {
+            Log.Warn($"[s{Id}] proxy-protocol header skipped for {target}: endpoint info unavailable");
+            return true;
+        }
+        try
+        {
+            var header = ProxyProtocolV2.BuildHeader(clientEp, upstreamEp);
+            await up.GetStream().WriteAsync(header, sessionStopToken).ConfigureAwait(false);
+            Log.Trace($"[s{Id}] wrote PROXY v2 header ({header.Length}B) {clientEp} -> {upstreamEp} for {target}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[s{Id}] PROXY v2 header write failed for {target}: {ex.Message}");
+            return false;
+        }
     }
 
     private void StartPumps()
@@ -357,6 +388,13 @@ internal sealed class ProxySession
                 swapping = false;
                 return $"connect failed: {ex.Message}";
             }
+        }
+
+        if (!await TryWriteProxyProtocolAsync(newUp, target).ConfigureAwait(false))
+        {
+            try { newUp.Close(); } catch { }
+            swapping = false;
+            return "proxy protocol header write failed";
         }
 
         // Replay Identification to the new backend so it begins auth/handshake.
