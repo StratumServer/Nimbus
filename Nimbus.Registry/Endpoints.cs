@@ -104,6 +104,33 @@ public static class Endpoints
                 return Results.NotFound(new ReservationResponse { Ok = false, Error = "no matching reservation" });
             return Results.Ok(new ReservationResponse { Ok = true, Reservation = r });
         });
+
+        // Transfer intents: a backend asks the proxy to move someone. Backends post here when
+        // an admin or player triggers /server or /nimbus send; the proxy drains the queue and
+        // runs its swap path against the live session.
+        app.MapPost("/api/transfer-intents", async (HttpContext ctx, TransferIntentStore store, BackendRegistry reg) =>
+        {
+            TransferIntentRequest? req;
+            try { req = await ctx.Request.ReadFromJsonAsync<TransferIntentRequest>(); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
+
+            if (req is null || string.IsNullOrEmpty(req.PlayerUid) || string.IsNullOrEmpty(req.TargetServerId))
+                return Results.BadRequest(new TransferIntentResponse { Ok = false, Error = "PlayerUid + TargetServerId required" });
+
+            var target = reg.Get(req.TargetServerId);
+            if (target is null)
+                return Results.NotFound(new TransferIntentResponse { Ok = false, Error = "target server not registered" });
+
+            var intent = store.Add(req);
+            return Results.Ok(new TransferIntentResponse { Ok = true, Intent = intent });
+        });
+
+        // Proxy polls this. Destructive drain (each intent delivered at most once).
+        app.MapPost("/api/transfer-intents/drain", (TransferIntentStore store) =>
+        {
+            var taken = store.Drain();
+            return Results.Ok(new TransferIntentDrainResponse { Ok = true, Intents = taken });
+        });
     }
 
     private static string NewReservationId()

@@ -80,6 +80,9 @@ internal sealed class NimbusConfig
 
     /// <summary>If true, swap fails when reservation minting fails. If false, swap proceeds anyway (auth may still reject).</summary>
     public bool FailOnRegistryError { get; set; } = true;
+
+    /// <summary>How often to poll the registry for queued transfer intents (in milliseconds). Clamped to >=250.</summary>
+    public int TransferIntentPollMs { get; set; } = 1000;
 }
 
 [JsonSerializable(typeof(ProxyConfig))]

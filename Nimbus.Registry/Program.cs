@@ -49,6 +49,7 @@ public static class Program
         builder.Services.AddSingleton(cfg);
         builder.Services.AddSingleton<BackendRegistry>();
         builder.Services.AddSingleton<ReservationStore>();
+        builder.Services.AddSingleton<TransferIntentStore>();
         builder.Services.AddSingleton<NonceCache>();
         builder.Services.AddHostedService<RegistrySweeper>();
         builder.Services.AddHostedService<MasterServerBroadcaster>();
@@ -70,11 +71,12 @@ public sealed class RegistrySweeper : BackgroundService
 {
     private readonly BackendRegistry _backends;
     private readonly ReservationStore _reservations;
+    private readonly TransferIntentStore _intents;
     private readonly NonceCache _nonces;
     private readonly ILogger<RegistrySweeper> _log;
 
-    public RegistrySweeper(BackendRegistry b, ReservationStore r, NonceCache n, ILogger<RegistrySweeper> log)
-    { _backends = b; _reservations = r; _nonces = n; _log = log; }
+    public RegistrySweeper(BackendRegistry b, ReservationStore r, TransferIntentStore i, NonceCache n, ILogger<RegistrySweeper> log)
+    { _backends = b; _reservations = r; _intents = i; _nonces = n; _log = log; }
 
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
@@ -85,9 +87,10 @@ public sealed class RegistrySweeper : BackgroundService
             {
                 int b = _backends.Prune();
                 int r = _reservations.Prune();
+                int i = _intents.Prune();
                 int n = _nonces.Prune();
-                if (b + r + n > 0)
-                    _log.LogDebug("sweep: dropped backends={B} reservations={R} nonces={N}", b, r, n);
+                if (b + r + i + n > 0)
+                    _log.LogDebug("sweep: dropped backends={B} reservations={R} intents={I} nonces={N}", b, r, i, n);
             }
             catch (Exception ex)
             {

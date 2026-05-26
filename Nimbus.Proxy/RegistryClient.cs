@@ -139,6 +139,27 @@ internal sealed class RegistryClient
         return null;
     }
 
+    // Drain all pending transfer intents from the registry. Each intent is delivered at most
+    // once across the network of proxies, so whichever proxy polls first wins. Returns an
+    // empty list on registry error; the dispatcher logs the underlying exception itself.
+    public async Task<List<TransferIntent>> DrainTransferIntentsAsync(CancellationToken ct)
+    {
+        try
+        {
+            const string path = "api/transfer-intents/drain";
+            byte[] body = Array.Empty<byte>();
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            Sign(msg, "POST", "/" + path, body);
+            using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return new List<TransferIntent>();
+            var parsed = await resp.Content.ReadFromJsonAsync<TransferIntentDrainResponse>(cancellationToken: ct).ConfigureAwait(false);
+            return parsed?.Intents ?? new List<TransferIntent>();
+        }
+        catch (OperationCanceledException) { return new List<TransferIntent>(); }
+        catch { return new List<TransferIntent>(); }
+    }
+
     private void Sign(HttpRequestMessage msg, string method, string canonicalPath, byte[] body)
     {
         long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
