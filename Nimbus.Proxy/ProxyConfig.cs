@@ -9,6 +9,11 @@ internal sealed class ProxyConfig
 
     public BackendEndpoint DefaultBackend { get; set; } = new();
 
+    // Optional pool of backends. When non-empty, the router prefers the first entry whose
+    // ServerId is registered and not stale/maintenance/drained, falling back through the list.
+    // When empty, behaves as before: every session goes to DefaultBackend.
+    public List<BackendEndpoint> Backends { get; set; } = new();
+
     /// <summary>If true, logs a hexdump of the first ~64 bytes of every burst to/from each side.</summary>
     public bool LogTrafficBytes { get; set; }
 

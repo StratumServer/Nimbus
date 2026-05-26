@@ -34,6 +34,9 @@ internal static class Program
                 "servers" => BuildServers(rest),
                 "swap"    => BuildSwap(rest),
                 "sticky"  => new { cmd = "sticky" },
+                "route"   => new { cmd = "route" },
+                "drain"   => BuildDrain(rest, "drain"),
+                "undrain" => BuildDrain(rest, "undrain"),
                 "raw"     => BuildRaw(rest),
                 _ => throw new ArgumentException($"unknown command: {cmd}"),
             };
@@ -98,6 +101,13 @@ internal static class Program
             d["stickyTtlSeconds"] = ttl;
         }
         return d;
+    }
+
+    private static object BuildDrain(List<string> args, string cmd)
+    {
+        string? serverId = args.Count >= 2 && !args[1].StartsWith("-") ? args[1] : (GetOpt(args, "--server") ?? GetOpt(args, "--serverId"));
+        if (string.IsNullOrEmpty(serverId)) throw new ArgumentException($"{cmd} requires <serverId> or --server <id>");
+        return new { cmd, serverId };
     }
 
     // Send arbitrary JSON straight to the admin endpoint.
@@ -233,6 +243,9 @@ internal static class Program
         Console.WriteLine("      --splice     : in-place TCP swap, pre-Ready only.");
         Console.WriteLine("      --ttl <s>    : disconnect mode only, sticky route lifetime in seconds (default 300).");
         Console.WriteLine("  sticky                                  list staged disconnect-transfer routes");
+        Console.WriteLine("  route                                   show backend pool + health + drain state");
+        Console.WriteLine("  drain <serverId>                        stop routing new sessions to <serverId>");
+        Console.WriteLine("  undrain <serverId>                      resume routing new sessions to <serverId>");
         Console.WriteLine("  raw '<json>'                            send a raw JSON line (for new commands)");
         Console.WriteLine();
         Console.WriteLine("Defaults: host=127.0.0.1 port=42499.");

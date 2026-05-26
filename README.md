@@ -1,31 +1,22 @@
 # Nimbus
 
-A proxy and control plane for running multiple [Vintage Story](https://www.vintagestory.at/) servers behind one address.
+[![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pd24fawhsD)
+[![Stars](https://img.shields.io/github/stars/trevorftp/Nimbus?style=flat&logo=github)](https://github.com/trevorftp/Nimbus/stargazers)
+[![Issues](https://img.shields.io/github/issues/trevorftp/Nimbus?logo=github)](https://github.com/trevorftp/Nimbus/issues)
+[![Last commit](https://img.shields.io/github/last-commit/trevorftp/Nimbus?logo=github)](https://github.com/trevorftp/Nimbus/commits)
+[![License](https://img.shields.io/badge/license-source--available-blue)](LICENSE)
 
-Nimbus is early. Phase 1 (registry + reservations + vanilla redirect packet) is working and in use. Phase 2 (the real TCP/UDP proxy) is functional but not production-ready yet. The project takes a lot of inspiration from [Velocity](https://github.com/PaperMC/Velocity), but it isn't anywhere near that level of maturity.
+A [Velocity](https://papermc.io/software/velocity)-style proxy for [Vintage Story](https://www.vintagestory.at/).
 
-## What it does
+Put many backends behind one address, move players between them on demand, and present the whole thing as a single entry on the server list. The transfer is a quick disconnect/reconnect to the next backend; the vanilla protocol doesn't give us a soft-respawn, so a Velocity-grade seamless swap isn't on the table. Everything else is.
 
-- **Registry.** A small ASP.NET Core service that backends heartbeat into. Tracks online players, capacity, tags, and version info per backend.
-- **Reservations.** Short-lived single-use tokens that let a player join a specific backend without re-running auth against the wider network.
-- **Redirect path.** Uses the vanilla `Packet_ServerRedirect` to send a player between backends. ~~Works on unmodded clients with no install.~~ The vanilla client has a bug in `ClientMain.ExitAndSwitchServer` that crashes the next session, so the client currently needs [RedirectFix](https://github.com/trevorftp/redirectfix). In practice this is a non-issue: the server auto-distributes required mods on join, so the client downloads it the first time. The strikethrough comes off once the VS team patches the upstream bug.
-- **Proxy (phase 2).** TCP/UDP relay that speaks the VS protocol, so a player keeps one address and can be swapped between backends without a full world reload.
-- **`nimctl`.** A small CLI to drive the proxy's admin socket (list sessions, swap a player, drain a backend, etc).
+## How it fits together
 
-## What it doesn't do
+- **Registry** — small ASP.NET Core service. Backends heartbeat in. Mints short-lived reservations so a player can land on a specific backend without re-running auth.
+- **Proxy** — TCP/UDP relay. Fronts every backend on one address. Health-aware routing, drain, swap, redirect, disconnect-transfer. Forwards the real client IP to the backend over the reservation.
+- **`nimctl`** — CLI for the proxy's admin socket. List sessions, swap a player, drain a backend.
 
-- No cross-server inventory or character sync. Each backend keeps its own savegame.
-- It doesn't replace Vintage Story's auth. Vanilla auth still runs on every backend. Reservations are an extra gate on top.
-- It is not a one-click install. You need a backend integration layer that hooks the server's login path (see below).
-
-## Layout
-
-```
-Nimbus.Shared/     protocol DTOs, HMAC signing, version constants
-Nimbus.Registry/   ASP.NET Core service. backends heartbeat in, reservations get minted here
-Nimbus.Proxy/      TCP/UDP proxy
-Nimbus.Cli/        small admin client (nimctl) for the proxy
-```
+The registry can also advertise the whole network as one entry on the public VS server list, with aggregated player count and required mods pulled from live backends.
 
 ## Building
 
@@ -35,69 +26,37 @@ Requires the .NET 10 SDK.
 dotnet build Nimbus.slnx -c Release
 ```
 
-Or build a single project:
+## Running
 
 ```powershell
-dotnet build .\Nimbus.Registry\Nimbus.Registry.csproj -c Release
-dotnet build .\Nimbus.Proxy\Nimbus.Proxy.csproj -c Release
+cd Nimbus.Registry; dotnet run -c Release
+cd Nimbus.Proxy;    dotnet run -c Release
 ```
 
-## Running the registry
-
-```powershell
-cd Nimbus.Registry
-dotnet run -c Release
-```
-
-The first run writes `nimbus.registry.json` next to the binary with a default `SharedSecret`. Change it before exposing the port.
-
-Default bind is `http://0.0.0.0:8765`. Put it behind a reverse proxy with TLS if it's reachable from the public internet.
-
-## Running the proxy
-
-```powershell
-cd Nimbus.Proxy
-dotnet run -c Release
-```
-
-Edit `nimbus.proxy.json` to point at your registry and set the listen ports.
+First run writes a config next to each binary. Change the `SharedSecret` before exposing anything.
 
 ## Backend integration
 
-Backends have to do two things:
+Backends need to do two things:
 
-1. Send a heartbeat to the registry every few seconds with their current player count, capacity, tags, and version. The payload is `BackendHeartbeat` in `Nimbus.Shared`.
-2. Hook the server's login path so that when `RequireReservationForJoin` is on, the backend asks the registry to consume a matching reservation before accepting the join. If the registry says no, the backend rejects the connection.
+1. Heartbeat to the registry (`BackendHeartbeat` in `Nimbus.Shared`).
+2. On login, ask the registry to consume a reservation for the joining player and accept the join if it matches.
 
-`Nimbus.Shared` carries the DTOs and HMAC signer so you don't have to reimplement either. Every request to the registry needs the four `X-Nimbus-*` headers (`Signature`, `Timestamp`, `Nonce`, `Protocol`).
+`Nimbus.Shared` carries the DTOs and the HMAC signer; you don't have to reimplement either. Every registry request needs the four `X-Nimbus-*` headers.
 
-There isn't a drop-in mod for vanilla servers yet. I run this against a private fork; getting it to work against a stock server build is on the list.
+There is no drop-in mod for stock servers yet. Nimbus runs against a private fork; a public integration layer is on the list.
 
-## Security model
+## Caveats
 
-- HMAC-SHA256 on every registry request. Signature covers method, path, protocol version, timestamp, nonce, and SHA-256 of the body.
-- 30 second clock skew window. Requests outside that are rejected even with a valid signature.
-- Nonces are remembered for 90 seconds. Replay returns 401.
-- Secret rotation: put the new secret in `AcceptedSecrets`, redeploy backends, promote it to `SharedSecret`, drop the old one.
-- Reservations are single-use and pinned to one target backend.
+- The vanilla client has a bug in `ClientMain.ExitAndSwitchServer` that crashes the next session after a redirect. Until upstream patches it, clients need [RedirectFix](https://github.com/trevorftp/redirectfix). It auto-installs from the backend's required-mods list on first join, so for players this is transparent.
+- One player per source IP for UDP (NAT'd LAN parties not supported yet).
 
-## Status
+## Discord
 
-| Area | State |
-|------|-------|
-| Registry + HMAC + nonces | working |
-| Reservations (mint, consume by id, consume by uid) | working |
-| Vanilla redirect packet path | working |
-| `nimctl` over the proxy admin socket | working |
-| TCP proxy (frame parsing, identification, swap) | working, needs more soak |
-| UDP relay | working, needs more soak |
-| Multi-player-per-IP UDP | not yet (single player per source IP assumed) |
-| Cross-server character/inventory sync | not planned here |
-
-## Discussion
-
-If you find something broken or want to talk about a design choice, open an issue.
+Questions, bug reports, design arguments: [discord.gg/pd24fawhsD](https://discord.gg/pd24fawhsD).
 
 ## License
 
 See [LICENSE](LICENSE). Source-available, no resale, no rebrand-and-redistribute.
+
+Nimbus is an unofficial third-party project. Not affiliated with or endorsed by Anego Studios. "Vintage Story" is a trademark of Anego Studios. See [NOTICE](NOTICE) for the full attribution.

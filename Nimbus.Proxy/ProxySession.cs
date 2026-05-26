@@ -74,6 +74,27 @@ internal sealed class ProxySession
     public bool HasIdentification => capturedIdentification != null;
     public string ClientRemote => client.Client.RemoteEndPoint?.ToString() ?? "?";
 
+    // Real client endpoint as seen by this proxy. Forwarded to backends via reservation.
+    private (string ip, int port) ClientEndpoint
+    {
+        get
+        {
+            try
+            {
+                if (client.Client?.RemoteEndPoint is System.Net.IPEndPoint ep)
+                {
+                    var addr = ep.Address;
+                    // Unwrap ::ffff:1.2.3.4 to 1.2.3.4 so backends see a clean IPv4 string when the
+                    // proxy is listening on a dual-stack socket.
+                    if (addr.IsIPv4MappedToIPv6) addr = addr.MapToIPv4();
+                    return (addr.ToString(), ep.Port);
+                }
+            }
+            catch { }
+            return ("", 0);
+        }
+    }
+
     // Force-close. Pumps and sockets tear down on the next loop iteration.
     public void Close()
     {
@@ -299,7 +320,8 @@ internal sealed class ProxySession
                 using var mintCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
                 mintCts.CancelAfter(TimeSpan.FromSeconds(10));
                 var reservation = await registry.MintReservationAsync(
-                    capturedPlayerUid!, capturedPlayerName ?? "", target.ServerId, swapReason ?? "proxy swap", mintCts.Token)
+                    capturedPlayerUid!, capturedPlayerName ?? "", target.ServerId, swapReason ?? "proxy swap", mintCts.Token,
+                    ClientEndpoint.ip, ClientEndpoint.port)
                     .ConfigureAwait(false);
                 if (reservation == null)
                 {
@@ -418,7 +440,8 @@ internal sealed class ProxySession
                 using var mintCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
                 mintCts.CancelAfter(TimeSpan.FromSeconds(10));
                 var reservation = await registry.MintReservationAsync(
-                    capturedPlayerUid!, capturedPlayerName ?? "", target.ServerId, reason ?? "proxy redirect", mintCts.Token)
+                    capturedPlayerUid!, capturedPlayerName ?? "", target.ServerId, reason ?? "proxy redirect", mintCts.Token,
+                    ClientEndpoint.ip, ClientEndpoint.port)
                     .ConfigureAwait(false);
                 if (reservation == null)
                 {
@@ -526,7 +549,8 @@ internal sealed class ProxySession
             mintCts.CancelAfter(TimeSpan.FromSeconds(10));
             var reservation = await registry.MintReservationAsync(
                 capturedPlayerUid!, capturedPlayerName ?? "", target.ServerId,
-                reason ?? "proxy disconnect-transfer", mintCts.Token).ConfigureAwait(false);
+                reason ?? "proxy disconnect-transfer", mintCts.Token,
+                ClientEndpoint.ip, ClientEndpoint.port).ConfigureAwait(false);
             if (reservation == null)
             {
                 if (failOnRegistryError) { Log.Warn($"[s{Id}] disconnect-transfer aborted: registry mint failed for uid={capturedPlayerUid} target={target.ServerId}"); return "registry mint failed"; }

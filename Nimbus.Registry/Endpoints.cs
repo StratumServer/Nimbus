@@ -69,7 +69,9 @@ public static class Endpoints
                 SourceServerId = req.SourceServerId,
                 TargetServerId = req.TargetServerId,
                 ExpiresAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + req.TtlSeconds,
-                Reason = req.Reason
+                Reason = req.Reason,
+                RealRemoteIp = req.RealRemoteIp ?? "",
+                RealRemotePort = req.RealRemotePort,
             };
             store.Add(r);
             return Results.Ok(new ReservationResponse { Ok = true, Reservation = r });

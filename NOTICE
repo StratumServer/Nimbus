@@ -1,0 +1,25 @@
+Nimbus
+Copyright (c) 2026 Tsu (imtsubaki)
+
+This product is an independent, unofficial third-party project. It is not
+affiliated with, endorsed by, sponsored by, or in any way officially
+connected to Anego Studios or any of its subsidiaries or affiliates.
+
+"Vintage Story" and the Vintage Story logo are trademarks of Anego Studios.
+All references in this project to Vintage Story, its protocol, packet formats,
+or game mechanics are made solely to describe interoperability and integration
+with an existing software product. No claim of ownership is made over any
+Vintage Story trademarks, source code, or assets.
+
+The Vintage Story client and server software are the property of Anego Studios
+and are licensed separately under their own terms. Nimbus does not redistribute
+any Vintage Story binaries, assets, or source code.
+
+This project incorporates protocol-level interoperability with the Vintage
+Story networking layer. The wire-level packet construction code in
+Nimbus.Proxy (e.g. RedirectBuilder, DisconnectBuilder) was written by reading
+the publicly observable network protocol and is not derived from any
+copyrighted source. If you are a rights-holder and have concerns, please
+open an issue.
+
+For licensing of the Nimbus source itself, see LICENSE.

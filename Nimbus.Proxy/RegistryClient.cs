@@ -38,7 +38,8 @@ internal sealed class RegistryClient
     /// reservation on success, null on any error (logged). Reason is recorded for audit only.
     /// </summary>
     public async Task<TransferReservation?> MintReservationAsync(
-        string playerUid, string playerName, string targetServerId, string? reason, CancellationToken ct)
+        string playerUid, string playerName, string targetServerId, string? reason, CancellationToken ct,
+        string? realRemoteIp = null, int realRemotePort = 0)
     {
         var req = new ReservationRequest
         {
@@ -47,7 +48,9 @@ internal sealed class RegistryClient
             SourceServerId = cfg.ProxyServerId,
             TargetServerId = targetServerId,
             TtlSeconds = cfg.ReservationTtlSeconds,
-            Reason = reason
+            Reason = reason,
+            RealRemoteIp = realRemoteIp ?? "",
+            RealRemotePort = realRemotePort,
         };
 
         try

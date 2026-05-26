@@ -11,6 +11,12 @@ public sealed class TransferReservation
     public string TargetServerId { get; set; } = "";
     public long ExpiresAtUnix { get; set; }
     public string? Reason { get; set; }
+
+    // Real client endpoint as seen by the Nimbus proxy. Forwarded so the target backend can
+    // record the player's true IP instead of the proxy address. Empty when unknown (older
+    // proxies, direct backend connections, etc).
+    public string RealRemoteIp { get; set; } = "";
+    public int RealRemotePort { get; set; }
 }
 
 public sealed class ReservationRequest
@@ -21,6 +27,9 @@ public sealed class ReservationRequest
     public string TargetServerId { get; set; } = "";
     public int TtlSeconds { get; set; } = NimbusProtocol.DefaultReservationTtlSeconds;
     public string? Reason { get; set; }
+
+    public string RealRemoteIp { get; set; } = "";
+    public int RealRemotePort { get; set; }
 }
 
 public sealed class ReservationResponse

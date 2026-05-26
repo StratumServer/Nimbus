@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Nimbus.Shared.Models;
 
 namespace Nimbus.Proxy;
 
@@ -250,6 +251,59 @@ internal sealed class AdminListener
                     })
                     .ToArray();
                 return JsonSerializer.Serialize(new { ok = true, entries });
+            }
+
+            case "route":
+            {
+                // Show the router's view: each candidate plus its current health flags.
+                var cand = proxy.Router.Candidates.Select(c => new { c.ServerId, c.Host, c.Port }).ToArray();
+                var drained = proxy.Router.ListDrained();
+                NetworkSnapshot? snap = null;
+                if (proxy.Registry != null)
+                {
+                    using var rcts = new CancellationTokenSource(TimeSpan.FromSeconds(proxy.NimbusCfg.RegistryHttpTimeoutSeconds + 1));
+                    snap = await proxy.Registry.GetServersAsync(rcts.Token).ConfigureAwait(false);
+                }
+                var view = cand.Select(c =>
+                {
+                    BackendSnapshot? b = null;
+                    if (snap != null && !string.IsNullOrEmpty(c.ServerId))
+                    {
+                        foreach (var x in snap.Backends)
+                            if (string.Equals(x.ServerId, c.ServerId, StringComparison.OrdinalIgnoreCase)) { b = x; break; }
+                    }
+                    return new
+                    {
+                        serverId = c.ServerId,
+                        host = c.Host,
+                        port = c.Port,
+                        drained = !string.IsNullOrEmpty(c.ServerId) && proxy.Router.IsDrained(c.ServerId),
+                        known = b != null,
+                        stale = b?.Stale ?? (bool?)null,
+                        maintenance = b?.Maintenance ?? (bool?)null,
+                        players = b?.Players ?? (int?)null,
+                        maxPlayers = b?.MaxPlayers ?? (int?)null,
+                    };
+                }).ToArray();
+                return JsonSerializer.Serialize(new { ok = true, drained, candidates = view });
+            }
+
+            case "drain":
+            {
+                string serverId = doc.RootElement.TryGetProperty("serverId", out var sidEl) ? (sidEl.GetString() ?? "") : "";
+                if (string.IsNullOrEmpty(serverId))
+                    return JsonSerializer.Serialize(new { ok = false, reason = "missing 'serverId'" });
+                bool added = proxy.Router.Drain(serverId);
+                return JsonSerializer.Serialize(new { ok = true, serverId, added });
+            }
+
+            case "undrain":
+            {
+                string serverId = doc.RootElement.TryGetProperty("serverId", out var sidEl) ? (sidEl.GetString() ?? "") : "";
+                if (string.IsNullOrEmpty(serverId))
+                    return JsonSerializer.Serialize(new { ok = false, reason = "missing 'serverId'" });
+                bool removed = proxy.Router.Undrain(serverId);
+                return JsonSerializer.Serialize(new { ok = true, serverId, removed });
             }
 
             default:
