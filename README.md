@@ -1,10 +1,11 @@
 # Nimbus
 
-[![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pd24fawhsD)
 [![Stars](https://img.shields.io/github/stars/trevorftp/Nimbus?style=flat&logo=github)](https://github.com/trevorftp/Nimbus/stargazers)
 [![Issues](https://img.shields.io/github/issues/trevorftp/Nimbus?logo=github)](https://github.com/trevorftp/Nimbus/issues)
 [![Last commit](https://img.shields.io/github/last-commit/trevorftp/Nimbus?logo=github)](https://github.com/trevorftp/Nimbus/commits)
-[![License](https://img.shields.io/badge/license-source--available-blue)](LICENSE)
+[![Discord](https://img.shields.io/badge/chat-on%20discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/pd24fawhsD)
+[![License](https://img.shields.io/badge/license-blue)](LICENSE)
+[![Support on Ko-fi](https://img.shields.io/badge/Support_on_Ko--fi-ff5f5f?logo=ko-fi&logoColor=white)](https://ko-fi.com/imtsubaki)
 
 A [Velocity](https://papermc.io/software/velocity)-style proxy for [Vintage Story](https://www.vintagestory.at/).
 
