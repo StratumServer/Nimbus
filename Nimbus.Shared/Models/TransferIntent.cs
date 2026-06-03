@@ -15,8 +15,8 @@ public sealed class TransferIntent
     public string SourceServerId { get; set; } = "";
     public string TargetServerId { get; set; } = "";
 
-    // "redirect" (default, Velocity-style clean reconnect through the proxy),
-    // "splice" (legacy in-place TCP swap), or "disconnect" (kick with sticky route for reconnect).
+    // "redirect" by default. "seamless" needs the Nimbus mod and allow_seamless.
+    // "splice" is accepted as a deprecated alias for "seamless".
     public string Mode { get; set; } = "redirect";
 
     public string? Reason { get; set; }

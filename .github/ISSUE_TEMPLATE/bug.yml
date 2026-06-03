@@ -5,14 +5,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Heads up: Nimbus is a proof-of-concept and rough around the edges. Stratum (the backend integration this was built against) isn't out yet, so bug reports from people actually running it in anger are unlikely. If you are, thanks.
+        Please include the commit you built from and whether you are using embedded or remote registry mode.
 
   - type: input
     id: component
     attributes:
       label: Component
       description: Which project the bug is in.
-      placeholder: Nimbus.Proxy / Nimbus.Registry / Nimbus.Cli / Nimbus.Shared
+      placeholder: Nimbus.Proxy / Nimbus.Registry.Core / Nimbus.Registry / Nimbus.Cli / Nimbus.Shared
     validations:
       required: true
 

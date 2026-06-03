@@ -6,10 +6,15 @@ obj/
 .idea/
 *.lscache
 
-# Local configs with secrets
+# Local configs
 nimbus.registry.json
 nimbus.proxy.json
+nimbus.registry.toml
+nimbus.proxy.toml
+nimbus.proxy.json.obsolete
 nimctl.json
+nimbus.drain-state.json
+nimbus.drain-state.json.tmp
 
 # Not shipped with this repo
 Nimbus.SmokeTest/

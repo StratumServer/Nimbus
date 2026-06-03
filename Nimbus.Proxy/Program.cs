@@ -1,10 +1,10 @@
-using System.Text.Json;
+using Nimbus.Shared;
 
 namespace Nimbus.Proxy;
 
 internal static class Program
 {
-    private const string ConfigFileName = "nimbus.proxy.json";
+    private const string ConfigFileName = "nimbus.proxy.toml";
 
     private static async Task<int> Main(string[] args)
     {
@@ -14,37 +14,40 @@ internal static class Program
         try { cfg = LoadConfig(); }
         catch (Exception ex) { Log.Error("config load failed: " + ex.Message); return 2; }
 
-        Log.TraceEnabled = cfg.VerboseLogging;
-        Log.Info($"config: listen {cfg.ListenHost}:{cfg.ListenPort}  backend {cfg.DefaultBackend}  logBytes={cfg.LogTrafficBytes}  verbose={cfg.VerboseLogging}");
-
-        RegistryClient? registry = null;
-        if (cfg.Nimbus.Enabled)
+        Log.Configure(cfg.Logging.Verbose);
+        try
         {
-            if (string.IsNullOrWhiteSpace(cfg.Nimbus.RegistryUrl) || string.IsNullOrWhiteSpace(cfg.Nimbus.SharedSecret))
+            var validation = ProxyConfigValidator.Validate(cfg);
+            foreach (var warning in validation.Warnings)
+                Log.Warn("config warning: " + warning);
+            if (!validation.IsValid)
             {
-                Log.Warn("Nimbus.Enabled=true but RegistryUrl/SharedSecret is unset, disabling registry integration");
+                foreach (var error in validation.Errors)
+                    Log.Error("config error: " + error);
+                return 2;
             }
-            else
-            {
-                registry = new RegistryClient(cfg.Nimbus);
-                Log.Info($"Nimbus registry enabled: url={cfg.Nimbus.RegistryUrl}  proxyServerId={cfg.Nimbus.ProxyServerId}  failOnError={cfg.Nimbus.FailOnRegistryError}");
-            }
+            Log.Info($"config: bind {cfg.Bind}  servers={cfg.Servers.Count}  try=[{string.Join(",", cfg.Try)}]  logBytes={cfg.Logging.LogTrafficBytes}  verbose={cfg.Logging.Verbose}");
+            Log.Info($"transfers: default_mode={cfg.Transfers.DefaultMode}  allow_seamless={cfg.Transfers.AllowSeamless}");
         }
-        else
-        {
-            Log.Info("Nimbus registry integration disabled (set Nimbus.Enabled=true to enable)");
-        }
+        catch (Exception ex) { Log.Error("config invalid: " + ex.Message); return 2; }
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; Log.Info("ctrl+c received, shutting down"); cts.Cancel(); };
         AppDomain.CurrentDomain.ProcessExit += (_, _) => cts.Cancel();
 
-        var listener = new ProxyListener(cfg, cts.Token, registry);
-        var udp = new UdpRelay(cfg, cts.Token, listener.UdpOverrides);
-        var admin = new AdminListener(cfg, listener, cts.Token);
+        ProxyRegistryHost registryHost;
         try
         {
-            await Task.WhenAll(listener.RunAsync(), udp.RunAsync(), admin.RunAsync()).ConfigureAwait(false);
+            registryHost = ProxyRegistryHost.Build(cfg, cts.Token);
+        }
+        catch (Exception ex) { Log.Error("registry init failed: " + ex.Message); return 2; }
+
+        await using var registryDispose = registryHost;
+        using var runtime = new ProxyRuntime(cfg, cts.Token, registryHost.Client);
+
+        try
+        {
+            await runtime.RunAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -57,21 +60,18 @@ internal static class Program
     private static ProxyConfig LoadConfig()
     {
         var path = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
-        if (!File.Exists(path))
+        var jsonSibling = Path.ChangeExtension(path, ".json");
+        // The legacy nimbus.proxy.json shape (pre-Velocity layout) doesn't map onto the new
+        // schema. Move it aside so LoadOrCreate writes a fresh default TOML rather than
+        // picking up incompatible fields.
+        if (!File.Exists(path) && File.Exists(jsonSibling))
         {
-            Log.Warn($"no config at {path}, writing defaults");
-            var fresh = new ProxyConfig();
-            File.WriteAllText(path, JsonSerializer.Serialize(fresh, new JsonSerializerOptions { WriteIndented = true }));
-            return fresh;
+            try { File.Move(jsonSibling, jsonSibling + ".obsolete", overwrite: true); Log.Warn($"renamed legacy {jsonSibling} -> {jsonSibling}.obsolete"); }
+            catch { }
         }
-        var json = File.ReadAllText(path);
-        var cfg = JsonSerializer.Deserialize<ProxyConfig>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        if (cfg == null) throw new InvalidOperationException("config deserialized to null");
-        cfg.DefaultBackend ??= new BackendEndpoint();
-        cfg.Nimbus ??= new NimbusConfig();
-        if (string.IsNullOrWhiteSpace(cfg.ListenHost)) cfg.ListenHost = "0.0.0.0";
-        if (cfg.BufferSize <= 0) cfg.BufferSize = 16 * 1024;
-        if (cfg.ConnectTimeoutMs <= 0) cfg.ConnectTimeoutMs = 5000;
+        bool existed = File.Exists(path);
+        var cfg = TomlConfig.LoadOrCreate<ProxyConfig>(path);
+        if (!existed) Log.Warn($"no config at {path}, wrote defaults");
         return cfg;
     }
 }

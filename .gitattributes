@@ -1,0 +1,9 @@
+* text=auto
+
+*.cs text
+*.md text
+*.yml text
+*.json text
+*.toml text
+*.props text
+*.slnx text

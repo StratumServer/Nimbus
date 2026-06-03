@@ -11,11 +11,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Nimbus.Shared\Nimbus.Shared.csproj" />
+    <ProjectReference Include="..\Nimbus.Registry.Core\Nimbus.Registry.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="nimbus.registry.json">
-      <CopyToOutputDirectory>PreserveNewer</CopyToOutputDirectory>
-    </None>
+    <PackageReference Include="Tomlyn" Version="0.19.0" />
   </ItemGroup>
 </Project>

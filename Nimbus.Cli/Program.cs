@@ -28,6 +28,7 @@ internal static class Program
             object payload = cmd switch
             {
                 "ping"    => new { cmd = "ping" },
+                "help"    => new { cmd = "help" },
                 "list"    => new { cmd = "list" },
                 "status"  => BuildStatus(rest),
                 "kick"    => BuildKick(rest),
@@ -77,12 +78,9 @@ internal static class Program
         string? host = GetOpt(args, "--host");
         string? portStr = GetOpt(args, "--port");
         string? reason = GetOpt(args, "--reason");
-        string? ttlStr = GetOpt(args, "--ttl");
-        bool splice = args.Contains("--splice");
+        bool seamless = args.Contains("--seamless") || args.Contains("--splice");
         bool redirect = args.Contains("--redirect");
-        bool disconnect = args.Contains("--disconnect");
-        int modeCount = (splice ? 1 : 0) + (redirect ? 1 : 0) + (disconnect ? 1 : 0);
-        if (modeCount > 1) throw new ArgumentException("--splice, --redirect, and --disconnect are mutually exclusive");
+        if (seamless && redirect) throw new ArgumentException("--seamless and --redirect are mutually exclusive");
 
         if (string.IsNullOrEmpty(serverId) && (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(portStr)))
             throw new ArgumentException("swap requires either --server <id> or both --host and --port");
@@ -92,14 +90,8 @@ internal static class Program
         if (!string.IsNullOrEmpty(host))     d["host"] = host;
         if (!string.IsNullOrEmpty(portStr))  d["port"] = int.Parse(portStr);
         if (!string.IsNullOrEmpty(reason))   d["reason"] = reason;
-        if (splice)     d["mode"] = "splice";
-        if (redirect)   d["mode"] = "redirect";
-        if (disconnect) d["mode"] = "disconnect";
-        if (!string.IsNullOrEmpty(ttlStr))
-        {
-            if (!int.TryParse(ttlStr, out var ttl)) throw new ArgumentException($"invalid --ttl: {ttlStr}");
-            d["stickyTtlSeconds"] = ttl;
-        }
+        if (seamless) d["mode"] = "seamless";
+        if (redirect) d["mode"] = "redirect";
         return d;
     }
 
@@ -129,8 +121,7 @@ internal static class Program
         using var reader = new StreamReader(stream, Encoding.UTF8);
         using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
-        // Only send auth when explicitly configured. Proxies without AdminSecret would just
-        // reply with "unknown cmd" otherwise.
+        // Only send auth when the proxy expects it.
         if (!string.IsNullOrEmpty(secret))
         {
             var authJson = JsonSerializer.Serialize(new { cmd = "auth", secret });
@@ -232,17 +223,17 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("Commands:");
         Console.WriteLine("  ping                                    health check");
+        Console.WriteLine("  help                                    list admin commands and permissions");
         Console.WriteLine("  list                                    list active sessions");
         Console.WriteLine("  status <id>                             session detail (uid, phase, captured ident)");
         Console.WriteLine("  kick <id>                               force-close a session");
         Console.WriteLine("  servers [--refresh]                     dump registry snapshot");
-        Console.WriteLine("  swap <id> --server <serverId> [--reason \"...\"] [--splice|--redirect|--disconnect] [--ttl <s>]");
-        Console.WriteLine("  swap <id> --host <h> --port <p> [--reason \"...\"] [--splice|--redirect|--disconnect] [--ttl <s>]");
-        Console.WriteLine("      default mode is --redirect (client reconnects automatically).");
-        Console.WriteLine("      --disconnect : kick + sticky route, one Reconnect click on the client.");
-        Console.WriteLine("      --splice     : in-place TCP swap, pre-Ready only.");
-        Console.WriteLine("      --ttl <s>    : disconnect mode only, sticky route lifetime in seconds (default 300).");
-        Console.WriteLine("  sticky                                  list staged disconnect-transfer routes");
+        Console.WriteLine("  swap <id> --server <serverId> [--reason \"...\"] [--redirect|--seamless]");
+        Console.WriteLine("  swap <id> --host <h> --port <p> [--reason \"...\"] [--redirect|--seamless]");
+        Console.WriteLine("      default mode is --redirect (forge Packet_ServerRedirect, client reconnects).");
+        Console.WriteLine("      --seamless   : in-place TCP swap. Requires transfers.allow_seamless on the proxy.");
+        Console.WriteLine("                     --splice is accepted as a deprecated alias.");
+        Console.WriteLine("  sticky                                  list staged sticky reconnect routes");
         Console.WriteLine("  route                                   show backend pool + health + drain state");
         Console.WriteLine("  drain <serverId>                        stop routing new sessions to <serverId>");
         Console.WriteLine("  undrain <serverId>                      resume routing new sessions to <serverId>");
@@ -251,7 +242,7 @@ internal static class Program
         Console.WriteLine("Defaults: host=127.0.0.1 port=42499.");
         Console.WriteLine();
         Console.WriteLine("Auth: pass --secret <s>, set NIMCTL_SECRET, or add \"Secret\" to nimctl.json when the");
-        Console.WriteLine("      proxy is configured with AdminSecret.");
+        Console.WriteLine("      proxy is configured with admin.secret.");
         Console.WriteLine("Overrides (highest wins): CLI flags > nimctl.json > NIMCTL_HOST/PORT env > built-in.");
         Console.WriteLine();
         Console.WriteLine("Exit codes: 0=ok, 1=error, 2=usage, 3=server replied ok:false.");
