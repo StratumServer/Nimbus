@@ -3,13 +3,15 @@ namespace Nimbus.Proxy;
 internal sealed class StatusCommand : IAdminCommand
 {
     public string Name => "status";
+    public IReadOnlyList<string> Aliases => new[] { "inspect" };
     public string Permission => "nimbus.command.status";
     public string Summary => "show one session";
     public string Usage => "status <id>";
 
     public Task<object> ExecuteAsync(AdminContext ctx)
     {
-        long id = ctx.Request.GetProperty("id").GetInt64();
+        if (!ctx.Request.TryInt64("id", out var id))
+            return Task.FromResult(AdminCommandError.Invalid(this, "id"));
         if (!ctx.Proxy.Sessions.TryGetValue(id, out var s))
             return Task.FromResult<object>(new { ok = false, reason = "session not found" });
         return Task.FromResult<object>(new

@@ -10,6 +10,7 @@ namespace Nimbus.Shared.Models;
 public sealed class TransferIntent
 {
     public string Id { get; set; } = "";
+    public string ClientTransferId { get; set; } = "";
     public string PlayerUid { get; set; } = "";
     public string PlayerName { get; set; } = "";
     public string SourceServerId { get; set; } = "";
@@ -18,6 +19,8 @@ public sealed class TransferIntent
     // "redirect" by default. "seamless" needs the Nimbus mod and allow_seamless.
     // "splice" is accepted as a deprecated alias for "seamless".
     public string Mode { get; set; } = "redirect";
+
+    public bool ClientSupportsSeamlessTransfers { get; set; }
 
     public string? Reason { get; set; }
     public long ExpiresAtUnix { get; set; }
@@ -29,11 +32,13 @@ public sealed class TransferIntent
 
 public sealed class TransferIntentRequest
 {
+    public string ClientTransferId { get; set; } = "";
     public string PlayerUid { get; set; } = "";
     public string PlayerName { get; set; } = "";
     public string SourceServerId { get; set; } = "";
     public string TargetServerId { get; set; } = "";
     public string Mode { get; set; } = "redirect";
+    public bool ClientSupportsSeamlessTransfers { get; set; }
     public int TtlSeconds { get; set; } = 30;
     public string? Reason { get; set; }
     public string RequestedBy { get; set; } = "";

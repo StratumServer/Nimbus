@@ -12,14 +12,17 @@ internal sealed class AdminListener
     private readonly CancellationToken stopToken;
     private readonly AdminCommandRegistry commands;
     private readonly AdminPermissions permissions;
+    private readonly Func<IReadOnlyList<LoadedPlugin>> loadedPlugins;
 
-    public AdminListener(ProxyConfig cfg, ProxyListener proxy, CancellationToken stopToken)
+    public AdminListener(ProxyConfig cfg, ProxyListener proxy, CancellationToken stopToken,
+        Func<IReadOnlyList<LoadedPlugin>> loadedPlugins)
     {
         this.cfg = cfg;
         this.proxy = proxy;
         this.stopToken = stopToken;
         this.commands = AdminCommandRegistry.Default();
         this.permissions = new AdminPermissions(cfg.Admin.GrantedPermissions);
+        this.loadedPlugins = loadedPlugins;
     }
 
     public async Task RunAsync()
@@ -125,7 +128,7 @@ internal sealed class AdminListener
             return JsonSerializer.Serialize(new { ok = false, reason = "permission denied", permission = handler.Permission });
         }
 
-        var ctx = new AdminContext(proxy, cfg, doc.RootElement, stopToken, permissions, commands.Commands);
+        var ctx = new AdminContext(proxy, cfg, doc.RootElement, stopToken, permissions, commands.Commands, loadedPlugins());
         var result = await handler.ExecuteAsync(ctx).ConfigureAwait(false);
         ProxyMetrics.AdminCommand(denied: false);
         return JsonSerializer.Serialize(result);

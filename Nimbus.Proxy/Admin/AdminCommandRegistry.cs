@@ -1,17 +1,33 @@
 namespace Nimbus.Proxy;
 
-// Looks up admin commands by name. Built once at proxy startup
 internal sealed class AdminCommandRegistry
 {
     private readonly Dictionary<string, IAdminCommand> commands;
+    private readonly IAdminCommand[] handlers;
 
     public AdminCommandRegistry(IEnumerable<IAdminCommand> handlers)
     {
-        commands = handlers.ToDictionary(h => h.Name, StringComparer.OrdinalIgnoreCase);
+        this.handlers = handlers.ToArray();
+        commands = new Dictionary<string, IAdminCommand>(StringComparer.OrdinalIgnoreCase);
+        foreach (var handler in this.handlers)
+        {
+            AddName(handler.Name, handler);
+            foreach (var alias in handler.Aliases)
+                AddName(alias, handler);
+        }
     }
 
     public bool TryGet(string name, out IAdminCommand cmd) => commands.TryGetValue(name, out cmd!);
-    public IReadOnlyCollection<IAdminCommand> Commands => commands.Values;
+    public IReadOnlyCollection<IAdminCommand> Commands => handlers;
+
+    private void AddName(string name, IAdminCommand handler)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new InvalidOperationException($"admin command {handler.GetType().Name} has an empty name or alias");
+        if (commands.TryGetValue(name, out var existing))
+            throw new InvalidOperationException($"admin command name '{name}' is used by {existing.Name} and {handler.Name}");
+        commands.Add(name, handler);
+    }
 
     public static AdminCommandRegistry Default() => new(new IAdminCommand[]
     {
@@ -19,6 +35,7 @@ internal sealed class AdminCommandRegistry
         new PingCommand(),
         new ListCommand(),
         new StatusCommand(),
+        new PluginsCommand(),
         new KickCommand(),
         new ServersCommand(),
         new SwapCommand(),

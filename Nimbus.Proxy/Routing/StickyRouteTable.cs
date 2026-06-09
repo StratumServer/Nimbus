@@ -4,9 +4,9 @@ namespace Nimbus.Proxy;
 
 // Map of "this player's next reconnect should go to this backend".
 //
-// The disconnect-style transfer path stages an entry here, mints a reservation on the target,
-// then kicks the player. When the player reconnects through the proxy, ProxySession consults
-// this table on UID capture and swaps the upstream to the staged target.
+// Redirect-style transfers stage an entry here after minting a target reservation. When the
+// player reconnects, ClientSessionRunner parses the first Identification frame and routes the
+// session to the staged target before any upstream is opened.
 //
 // Entries are single-use. TryConsume removes the entry on a match. Expired entries are dropped
 // by TryConsume on access and proactively by SweepExpired.

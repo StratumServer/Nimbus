@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="VintagestoryAPI" HintPath="..\..\bin\$(Configuration)\net10.0\VintagestoryAPI.dll" Private="false" />
+    <Reference Include="protobuf-net" HintPath="..\..\.vanilla\Lib\protobuf-net.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nimbus.Shared\Nimbus.Shared.csproj" Private="false" />
+  </ItemGroup>
+</Project>

@@ -15,14 +15,17 @@ public sealed class TransferIntentStore
     public TransferIntent Add(TransferIntentRequest req)
     {
         int ttl = req.TtlSeconds <= 0 ? 30 : Math.Min(req.TtlSeconds, 300);
+        string intentId = string.IsNullOrWhiteSpace(req.ClientTransferId) ? NewId() : req.ClientTransferId.Trim();
         var intent = new TransferIntent
         {
-            Id = NewId(),
+            Id = intentId,
+            ClientTransferId = intentId,
             PlayerUid = req.PlayerUid,
             PlayerName = req.PlayerName ?? "",
             SourceServerId = req.SourceServerId ?? "",
             TargetServerId = req.TargetServerId,
             Mode = string.IsNullOrEmpty(req.Mode) ? "redirect" : req.Mode,
+            ClientSupportsSeamlessTransfers = req.ClientSupportsSeamlessTransfers,
             Reason = req.Reason,
             ExpiresAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + ttl,
             RequestedBy = req.RequestedBy ?? "",

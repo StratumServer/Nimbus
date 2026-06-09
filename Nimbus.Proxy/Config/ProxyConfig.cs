@@ -18,6 +18,8 @@ namespace Nimbus.Proxy;
 //   [transfers]
 //   default_mode = "redirect"
 //   allow_seamless = false
+//   require_seamless_capability = true
+//   fallback_to_redirect_when_seamless_unavailable = true
 //
 //   [admin]
 //   bind = "127.0.0.1:42499"
@@ -53,6 +55,8 @@ internal sealed class ProxyConfig
     public RegistryConfig Registry { get; set; } = new();
     public LoggingConfig Logging { get; set; } = new();
     public MetricsConfig Metrics { get; set; } = new();
+    public StatusConfig Status { get; set; } = new();
+    public PluginsConfig Plugins { get; set; } = new();
     public PersistenceConfig Persistence { get; set; } = new();
     public AdvancedConfig Advanced { get; set; } = new();
 
@@ -128,14 +132,21 @@ internal sealed class BackendEndpoint
 
 internal sealed class TransfersConfig
 {
-    // "redirect" (vanilla reconnect, needs RedirectFix client mod) or "seamless" (mid-session
-    // splice, needs the Nimbus client+server mod).
+    // "redirect" is vanilla reconnect. "seamless" is the Nimbus visual handoff path.
     public string DefaultMode { get; set; } = "redirect";
 
-    // Master switch for seamless transfers. Off by default until the Nimbus mod exists. Even
-    // when true, a seamless transfer to a backend that doesn't speak the Nimbus mod protocol
-    // tends to corrupt world state on the client.
+    // Master switch for the optional Nimbus client/server mod transfer path.
     public bool AllowSeamless { get; set; } = false;
+
+    // Keep seamless tied to the optional Nimbus mod handshake.
+    public bool RequireSeamlessCapability { get; set; } = true;
+
+    // Redirect is the production fallback when seamless was requested but the client did not
+    // prove it can handle the optional Nimbus path.
+    public bool FallbackToRedirectWhenSeamlessUnavailable { get; set; } = true;
+
+    // Re-enables the old live TCP splice experiment. Leave this off for normal servers.
+    public bool EnableUnsafeSeamlessSplice { get; set; } = false;
 }
 
 internal sealed class AdminConfig
@@ -207,6 +218,28 @@ internal sealed class MetricsConfig
     public bool Enabled { get; set; } = true;
     public string Bind { get; set; } = "http://127.0.0.1:42500";
     public string Path { get; set; } = "/metrics";
+}
+
+internal sealed class StatusConfig
+{
+    public bool Enabled { get; set; } = true;
+    public string Name { get; set; } = "Nimbus";
+    public string Motd { get; set; } = "Vintage Story proxy";
+    public string GameMode { get; set; } = "survival";
+    public bool Password { get; set; } = false;
+    public string ServerVersion { get; set; } = "";
+    public int MaxPlayers { get; set; } = 100;
+    public int QueryTimeoutMs { get; set; } = 1500;
+}
+
+internal sealed class PluginsConfig
+{
+    public bool Enabled { get; set; } = true;
+
+    // Relative paths resolve next to the proxy executable.
+    public string Directory { get; set; } = "plugins";
+
+    public List<string> Disabled { get; set; } = new();
 }
 
 internal sealed class PersistenceConfig

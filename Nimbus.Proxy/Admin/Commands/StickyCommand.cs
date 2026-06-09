@@ -3,6 +3,7 @@ namespace Nimbus.Proxy;
 internal sealed class StickyCommand : IAdminCommand
 {
     public string Name => "sticky";
+    public IReadOnlyList<string> Aliases => new[] { "stickies" };
     public string Permission => "nimbus.command.sticky";
     public string Summary => "list staged sticky reconnect routes";
     public string Usage => "sticky";

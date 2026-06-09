@@ -1,10 +1,12 @@
 bin/
 obj/
+docs/
 *.user
 *.suo
 .vs/
 .idea/
 *.lscache
+deploy.ps1
 
 # Local configs
 nimbus.registry.json
@@ -19,3 +21,6 @@ nimbus.drain-state.json.tmp
 # Not shipped with this repo
 Nimbus.SmokeTest/
 RedirectFix/
+Nimbus.Client/
+Nimbus.Tests/
+Nimbus.Cli/

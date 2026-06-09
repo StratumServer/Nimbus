@@ -24,13 +24,14 @@ internal static class Program
 
         try
         {
-            string cmd = rest[0];
+            string cmd = NormalizeCommand(rest[0]);
             object payload = cmd switch
             {
                 "ping"    => new { cmd = "ping" },
                 "help"    => new { cmd = "help" },
                 "list"    => new { cmd = "list" },
                 "status"  => BuildStatus(rest),
+                "plugins" => new { cmd = "plugins" },
                 "kick"    => BuildKick(rest),
                 "servers" => BuildServers(rest),
                 "swap"    => BuildSwap(rest),
@@ -177,6 +178,21 @@ internal static class Program
 
     private static bool IsHelp(string s) => s is "-h" or "--help" or "help";
 
+    private static string NormalizeCommand(string cmd) => cmd switch
+    {
+        "?" => "help",
+        "ls" or "players" => "list",
+        "inspect" => "status",
+        "plugin" => "plugins",
+        "drop" => "kick",
+        "serverlist" => "servers",
+        "send" or "transfer" => "swap",
+        "stickies" => "sticky",
+        "routes" => "route",
+        "resume" => "undrain",
+        _ => cmd,
+    };
+
     private static long RequiredLong(List<string> args, int idx, string label)
     {
         if (args.Count <= idx) throw new ArgumentException($"missing {label}");
@@ -226,12 +242,13 @@ internal static class Program
         Console.WriteLine("  help                                    list admin commands and permissions");
         Console.WriteLine("  list                                    list active sessions");
         Console.WriteLine("  status <id>                             session detail (uid, phase, captured ident)");
+        Console.WriteLine("  plugins                                 list loaded plugins");
         Console.WriteLine("  kick <id>                               force-close a session");
         Console.WriteLine("  servers [--refresh]                     dump registry snapshot");
         Console.WriteLine("  swap <id> --server <serverId> [--reason \"...\"] [--redirect|--seamless]");
         Console.WriteLine("  swap <id> --host <h> --port <p> [--reason \"...\"] [--redirect|--seamless]");
         Console.WriteLine("      default mode is --redirect (forge Packet_ServerRedirect, client reconnects).");
-        Console.WriteLine("      --seamless   : in-place TCP swap. Requires transfers.allow_seamless on the proxy.");
+        Console.WriteLine("      --seamless   : optional Nimbus mod path. Falls back to redirect unless capable.");
         Console.WriteLine("                     --splice is accepted as a deprecated alias.");
         Console.WriteLine("  sticky                                  list staged sticky reconnect routes");
         Console.WriteLine("  route                                   show backend pool + health + drain state");

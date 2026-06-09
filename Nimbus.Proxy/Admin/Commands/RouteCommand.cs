@@ -5,6 +5,7 @@ namespace Nimbus.Proxy;
 internal sealed class RouteCommand : IAdminCommand
 {
     public string Name => "route";
+    public IReadOnlyList<string> Aliases => new[] { "routes" };
     public string Permission => "nimbus.command.route";
     public string Summary => "show configured route pool and health";
     public string Usage => "route";

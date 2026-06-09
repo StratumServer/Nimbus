@@ -2,7 +2,6 @@ using System.Text;
 
 namespace Nimbus.Proxy;
 
-// This likely needs removed or redone
 internal static class DisconnectBuilder
 {
     public static byte[] BuildDisconnectFrame(string reason)

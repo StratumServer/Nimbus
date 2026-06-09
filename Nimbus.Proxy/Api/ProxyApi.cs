@@ -43,7 +43,7 @@ internal sealed class ProxyApi : IProxyApi
         // Fall back to the static config pool so plugins still work without Nimbus enabled.
         foreach (var ep in proxy.Cfg.Backends())
             if (string.Equals(ep.ServerId, serverId, StringComparison.OrdinalIgnoreCase))
-                return ServerInfo.From(ep);
+                return ep.ToServerInfo();
         return null;
     }
 

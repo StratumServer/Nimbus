@@ -3,6 +3,7 @@ namespace Nimbus.Proxy;
 internal sealed class ListCommand : IAdminCommand
 {
     public string Name => "list";
+    public IReadOnlyList<string> Aliases => new[] { "ls", "players" };
     public string Permission => "nimbus.command.list";
     public string Summary => "list active sessions";
     public string Usage => "list";

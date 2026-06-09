@@ -6,7 +6,7 @@ internal sealed class ProxyRuntime : IDisposable
     private readonly UdpRelay udp;
     private readonly AdminListener admin;
     private readonly MetricsEndpoint metrics;
-    private readonly PluginLoader plugins = new();
+    private readonly PluginLoader plugins;
 
     public ProxyRuntime(ProxyConfig cfg, CancellationToken stopToken, IRegistryClient? registry)
     {
@@ -16,10 +16,15 @@ internal sealed class ProxyRuntime : IDisposable
 
         listener = new ProxyListener(cfg, stopToken, registry, drainStore);
         udp = new UdpRelay(cfg, stopToken, listener.UdpOverrides);
-        admin = new AdminListener(cfg, listener, stopToken);
+        plugins = new PluginLoader(new PluginLoaderOptions
+        {
+            Enabled = cfg.Plugins.Enabled,
+            DisabledIds = cfg.Plugins.Disabled,
+        });
+        admin = new AdminListener(cfg, listener, stopToken, () => plugins.Loaded);
         metrics = new MetricsEndpoint(cfg.Metrics, stopToken);
 
-        var pluginsDir = Path.Combine(AppContext.BaseDirectory, "plugins");
+        var pluginsDir = ResolveStatePath(cfg.Plugins.Directory);
         try { plugins.LoadAll(pluginsDir, new ProxyApi(listener)); }
         catch (Exception ex) { Log.Warn($"plugins: discovery failed: {ex.Message}"); }
     }

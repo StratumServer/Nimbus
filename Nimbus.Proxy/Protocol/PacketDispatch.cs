@@ -157,6 +157,7 @@ internal static class PacketDispatch
         2  => "PingReply",
         11 => "RequestJoin",
         14 => "Leave",
+        15 => "ServerQuery",
         26 => "ClientLoaded",
         29 => "ClientPlaying",
         33 => "LoginTokenQuery",

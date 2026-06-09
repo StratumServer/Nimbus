@@ -8,11 +8,10 @@ namespace Nimbus.Proxy;
 //   - Client connects, ProxySession is created.
 //   - RunAsync opens the initial upstream and runs c->s and s->c byte pumps until either
 //     side closes or one of the transfer requests fires.
-//   - On a seamless transfer the upstream is swapped under the client. The client TCP never
-//     sees a FIN. See ProxySession.Seamless.cs.
-//   - On a redirect the proxy forges a Packet_ServerRedirect to the client and closes. The
-//     client reconnects through the proxy and is routed to the target by sticky route. See
-//     ProxySession.Redirect.cs.
+//   - On redirect, the proxy forges a Packet_ServerRedirect and closes. The reconnect is
+//     routed by sticky UID before the new upstream is opened.
+//   - On seamless, the normal path uses the same safe redirect underneath while Nimbus.Client
+//     hides the VS loading UI. Raw upstream splice lives behind an unsafe config flag.
 internal sealed partial class ProxySession : IPlayer
 {
     public long Id { get; }
@@ -38,12 +37,17 @@ internal sealed partial class ProxySession : IPlayer
     private byte[]? capturedIdentification;
     private string? capturedPlayerUid;
     private string? capturedPlayerName;
+    private volatile bool seamlessCapable;
     private readonly object swapLock = new();
     private volatile bool swapping;
     private volatile bool closed;
 
     private long c2sBytes;
     private long s2cBytes;
+
+    // Initial-join reservation state for the currently connected backend:
+    //   0 = pending, 1 = done (or not needed), 2 = failed terminal.
+    private int initialReservationState;
 
     public ProxySession(long id, ProxyConfig cfg, TcpClient client, CancellationToken stopToken,
         StickyRouteTable? stickies = null, IRegistryClient? registry = null, UdpRouteOverrides? udpOverrides = null,
@@ -60,8 +64,8 @@ internal sealed partial class ProxySession : IPlayer
         this.udpOverrides = udpOverrides;
         this.events = events;
 
-        // Sniffers always run on the client-side stream so they can capture the Identification
-        // frame even when SniffFrames is disabled in config (we need the bytes for seamless).
+        // Sniffers always run on the client stream so registry-backed joins and transfers have
+        // the player UID even when SniffFrames is disabled.
         this.state = new SessionState(id);
         this.sniffC2S = new FrameSniffer(id, "c->s", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffS2C = new FrameSniffer(id, "s->c", state) { Verbose = cfg.Logging.SniffFrames };
@@ -73,29 +77,64 @@ internal sealed partial class ProxySession : IPlayer
     public string? PlayerUid => capturedPlayerUid;
     public string? PlayerName => capturedPlayerName;
     public bool HasIdentification => capturedIdentification != null;
+    public bool SupportsSeamlessTransfers => seamlessCapable;
     public string ClientRemote => client.Client.RemoteEndPoint?.ToString() ?? "?";
 
     // IPlayer surface (aliases over the existing internal fields so handlers get a stable API).
     string? IPlayer.Uid => capturedPlayerUid;
     string? IPlayer.Name => capturedPlayerName;
-    IServerInfo? IPlayer.CurrentServer => currentBackend == null ? null : ServerInfo.From(currentBackend);
+    IServerInfo? IPlayer.CurrentServer => currentBackend == null ? null : currentBackend.ToServerInfo();
+    bool IPlayer.SupportsSeamlessTransfers => SupportsSeamlessTransfers;
 
     Task<string?> IPlayer.TransferAsync(IServerInfo target, string? reason)
         => ((IPlayer)this).TransferAsync(target, cfg.Transfers.DefaultMode, reason);
 
     async Task<string?> IPlayer.TransferAsync(IServerInfo target, string mode, string? reason)
+        => (await RequestTransferAsync(target.ToEndpoint(), mode, registry, reason, cfg.Registry.FailOnError).ConfigureAwait(false)).failReason;
+
+    internal async Task<(string modeUsed, string? failReason)> RequestTransferAsync(BackendEndpoint target, string mode,
+        IRegistryClient? registry = null, string? reason = null, bool failOnRegistryError = true)
     {
-        var ep = (target as ServerInfo)?.ToEndpoint()
-                 ?? new BackendEndpoint { Host = target.Host, Port = target.Port, ServerId = target.ServerId };
         string normalized = string.Equals(mode, "splice", StringComparison.OrdinalIgnoreCase) ? "seamless" : mode;
         if (string.Equals(normalized, "seamless", StringComparison.OrdinalIgnoreCase))
         {
-            if (!cfg.Transfers.AllowSeamless) return "seamless transfers disabled in config";
-            return await RequestSeamlessAsync(ep, registry, reason, cfg.Registry.FailOnError).ConfigureAwait(false);
+            if (!cfg.Transfers.AllowSeamless)
+                return ("seamless", "seamless transfers disabled in config");
+
+            if (Phase != SessionState.Phase.Ready)
+                return ("seamless", $"seamless requires a fully joined session (phase=Ready). current phase={Phase}");
+
+            if (cfg.Transfers.RequireSeamlessCapability && !SupportsSeamlessTransfers)
+            {
+                if (!cfg.Transfers.FallbackToRedirectWhenSeamlessUnavailable)
+                    return ("seamless", "client has not advertised Nimbus seamless capability");
+
+                Log.Warn($"[s{Id}] seamless requested but client has no Nimbus capability; falling back to redirect");
+                var redirectFail = await RequestRedirectAsync(target, registry,
+                    reason ?? "seamless unavailable, redirect fallback", failOnRegistryError).ConfigureAwait(false);
+                return ("redirect", redirectFail);
+            }
+
+            if (!cfg.Transfers.EnableUnsafeSeamlessSplice)
+            {
+                Log.Info($"[s{Id}] seamless requested; using visual redirect path (raw splice disabled)");
+                var redirectFail = await RequestRedirectAsync(target, registry,
+                    reason ?? "seamless visual redirect", failOnRegistryError).ConfigureAwait(false);
+                return ("seamless", redirectFail);
+            }
+
+            return ("seamless", await RequestSeamlessAsync(target, registry, reason, failOnRegistryError).ConfigureAwait(false));
         }
         if (string.Equals(normalized, "redirect", StringComparison.OrdinalIgnoreCase))
-            return await RequestRedirectAsync(ep, registry, reason, cfg.Registry.FailOnError).ConfigureAwait(false);
-        return $"unknown transfer mode '{mode}'";
+            return ("redirect", await RequestRedirectAsync(target, registry, reason, failOnRegistryError).ConfigureAwait(false));
+        return (normalized, $"unknown transfer mode '{mode}'");
+    }
+
+    internal void MarkSeamlessCapable()
+    {
+        if (seamlessCapable) return;
+        seamlessCapable = true;
+        Log.Info($"[s{Id}] Nimbus seamless capability detected");
     }
 
     void IPlayer.Disconnect(string? reason)
@@ -135,20 +174,33 @@ internal sealed partial class ProxySession : IPlayer
 
     private void OnClientFrame(string name, ReadOnlyMemory<byte> raw)
     {
-        if (capturedIdentification != null) return;
         if (name != "Identification") return;
 
-        capturedIdentification = raw.ToArray();
-        if (!IdentificationParser.TryExtract(capturedIdentification, out var uid, out var pname))
+        CaptureIdentification(raw.Span, source: "sniffer");
+    }
+
+    private bool CaptureIdentification(ReadOnlySpan<byte> raw, string source)
+    {
+        if (capturedIdentification != null) return true;
+
+        var frame = raw.ToArray();
+        if (!IdentificationParser.TryExtract(frame, out var uid, out var pname))
         {
-            Log.Warn($"[s{Id}] captured Identification frame ({capturedIdentification.Length} bytes) but could not parse PlayerUID, registry-backed transfers disabled for this session");
-            return;
+            Log.Warn($"[s{Id}] captured Identification frame from {source} ({frame.Length} bytes) but could not parse PlayerUID, registry-backed transfers disabled for this session");
+            return false;
         }
 
+        capturedIdentification = frame;
         capturedPlayerUid = uid;
         capturedPlayerName = pname;
-        Log.Info($"[s{Id}] captured Identification frame ({capturedIdentification.Length} bytes) player='{pname}' uid={uid}");
+        Log.Info($"[s{Id}] captured Identification frame from {source} ({capturedIdentification.Length} bytes) player='{pname}' uid={uid}");
 
+        TryConsumeStickyRoute(uid);
+        return true;
+    }
+
+    private void TryConsumeStickyRoute(string uid)
+    {
         if (stickies == null || string.IsNullOrEmpty(uid)) return;
         if (!stickies.TryConsume(uid, out var stickyTarget, out var stickyReason)) return;
 
@@ -169,13 +221,13 @@ internal sealed partial class ProxySession : IPlayer
                 var fail = await RequestSeamlessAsync(stickyTarget, registry,
                     $"sticky reconnect: {stickyReason}", failOnRegistryError: false).ConfigureAwait(false);
                 if (fail != null)
-                    Log.Warn($"[s{Id}] sticky reconnect splice failed: {fail} (session will continue on default backend)");
+                    Log.Warn($"[s{Id}] sticky reconnect transfer failed: {fail} (session will continue on default backend)");
             }
-            catch (Exception ex) { Log.Warn($"[s{Id}] sticky reconnect splice crashed: {ex.Message}"); }
+            catch (Exception ex) { Log.Warn($"[s{Id}] sticky reconnect transfer crashed: {ex.Message}"); }
         }, sessionStopToken);
     }
 
-    public async Task RunAsync(IReadOnlyList<BackendEndpoint> tryOrder)
+    public async Task RunAsync(IReadOnlyList<BackendEndpoint> tryOrder, ReadOnlyMemory<byte> firstClientFrame = default)
     {
         var remote = client.Client.RemoteEndPoint?.ToString() ?? "?";
         Log.Info($"[s{Id}] client connected from {remote}");
@@ -187,7 +239,7 @@ internal sealed partial class ProxySession : IPlayer
             string? lastFailReason = null;
             for (int i = 0; i < tryOrder.Count; i++)
             {
-                var (ok, cancelled, reason) = await ConnectUpstreamAsync(tryOrder[i]).ConfigureAwait(false);
+                var (ok, cancelled, reason) = await ConnectUpstreamAsync(tryOrder[i], firstClientFrame).ConfigureAwait(false);
                 if (ok) { connected = true; break; }
                 lastFailReason = reason;
                 if (cancelled) break;
@@ -209,7 +261,7 @@ internal sealed partial class ProxySession : IPlayer
                 return;
             }
 
-            // Loop: run pumps until they exit. A seamless transfer restarts them on a new upstream.
+            // Loop until the pumps exit. The unsafe splice path restarts them on a new upstream.
             while (!sessionStopToken.IsCancellationRequested && !closed)
             {
                 await Task.WhenAll(SafeAwait(pumpC2S!), SafeAwait(pumpS2C!)).ConfigureAwait(false);
@@ -244,22 +296,36 @@ internal sealed partial class ProxySession : IPlayer
     // Single-target convenience. Kept for callers that already have one endpoint in hand.
     public Task RunAsync(BackendEndpoint initial) => RunAsync(new[] { initial });
 
-    private async Task<(bool ok, bool cancelled, string? reason)> ConnectUpstreamAsync(BackendEndpoint target)
+    private async Task<(bool ok, bool cancelled, string? reason)> ConnectUpstreamAsync(BackendEndpoint target, ReadOnlyMemory<byte> firstClientFrame)
     {
         // ServerPreConnect: handlers can swap target or cancel before we open the socket.
         if (events != null)
         {
-            var pre = new ServerPreConnectEvent(this, ServerInfo.From(target), reason: "initial connect");
+            var pre = new ServerPreConnectEvent(this, target.ToServerInfo(), reason: "initial connect");
             await events.FireAsync(pre).ConfigureAwait(false);
             if (pre.IsCancelled)
             {
                 Log.Warn($"[s{Id}] initial upstream cancelled by handler: {pre.CancelReason}");
                 return (false, true, pre.CancelReason ?? "cancelled");
             }
-            if (pre.Target is ServerInfo si) target = si.ToEndpoint();
+            target = pre.Target.ToEndpoint();
         }
 
-        var previous = currentBackend == null ? null : ServerInfo.From(currentBackend);
+        if (!firstClientFrame.IsEmpty)
+        {
+            CaptureIdentification(firstClientFrame.Span, source: "first frame");
+            // If the first frame already contained Identification, prime the reservation
+            // before replaying bytes upstream. Missing UID here is non-fatal; the c->s pump
+            // retries as soon as it captures Identification from later frames.
+            var mintFail = await EnsureInitialReservationAsync(target, "initial connect").ConfigureAwait(false);
+            if (mintFail != null)
+            {
+                Log.Warn($"[s{Id}] initial reservation mint failed for {target}: {mintFail}");
+                return (false, true, mintFail);
+            }
+        }
+
+        var previous = currentBackend == null ? null : currentBackend.ToServerInfo();
         var up = new TcpClient { NoDelay = true };
         using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
         connectCts.CancelAfter(cfg.Advanced.ConnectTimeoutMs);
@@ -281,6 +347,12 @@ internal sealed partial class ProxySession : IPlayer
             try { up.Close(); } catch { }
             return (false, false, $"{target}: PROXY v2 header write failed");
         }
+        if (!await TryWriteFirstClientFrameAsync(up, firstClientFrame).ConfigureAwait(false))
+        {
+            ProxyMetrics.BackendConnectFailure();
+            try { up.Close(); } catch { }
+            return (false, false, $"{target}: first client frame write failed");
+        }
         ProxyMetrics.BackendConnectSuccess();
         Log.Info($"[s{Id}] upstream connected to {target}");
         upstream = up;
@@ -289,7 +361,7 @@ internal sealed partial class ProxySession : IPlayer
         StartPumps();
         if (events != null)
         {
-            try { await events.FireAsync(new ServerPostConnectEvent(this, ServerInfo.From(target), previous)).ConfigureAwait(false); }
+            try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
             catch { }
         }
         return (true, false, null);
@@ -305,6 +377,22 @@ internal sealed partial class ProxySession : IPlayer
                 udpOverrides.Set(ep.Address, target);
         }
         catch { }
+    }
+
+    private async Task<bool> TryWriteFirstClientFrameAsync(TcpClient up, ReadOnlyMemory<byte> frame)
+    {
+        if (frame.IsEmpty) return true;
+        try
+        {
+            await up.GetStream().WriteAsync(frame, sessionStopToken).ConfigureAwait(false);
+            sniffC2S?.OnBytes(frame.Span);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[s{Id}] failed to replay first client frame: {ex.Message}");
+            return false;
+        }
     }
 
     // PROXY v2 has to be the first upstream bytes.
@@ -354,12 +442,30 @@ internal sealed partial class ProxySession : IPlayer
                 if (read <= 0) break;
 
                 total += read;
+
+                // Parse c->s frames before forwarding so we can mint the initial
+                // reservation as soon as Identification is captured.
+                if (isC2S)
+                {
+                    sniffer?.OnBytes(new ReadOnlySpan<byte>(buf, 0, read));
+                    if (initialReservationState == 0)
+                    {
+                        var mintFail = await EnsureInitialReservationAsync(currentBackend, "initial connect (stream)").ConfigureAwait(false);
+                        if (mintFail != null)
+                        {
+                            Log.Warn($"[s{Id}] closing session after reservation prime failed: {mintFail}");
+                            break;
+                        }
+                    }
+                }
+
                 try { await to.WriteAsync(buf.AsMemory(0, read), token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
                 catch (IOException) { break; }
                 catch (ObjectDisposedException) { break; }
 
-                sniffer?.OnBytes(new ReadOnlySpan<byte>(buf, 0, read));
+                if (!isC2S)
+                    sniffer?.OnBytes(new ReadOnlySpan<byte>(buf, 0, read));
             }
         }
         finally
@@ -368,6 +474,30 @@ internal sealed partial class ProxySession : IPlayer
             if (isC2S) ProxyMetrics.AddBytes(total, 0); else ProxyMetrics.AddBytes(0, total);
             Log.Trace($"[s{Id}] {label} pump exited ({total} bytes this segment)");
         }
+    }
+
+    private async Task<string?> EnsureInitialReservationAsync(BackendEndpoint? target, string reason)
+    {
+        if (initialReservationState != 0) return null;
+        if (target == null)
+            return null;
+        if (registry == null || string.IsNullOrEmpty(target.ServerId))
+        {
+            initialReservationState = 1;
+            return null;
+        }
+        if (string.IsNullOrEmpty(capturedPlayerUid))
+            return null; // wait until Identification is captured
+
+        var mintFail = await MintReservationIfPossibleAsync(target, registry, reason, cfg.Registry.FailOnError).ConfigureAwait(false);
+        if (mintFail != null)
+        {
+            initialReservationState = 2;
+            return mintFail;
+        }
+
+        initialReservationState = 1;
+        return null;
     }
 
     private static async Task SafeAwait(Task t) { try { await t.ConfigureAwait(false); } catch { } }

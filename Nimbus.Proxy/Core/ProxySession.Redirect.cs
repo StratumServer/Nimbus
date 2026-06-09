@@ -7,9 +7,6 @@ namespace Nimbus.Proxy;
 // proxy and a staged sticky route sends it to `target`. Works against any backend that
 // supports the vanilla redirect packet, and requires the RedirectFix client mod to avoid the
 // vanilla ExitAndSwitchServer crash.
-//
-// Resets the client's world state. For mid-session swaps without a teardown, see
-// RequestSeamlessAsync.
 internal sealed partial class ProxySession
 {
     public async Task<string?> RequestRedirectAsync(BackendEndpoint target, IRegistryClient? registry = null,
@@ -32,10 +29,8 @@ internal sealed partial class ProxySession
         var mintFail = await MintReservationIfPossibleAsync(target, registry, reason ?? "proxy redirect", failOnRegistryError).ConfigureAwait(false);
         if (mintFail != null) { ProxyMetrics.RedirectFailed(); return mintFail; }
 
-        // Stage a sticky route on the proxy's PlayerUID->target table. Required because the
-        // RedirectFix client mod (Harmony patch on ClientMain.ExitAndSwitchServer) routes the
-        // reconnect through the cached connectData (this proxy's address), not the redirect
-        // frame's target host. OnClientFrame's sticky lookup picks it up on the next session.
+        // RedirectFix reconnects through the cached proxy address. The next session consumes
+        // this UID route before choosing a backend.
         if (stickies != null && !string.IsNullOrEmpty(capturedPlayerUid))
         {
             var stickyTtl = TimeSpan.FromMinutes(5);

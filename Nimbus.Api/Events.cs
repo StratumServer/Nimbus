@@ -1,10 +1,7 @@
 namespace Nimbus.Proxy;
 
-// Event handlers can mutate settable properties before the proxy acts on them.
 public abstract class ProxyEvent { }
 
-// Fired after the client TCP is accepted but before any backend connect attempt.
-// Handlers can call Deny(reason) to refuse the connection (the proxy will close the socket).
 public sealed class PlayerConnectEvent : ProxyEvent
 {
     public IPlayer Player { get; }
@@ -16,8 +13,6 @@ public sealed class PlayerConnectEvent : ProxyEvent
     public void Deny(string reason) { IsDenied = true; DenyReason = reason; }
 }
 
-// Fired right before the proxy opens the first upstream for a session.
-// Plugins can pick a different first target or cancel the login.
 public sealed class PlayerChooseInitialServerEvent : ProxyEvent
 {
     public IPlayer Player { get; }
@@ -34,8 +29,6 @@ public sealed class PlayerChooseInitialServerEvent : ProxyEvent
     public void Cancel(string reason) { IsCancelled = true; CancelReason = reason; }
 }
 
-// Fired before each upstream connect attempt (initial connect and every transfer).
-// Handlers may swap Target to redirect, or call Cancel(reason) to abort the connect.
 public sealed class ServerPreConnectEvent : ProxyEvent
 {
     public IPlayer Player { get; }
@@ -56,7 +49,6 @@ public sealed class ServerPreConnectEvent : ProxyEvent
     public void Cancel(string reason) { IsCancelled = true; CancelReason = reason; }
 }
 
-// Fired after a successful upstream connect (initial or transfer).
 public sealed class ServerPostConnectEvent : ProxyEvent
 {
     public IPlayer Player { get; }
@@ -71,7 +63,6 @@ public sealed class ServerPostConnectEvent : ProxyEvent
     }
 }
 
-// Fired after the player's session has been closed.
 public sealed class PlayerDisconnectEvent : ProxyEvent
 {
     public IPlayer Player { get; }

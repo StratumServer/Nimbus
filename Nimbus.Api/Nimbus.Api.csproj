@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Nimbus.Proxy</RootNamespace>
+    <AssemblyName>Nimbus.Api</AssemblyName>
+  </PropertyGroup>
+</Project>

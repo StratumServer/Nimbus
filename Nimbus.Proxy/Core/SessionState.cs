@@ -32,6 +32,7 @@ internal sealed class SessionState
             if (packetName == "Identification" && phase == Phase.TcpOpen) next = Phase.IdentSent;
             else if (packetName.StartsWith("Id=11(", StringComparison.Ordinal)) next = Phase.JoinRequested; // RequestJoin (bare-Id form)
             else if (packetName == "RequestJoin") next = Phase.JoinRequested;
+            else if (packetName == "ClientPlaying" || packetName.StartsWith("Id=29(", StringComparison.Ordinal)) next = Phase.Ready;
             else if (packetName == "Leave" || packetName.StartsWith("Id=14(", StringComparison.Ordinal)) next = Phase.Disconnecting;
         }
         else

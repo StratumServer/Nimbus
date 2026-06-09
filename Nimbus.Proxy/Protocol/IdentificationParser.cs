@@ -27,11 +27,13 @@ internal static class IdentificationParser
 
         var payload = rawFrame.Slice(4, payloadLen);
 
-        // Outer envelope: walk fields, find field 2 (Identification, wire type 2).
-        // Be tolerant of field order.
-        if (!FindNestedField2(payload, out var ident)) return false;
+        // Preferred path: outer envelope field 2 contains Packet_ClientIdentification.
+        // Some forks/dev builds flatten this once, so fall back to parsing the payload
+        // directly as an Identification body.
+        if (FindNestedField2(payload, out var ident) && ParseIdentBody(ident, out playerUid, out playerName))
+            return true;
 
-        return ParseIdentBody(ident, out playerUid, out playerName);
+        return ParseIdentBody(payload, out playerUid, out playerName);
     }
 
     private static bool FindNestedField2(ReadOnlySpan<byte> body, out ReadOnlySpan<byte> nested)

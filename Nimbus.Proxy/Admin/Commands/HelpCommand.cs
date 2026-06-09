@@ -3,6 +3,7 @@ namespace Nimbus.Proxy;
 internal sealed class HelpCommand : IAdminCommand
 {
     public string Name => "help";
+    public IReadOnlyList<string> Aliases => new[] { "?" };
     public string Permission => "nimbus.command.help";
     public string Summary => "list admin commands";
     public string Usage => "help";
@@ -15,6 +16,7 @@ internal sealed class HelpCommand : IAdminCommand
             .Select(c => new
             {
                 name = c.Name,
+                aliases = c.Aliases,
                 permission = c.Permission,
                 summary = c.Summary,
                 usage = c.Usage,

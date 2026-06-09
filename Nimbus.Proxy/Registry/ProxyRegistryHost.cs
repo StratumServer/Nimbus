@@ -82,7 +82,14 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
 
             var app = builder.Build();
             app.UseNimbusRegistry();
-            _ = HostingAbstractionsHostExtensions.RunAsync(app, stopToken);
+            try
+            {
+                app.StartAsync(stopToken).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"embedded registry failed to start on '{cfg.Registry.EmbeddedBind}': {ex.Message}", ex);
+            }
             Log.Info($"registry: embedded http bind={cfg.Registry.EmbeddedBind} proxy_id={cfg.Registry.ProxyId}");
 
             var backends = app.Services.GetRequiredService<BackendRegistry>();

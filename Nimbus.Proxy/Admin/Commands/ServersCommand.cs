@@ -3,6 +3,7 @@ namespace Nimbus.Proxy;
 internal sealed class ServersCommand : IAdminCommand
 {
     public string Name => "servers";
+    public IReadOnlyList<string> Aliases => new[] { "serverlist" };
     public string Permission => "nimbus.command.servers";
     public string Summary => "dump registry server snapshot";
     public string Usage => "servers [--refresh]";
@@ -10,7 +11,7 @@ internal sealed class ServersCommand : IAdminCommand
     public async Task<object> ExecuteAsync(AdminContext ctx)
     {
         if (ctx.Proxy.Registry == null) return new { ok = false, reason = "registry disabled" };
-        bool refresh = ctx.Request.TryGetProperty("refresh", out var rEl) && rEl.GetBoolean();
+        bool refresh = ctx.Request.Bool("refresh");
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.StopToken);
         cts.CancelAfter(TimeSpan.FromSeconds(ctx.Proxy.RegistryCfg.HttpTimeoutSeconds + 1));
         var snap = await ctx.Proxy.Registry.GetServersAsync(cts.Token, refresh).ConfigureAwait(false);

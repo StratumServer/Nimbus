@@ -2,16 +2,10 @@ using System.Net.Sockets;
 
 namespace Nimbus.Proxy;
 
-// Seamless transfer: dial a new upstream, replay the captured Identification, then atomically
-// swap the upstream socket out from under the live client. The client TCP never sees a FIN.
+// Live transfer path. The proxy dials the next backend, replays Identification, then swaps the
+// upstream socket while the client keeps its TCP connection open.
 //
-// Best-effort. In-flight client bytes between read+write may be dropped during the swap. The
-// intended use is right after the Identification exchange and before heavy gameplay traffic.
-//
-// In vanilla VS this is unsafe for full mid-session world handoff because the client retains
-// its old world/atlas state. The Nimbus client+server mod will gate world teardown so this
-// becomes the no-flicker transfer path. Until then it remains config-gated behind
-// `transfers.allow_seamless`.
+// This needs the Nimbus client mod for normal use. Unmodded clients should stay on redirect.
 internal sealed partial class ProxySession
 {
     public async Task<string?> RequestSeamlessAsync(BackendEndpoint target, IRegistryClient? registry = null,
@@ -46,7 +40,7 @@ internal sealed partial class ProxySession
         // ServerPreConnect: handlers can swap target or cancel before we open the new upstream.
         if (events != null)
         {
-            var pre = new ServerPreConnectEvent(this, ServerInfo.From(target), swapReason);
+            var pre = new ServerPreConnectEvent(this, target.ToServerInfo(), swapReason);
             await events.FireAsync(pre).ConfigureAwait(false);
             if (pre.IsCancelled)
             {
@@ -55,7 +49,7 @@ internal sealed partial class ProxySession
                 ProxyMetrics.SeamlessFailed();
                 return $"cancelled: {pre.CancelReason}";
             }
-            if (pre.Target is ServerInfo si) target = si.ToEndpoint();
+            target = pre.Target.ToEndpoint();
         }
 
         var mintFail = await MintReservationIfPossibleAsync(target, registry, swapReason ?? "proxy seamless", failOnRegistryError).ConfigureAwait(false);
@@ -98,9 +92,7 @@ internal sealed partial class ProxySession
             return $"write Identification failed: {ex.Message}";
         }
 
-        // Atomic swap: cancel old pumps first, wait for them to fully exit, then close the old
-        // upstream and start fresh pumps. Without this wait, the old s->c pump can interleave
-        // in-flight bytes with the new pump's writes, corrupting the client frame stream.
+        // Wait for the old pumps to stop before the new backend writes to the client stream.
         try { oldCts?.Cancel(); } catch { }
         try { oldUpstream?.Close(); } catch { }
         try
@@ -116,12 +108,12 @@ internal sealed partial class ProxySession
         }
         catch { }
 
-        var previous = oldUpstream != null && currentBackend != null ? ServerInfo.From(currentBackend) : null;
+        var previous = oldUpstream != null && currentBackend != null ? currentBackend.ToServerInfo() : null;
         upstream = newUp;
         currentBackend = target;
         UpdateUdpOverride(target);
         StartPumps();
-        // Release the flag AFTER new pumps are installed so RunAsync's spin-wait can re-await them.
+        // RunAsync starts waiting on the new pumps after this flips back.
         swapping = false;
 
         Log.Info($"[s{Id}] seamless complete; new upstream {target} is live");
@@ -129,7 +121,7 @@ internal sealed partial class ProxySession
         Log.Info($"[s{Id}] AUDIT op=seamless target={target} reason='{swapReason ?? ""}' uid={capturedPlayerUid ?? ""} result=ok duration_ms={sw.ElapsedMilliseconds}");
         if (events != null)
         {
-            try { await events.FireAsync(new ServerPostConnectEvent(this, ServerInfo.From(target), previous)).ConfigureAwait(false); }
+            try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
             catch { }
         }
         return null;

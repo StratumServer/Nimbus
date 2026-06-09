@@ -27,7 +27,7 @@ internal static class Program
                 return 2;
             }
             Log.Info($"config: bind {cfg.Bind}  servers={cfg.Servers.Count}  try=[{string.Join(",", cfg.Try)}]  logBytes={cfg.Logging.LogTrafficBytes}  verbose={cfg.Logging.Verbose}");
-            Log.Info($"transfers: default_mode={cfg.Transfers.DefaultMode}  allow_seamless={cfg.Transfers.AllowSeamless}");
+            Log.Info($"transfers: default_mode={cfg.Transfers.DefaultMode}  allow_seamless={cfg.Transfers.AllowSeamless}  require_capability={cfg.Transfers.RequireSeamlessCapability}  fallback_to_redirect={cfg.Transfers.FallbackToRedirectWhenSeamlessUnavailable}  unsafe_splice={cfg.Transfers.EnableUnsafeSeamlessSplice}");
         }
         catch (Exception ex) { Log.Error("config invalid: " + ex.Message); return 2; }
 

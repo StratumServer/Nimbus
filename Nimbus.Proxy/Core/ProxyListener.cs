@@ -35,6 +35,7 @@ internal sealed class ProxyListener
         this.stopToken = stopToken;
         Registry = registry;
         Router = new BackendRouter(cfg, registry, drainStore);
+        Events.WarningSink = Log.Warn;
     }
 
     public async Task RunAsync()
@@ -51,7 +52,8 @@ internal sealed class ProxyListener
         _ = Task.Run(() => new StickyRouteSweeper(Stickies, stopToken).RunAsync(), stopToken);
         if (Registry != null)
             _ = Task.Run(() => new TransferIntentDispatcher(cfg, Registry, Sessions, stopToken).RunAsync(), stopToken);
-        var sessionRunner = new ClientSessionRunner(Router, Events, stopToken);
+        var statusResponder = new ServerStatusResponder(cfg, Registry, () => Sessions.Count, stopToken);
+        var sessionRunner = new ClientSessionRunner(Router, Events, statusResponder, Stickies, cfg, stopToken);
 
         try
         {
