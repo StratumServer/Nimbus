@@ -31,6 +31,23 @@ internal sealed class NimbusRegistryClient : IDisposable
     public Task<TransferIntentResponse?> PostTransferIntentAsync(TransferIntentRequest request, CancellationToken ct)
         => PostJsonAsync<TransferIntentResponse>("api/transfer-intents", request, ct);
 
+    // Returns the full reservation (including real client IP/port) on success, null if none found.
+    public async Task<TransferReservation?> ConsumeReservationByUidAsync(string playerUid, string serverId, CancellationToken ct)
+    {
+        var path = $"api/reservations/consume-by-uid?uid={Uri.EscapeDataString(playerUid)}&target={Uri.EscapeDataString(serverId)}";
+        var result = await PostNoBodyAsync<ReservationResponse>(path, ct).ConfigureAwait(false);
+        return result?.Ok == true ? result.Reservation : null;
+    }
+
+    private async Task<T?> PostNoBodyAsync<T>(string path, CancellationToken ct) where T : class
+    {
+        using var msg = new HttpRequestMessage(HttpMethod.Post, path);
+        ApplySignedHeaders(msg, "POST", "/" + path, Array.Empty<byte>());
+        using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode) return null;
+        return await resp.Content.ReadFromJsonAsync<T>(cancellationToken: ct).ConfigureAwait(false);
+    }
+
     private async Task<T?> PostJsonAsync<T>(string path, object body, CancellationToken ct) where T : class
     {
         byte[] bodyBytes = JsonSerializer.SerializeToUtf8Bytes(body);
@@ -74,4 +91,5 @@ internal sealed class NimbusRegistryClient : IDisposable
     {
         http.Dispose();
     }
+
 }

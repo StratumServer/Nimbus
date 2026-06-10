@@ -24,8 +24,6 @@ internal sealed partial class ProxySession
         if (string.IsNullOrEmpty(target.Host)) { ProxyMetrics.RedirectFailed(); return "redirect target has empty host"; }
         if (target.Port <= 0 || target.Port > 65535) { ProxyMetrics.RedirectFailed(); return $"redirect target has invalid port {target.Port}"; }
 
-        Log.Info($"[s{Id}] REDIRECT -> {target} (phase {Phase}, reason='{reason ?? "<none>"}')");
-
         var mintFail = await MintReservationIfPossibleAsync(target, registry, reason ?? "proxy redirect", failOnRegistryError).ConfigureAwait(false);
         if (mintFail != null) { ProxyMetrics.RedirectFailed(); return mintFail; }
 
@@ -35,7 +33,6 @@ internal sealed partial class ProxySession
         {
             var stickyTtl = TimeSpan.FromMinutes(5);
             stickies.Stage(capturedPlayerUid!, target, stickyTtl, reason ?? "proxy redirect");
-            Log.Info($"[s{Id}] sticky route staged for uid={capturedPlayerUid} -> {target} (ttl {stickyTtl.TotalSeconds:F0}s)");
         }
         else
         {
@@ -56,7 +53,6 @@ internal sealed partial class ProxySession
         {
             await clientStream.WriteAsync(frame, sessionStopToken).ConfigureAwait(false);
             await clientStream.FlushAsync(sessionStopToken).ConfigureAwait(false);
-            Log.Info($"[s{Id}] redirect frame sent to client ({frame.Length}B) host='{hostString}' name='{displayName}'");
         }
         catch (Exception ex)
         {
@@ -70,7 +66,14 @@ internal sealed partial class ProxySession
         try { await Task.Delay(250, sessionStopToken).ConfigureAwait(false); } catch { }
         Close();
         ProxyMetrics.RedirectSucceeded();
-        Log.Info($"[s{Id}] AUDIT op=redirect target={target} reason='{reason ?? ""}' uid={capturedPlayerUid ?? ""} result=ok duration_ms={sw.ElapsedMilliseconds}");
+        var fromId = currentBackend != null ? (currentBackend.ServerId ?? currentBackend.ToString()) : "?";
+        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"}: {fromId} → {target.ServerId ?? target.ToString()} (redirect, {sw.ElapsedMilliseconds}ms)");
+        if (events != null)
+        {
+            var from = currentBackend?.ToServerInfo();
+            try { await events.FireAsync(new PlayerTransferredEvent(this, from, target.ToServerInfo(), "redirect")).ConfigureAwait(false); }
+            catch { }
+        }
         return null;
     }
 
@@ -113,7 +116,6 @@ internal sealed partial class ProxySession
             return null;
         }
 
-        Log.Info($"[s{Id}] reservation minted id={reservation.Id} target={reservation.TargetServerId} ttl={reservation.ExpiresAtUnix - DateTimeOffset.UtcNow.ToUnixTimeSeconds()}s");
         return null;
     }
 }

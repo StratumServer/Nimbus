@@ -45,7 +45,6 @@ internal sealed class ClientSessionRunner
             if (TryConsumeStickyRoute(firstFrame, out var stickyTarget, out var stickyReason))
             {
                 ordered = new[] { stickyTarget };
-                Log.Info($"[s{session.Id}] sticky reconnect route selected -> {stickyTarget} (reason='{stickyReason}')");
             }
             else
             {

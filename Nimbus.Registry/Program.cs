@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Logging;
+using Nimbus.Registry;
 using Nimbus.Shared;
 
 namespace Nimbus.Registry;
@@ -29,6 +31,11 @@ public static class Program
 
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseUrls(cfg.BindUrl);
+        builder.Logging.ClearProviders();
+        builder.Logging.SetMinimumLevel(LogLevel.Warning);
+        builder.Logging.AddFilter("Microsoft", LogLevel.None);
+        builder.Logging.AddFilter("System", LogLevel.None);
+        builder.Logging.AddProvider(new RegistryConsoleLoggerProvider());
         builder.AddNimbusRegistry(cfg);
 
         var app = builder.Build();

@@ -20,6 +20,8 @@ internal sealed partial class ProxySession : IPlayer
     private readonly TcpClient client;
     private readonly NetworkStream clientStream;
     private readonly CancellationToken sessionStopToken;
+    private readonly DateTimeOffset sessionStart = DateTimeOffset.UtcNow;
+    private readonly string clientRemote; // captured at construction — safe after socket close
     private readonly SessionState? state;
     private readonly FrameSniffer? sniffC2S;
     private readonly FrameSniffer? sniffS2C;
@@ -44,6 +46,7 @@ internal sealed partial class ProxySession : IPlayer
 
     private long c2sBytes;
     private long s2cBytes;
+    private volatile bool kickedByBackend;
 
     // Initial-join reservation state for the currently connected backend:
     //   0 = pending, 1 = done (or not needed), 2 = failed terminal.
@@ -59,6 +62,9 @@ internal sealed partial class ProxySession : IPlayer
         this.client.NoDelay = true;
         this.clientStream = client.GetStream();
         this.sessionStopToken = stopToken;
+        this.clientRemote = client.Client?.RemoteEndPoint is System.Net.IPEndPoint cep
+            ? (cep.Address.IsIPv4MappedToIPv6 ? cep.Address.MapToIPv4().ToString() : cep.Address.ToString())
+            : "?";
         this.stickies = stickies;
         this.registry = registry;
         this.udpOverrides = udpOverrides;
@@ -78,7 +84,7 @@ internal sealed partial class ProxySession : IPlayer
     public string? PlayerName => capturedPlayerName;
     public bool HasIdentification => capturedIdentification != null;
     public bool SupportsSeamlessTransfers => seamlessCapable;
-    public string ClientRemote => client.Client.RemoteEndPoint?.ToString() ?? "?";
+    public string ClientRemote => clientRemote;
 
     // IPlayer surface (aliases over the existing internal fields so handlers get a stable API).
     string? IPlayer.Uid => capturedPlayerUid;
@@ -117,7 +123,6 @@ internal sealed partial class ProxySession : IPlayer
 
             if (!cfg.Transfers.EnableUnsafeSeamlessSplice)
             {
-                Log.Info($"[s{Id}] seamless requested; using visual redirect path (raw splice disabled)");
                 var redirectFail = await RequestRedirectAsync(target, registry,
                     reason ?? "seamless visual redirect", failOnRegistryError).ConfigureAwait(false);
                 return ("seamless", redirectFail);
@@ -132,9 +137,7 @@ internal sealed partial class ProxySession : IPlayer
 
     internal void MarkSeamlessCapable()
     {
-        if (seamlessCapable) return;
         seamlessCapable = true;
-        Log.Info($"[s{Id}] Nimbus seamless capability detected");
     }
 
     void IPlayer.Disconnect(string? reason)
@@ -193,8 +196,6 @@ internal sealed partial class ProxySession : IPlayer
         capturedIdentification = frame;
         capturedPlayerUid = uid;
         capturedPlayerName = pname;
-        Log.Info($"[s{Id}] captured Identification frame from {source} ({capturedIdentification.Length} bytes) player='{pname}' uid={uid}");
-
         TryConsumeStickyRoute(uid);
         return true;
     }
@@ -208,12 +209,8 @@ internal sealed partial class ProxySession : IPlayer
         if (currentBackend is BackendEndpoint cur &&
             string.Equals(cur.Host, stickyTarget.Host, StringComparison.OrdinalIgnoreCase) &&
             cur.Port == stickyTarget.Port)
-        {
-            Log.Info($"[s{Id}] sticky route hit: uid={uid} -> {stickyTarget} but already on this backend; skipping");
             return;
-        }
 
-        Log.Info($"[s{Id}] sticky route hit: uid={uid} -> {stickyTarget} (reason='{stickyReason}')");
         _ = Task.Run(async () =>
         {
             try
@@ -229,8 +226,6 @@ internal sealed partial class ProxySession : IPlayer
 
     public async Task RunAsync(IReadOnlyList<BackendEndpoint> tryOrder, ReadOnlyMemory<byte> firstClientFrame = default)
     {
-        var remote = client.Client.RemoteEndPoint?.ToString() ?? "?";
-        Log.Info($"[s{Id}] client connected from {remote}");
         try
         {
             // Try each candidate until one connects. ConnectUpstreamAsync fires per-attempt
@@ -284,12 +279,18 @@ internal sealed partial class ProxySession : IPlayer
                     udpOverrides.Clear(ep.Address);
             }
             catch { }
-            Log.Info($"[s{Id}] session closed (c->s {c2sBytes} bytes, s->c {s2cBytes} bytes)");
             if (events != null)
             {
+                if (kickedByBackend && currentBackend != null)
+                {
+                    try { await events.FireAsync(new ServerKickedEvent(this, currentBackend.ToServerInfo())).ConfigureAwait(false); }
+                    catch { }
+                }
                 try { await events.FireAsync(new PlayerDisconnectEvent(this, c2sBytes, s2cBytes)).ConfigureAwait(false); }
                 catch { }
             }
+            var elapsed = DateTimeOffset.UtcNow - sessionStart;
+            Log.Info($"[s{Id}] {capturedPlayerName ?? clientRemote} disconnected ({FormatDuration(elapsed)} | ↑{FormatBytes(c2sBytes)} ↓{FormatBytes(s2cBytes)})");
         }
     }
 
@@ -354,11 +355,11 @@ internal sealed partial class ProxySession : IPlayer
             return (false, false, $"{target}: first client frame write failed");
         }
         ProxyMetrics.BackendConnectSuccess();
-        Log.Info($"[s{Id}] upstream connected to {target}");
         upstream = up;
         currentBackend = target;
         UpdateUdpOverride(target);
         StartPumps();
+        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} ({clientRemote}) → {target.ServerId ?? target.ToString()}");
         if (events != null)
         {
             try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
@@ -473,6 +474,15 @@ internal sealed partial class ProxySession : IPlayer
             if (isC2S) Interlocked.Add(ref c2sBytes, total); else Interlocked.Add(ref s2cBytes, total);
             if (isC2S) ProxyMetrics.AddBytes(total, 0); else ProxyMetrics.AddBytes(0, total);
             Log.Trace($"[s{Id}] {label} pump exited ({total} bytes this segment)");
+
+            // s->c pump exiting without our own Close() or a swap in flight means the backend
+            // dropped the connection while the player was live.
+            if (!isC2S && !closed && !swapping)
+            {
+                var ph = Phase;
+                if (ph == SessionState.Phase.Ready || ph == SessionState.Phase.Disconnecting)
+                    kickedByBackend = true;
+            }
         }
     }
 
@@ -501,4 +511,18 @@ internal sealed partial class ProxySession : IPlayer
     }
 
     private static async Task SafeAwait(Task t) { try { await t.ConfigureAwait(false); } catch { } }
+
+    private static string FormatDuration(TimeSpan t)
+    {
+        if (t.TotalHours >= 1) return $"{(int)t.TotalHours}h{t.Minutes:D2}m";
+        if (t.TotalMinutes >= 1) return $"{(int)t.TotalMinutes}m{t.Seconds:D2}s";
+        return $"{(int)t.TotalSeconds}s";
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes >= 1_048_576) return $"{bytes / 1_048_576.0:F1}MB";
+        if (bytes >= 1024) return $"{bytes / 1024.0:F1}KB";
+        return $"{bytes}B";
+    }
 }

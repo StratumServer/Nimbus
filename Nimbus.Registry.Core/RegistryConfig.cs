@@ -4,7 +4,7 @@ namespace Nimbus.Registry;
 public sealed class RegistryConfig
 {
     // Bind address. Default binds all interfaces on the dev port.
-    public string BindUrl { get; set; } = "http://0.0.0.0:8765";
+    public string BindUrl { get; set; } = "http://127.0.0.1:8765";
 
     // HMAC shared secret used by every backend. To rotate, put the new secret in
     // AcceptedSecrets first, redeploy backends with the new value, then promote it here.
@@ -50,7 +50,7 @@ public sealed class ServerIdentityConfig
     public string MasterServerUrl { get; set; } = "http://masterserver.vintagestory.at/api/v1/servers/";
 
     // Public host/port clients connect to. Must be the proxy's reachable address.
-    public string PublicHost { get; set; } = "";
+    public string PublicHost { get; set; } = "127.0.0.1";
     public ushort PublicPort { get; set; } = 42420;
 
     public string ServerName { get; set; } = "Nimbus Network";

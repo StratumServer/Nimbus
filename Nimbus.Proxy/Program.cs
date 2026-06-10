@@ -8,7 +8,8 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
-        Log.Info("Nimbus.Proxy starting");
+        Log.Info($"Nimbus {NimbusProtocol.NimbusVersion} starting");
+        UpdateChecker.StartBackgroundCheck();
 
         ProxyConfig cfg;
         try { cfg = LoadConfig(); }
@@ -26,8 +27,6 @@ internal static class Program
                     Log.Error("config error: " + error);
                 return 2;
             }
-            Log.Info($"config: bind {cfg.Bind}  servers={cfg.Servers.Count}  try=[{string.Join(",", cfg.Try)}]  logBytes={cfg.Logging.LogTrafficBytes}  verbose={cfg.Logging.Verbose}");
-            Log.Info($"transfers: default_mode={cfg.Transfers.DefaultMode}  allow_seamless={cfg.Transfers.AllowSeamless}  require_capability={cfg.Transfers.RequireSeamlessCapability}  fallback_to_redirect={cfg.Transfers.FallbackToRedirectWhenSeamlessUnavailable}  unsafe_splice={cfg.Transfers.EnableUnsafeSeamlessSplice}");
         }
         catch (Exception ex) { Log.Error("config invalid: " + ex.Message); return 2; }
 
@@ -43,7 +42,7 @@ internal static class Program
         catch (Exception ex) { Log.Error("registry init failed: " + ex.Message); return 2; }
 
         await using var registryDispose = registryHost;
-        using var runtime = new ProxyRuntime(cfg, cts.Token, registryHost.Client);
+        using var runtime = new ProxyRuntime(cfg, cts.Token, registryHost.Client, LoadConfig);
 
         try
         {
@@ -57,7 +56,7 @@ internal static class Program
         return 0;
     }
 
-    private static ProxyConfig LoadConfig()
+    internal static ProxyConfig LoadConfig()
     {
         var path = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
         var jsonSibling = Path.ChangeExtension(path, ".json");

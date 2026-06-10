@@ -76,3 +76,35 @@ public sealed class PlayerDisconnectEvent : ProxyEvent
         BytesS2C = bytesS2C;
     }
 }
+
+// Fires when the backend terminates a live (Phase.Ready or Disconnecting) player session
+// rather than the player or proxy initiating the close. Allows plugins to react to kicks,
+// backend crashes, or unexpected drops distinctly from voluntary disconnects.
+public sealed class ServerKickedEvent : ProxyEvent
+{
+    public IPlayer Player { get; }
+    public IServerInfo Server { get; }
+
+    public ServerKickedEvent(IPlayer player, IServerInfo server)
+    {
+        Player = player;
+        Server = server;
+    }
+}
+
+// Fires after a redirect or seamless transfer completes successfully from the proxy side.
+public sealed class PlayerTransferredEvent : ProxyEvent
+{
+    public IPlayer Player { get; }
+    public IServerInfo? From { get; }
+    public IServerInfo To { get; }
+    public string Mode { get; }
+
+    public PlayerTransferredEvent(IPlayer player, IServerInfo? from, IServerInfo to, string mode)
+    {
+        Player = player;
+        From = from;
+        To = to;
+        Mode = mode;
+    }
+}

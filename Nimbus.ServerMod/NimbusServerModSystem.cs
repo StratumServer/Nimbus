@@ -21,6 +21,9 @@ public sealed class NimbusServerModSystem : ModSystem
 
     private readonly ConcurrentDictionary<string, NimbusClientCapability> capabilities = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, PendingSeamlessHandshake> pendingSeamless = new(StringComparer.Ordinal);
+    // Forwarding data keyed by playerUID. Populated when a player arrives via the proxy
+    // (reservation consumed on join). Cleared on disconnect.
+    private readonly ConcurrentDictionary<string, TransferReservation> forwarding = new(StringComparer.OrdinalIgnoreCase);
 
     public NetworkSnapshot LastSnapshot { get; private set; } = new();
     public DateTime LastSnapshotUtc { get; private set; }
@@ -36,7 +39,12 @@ public sealed class NimbusServerModSystem : ModSystem
         RegisterNetwork(api);
         RegisterCommands(api);
 
-        api.Event.PlayerDisconnect += player => capabilities.TryRemove(player.PlayerUID, out _);
+        api.Event.PlayerDisconnect += player =>
+        {
+            capabilities.TryRemove(player.PlayerUID, out _);
+            forwarding.TryRemove(player.PlayerUID, out _);
+        };
+        api.Event.PlayerJoin += OnPlayerJoin;
 
         if (!config.Enabled)
         {
@@ -85,14 +93,9 @@ public sealed class NimbusServerModSystem : ModSystem
             Mode = config.TransferMode,
             Reason = reason,
             RequestedBy = requestedBy,
-            TtlSeconds = 30
+            TtlSeconds = 30,
+            ClientSupportsSeamlessTransfers = HasSeamlessCapability(player)
         };
-
-        // Binary compatibility: older deployed Nimbus.Shared builds don't expose
-        // TransferIntentRequest.ClientSupportsSeamlessTransfers yet.
-        var seamlessProp = typeof(TransferIntentRequest).GetProperty(nameof(TransferIntentRequest.ClientSupportsSeamlessTransfers));
-        if (seamlessProp != null && seamlessProp.PropertyType == typeof(bool) && seamlessProp.CanWrite)
-            seamlessProp.SetValue(req, HasSeamlessCapability(player));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(config.RegistryHttpTimeoutSeconds + 1));
         return await registry.PostTransferIntentAsync(req, cts.Token).ConfigureAwait(false)
@@ -132,7 +135,6 @@ public sealed class NimbusServerModSystem : ModSystem
     private void OnClientHello(IServerPlayer player, NimbusClientHello hello)
     {
         capabilities[player.PlayerUID] = new NimbusClientCapability(hello.ProtocolVersion, hello.SupportsSeamlessTransfers);
-        api?.Logger.Notification($"Nimbus client capability from {player.PlayerName}: protocol={hello.ProtocolVersion}, seamless={hello.SupportsSeamlessTransfers}");
     }
 
     private void OnSeamlessReady(IServerPlayer player, NimbusSeamlessReady ready)
@@ -210,7 +212,6 @@ public sealed class NimbusServerModSystem : ModSystem
             UptimeSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - startUnix,
             Maintenance = config.Maintenance,
             ReservationRequired = config.ReservationRequired,
-            StratumVersion = "",
             GameVersion = GameVersion.OverallVersion,
             RequiredClientMods = BuildRequiredClientMods()
         };
@@ -231,6 +232,69 @@ public sealed class NimbusServerModSystem : ModSystem
         return result.ToArray();
     }
 
+    private TextCommandResult ReloadConfigCommand()
+    {
+        if (api == null) return TextCommandResult.Error("Not initialized.");
+        try
+        {
+            var fresh = api.LoadModConfig<NimbusServerConfig>(ConfigFileName) ?? new NimbusServerConfig();
+            fresh.Normalize();
+            config = fresh;
+            api.StoreModConfig(config, ConfigFileName);
+            return TextCommandResult.Success($"Nimbus config reloaded. {config.StatusSummary()}");
+        }
+        catch (Exception ex)
+        {
+            return TextCommandResult.Error($"Nimbus config reload failed: {ex.Message}");
+        }
+    }
+
+    private void OnPlayerJoin(IServerPlayer player)
+    {
+        // Always run when registry is wired — stores forwarding data even when gating is off.
+        if (registry == null) return;
+        _ = Task.Run(() => CheckForwardingAsync(player));
+    }
+
+    private async Task CheckForwardingAsync(IServerPlayer player)
+    {
+        // Capture before await — player object may be partially cleaned up by the time
+        // the network call returns if VS processes a voluntary disconnect in the meantime.
+        string playerName = player.PlayerName;
+        string playerUid = player.PlayerUID;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(config.RegistryHttpTimeoutSeconds + 1));
+            var reservation = await registry!.ConsumeReservationByUidAsync(playerUid, config.ServerId, cts.Token)
+                .ConfigureAwait(false);
+
+            if (reservation != null)
+            {
+                // Store the forwarded identity so other systems can trust the real IP.
+                forwarding[playerUid] = reservation;
+                var realIp = string.IsNullOrEmpty(reservation.RealRemoteIp) ? "?" : reservation.RealRemoteIp;
+                api?.Logger.Notification($"[Nimbus] {playerName} forwarded from {realIp}");
+            }
+            else if (config.ReservationRequired)
+            {
+                const string reason = "Direct connections are not permitted. Please connect via the Nimbus proxy.";
+                api?.Logger.Notification($"[Nimbus] {playerName} blocked — no valid proxy reservation");
+                try { player.SendMessage(0, reason, EnumChatType.Notification); } catch { }
+                try { player.Disconnect(reason); } catch { }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            api?.Logger.Warning($"[Nimbus] Forwarding check failed for {playerName}: {ex.Message}");
+        }
+    }
+
+    // Returns Nimbus forwarding data for a player who joined via the proxy.
+    // Null if the player connected directly or the registry is not configured.
+    public TransferReservation? GetForwardedPlayer(string playerUid)
+        => forwarding.TryGetValue(playerUid, out var r) ? r : null;
+
     private void RegisterCommands(ICoreServerAPI api)
     {
         var parsers = api.ChatCommands.Parsers;
@@ -243,6 +307,9 @@ public sealed class NimbusServerModSystem : ModSystem
             .BeginSubCommand("servers")
                 .HandleWith(_ => ServersCommand())
             .EndSubCommand()
+            .BeginSubCommand("reload")
+                .HandleWith(_ => ReloadConfigCommand())
+            .EndSubCommand()
             .BeginSubCommand("send")
                 .WithArgs(parsers.Word("player"), parsers.Word("serverId"), parsers.OptionalAll("reason"))
                 .HandleWith(SendCommand)
@@ -250,6 +317,13 @@ public sealed class NimbusServerModSystem : ModSystem
 
         api.ChatCommands.GetOrCreate("server")
             .WithDescription("Move yourself to another Nimbus backend")
+            .RequiresPlayer()
+            .WithArgs(parsers.Word("serverId"))
+            .HandleWith(SelfServerCommand);
+
+        api.ChatCommands.GetOrCreate("join")
+            .WithDescription("Join a Nimbus backend by name")
+            .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .WithArgs(parsers.Word("serverId"))
             .HandleWith(SelfServerCommand);
@@ -352,8 +426,6 @@ public sealed class NimbusServerModSystem : ModSystem
                         Reason = reason ?? "server transfer"
                     }, player);
 
-                    api?.Logger.Notification($"Nimbus seamless prepare sent to {player.PlayerName} ({transferId}), awaiting ready ack");
-
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(config.SeamlessPrepareAckTimeoutSeconds));
                     try
                     {
@@ -410,19 +482,10 @@ public sealed class NimbusServerModSystem : ModSystem
             Mode = config.TransferMode,
             Reason = reason,
             RequestedBy = requestedBy,
-            TtlSeconds = 30
+            TtlSeconds = 30,
+            ClientTransferId = transferId,
+            ClientSupportsSeamlessTransfers = HasSeamlessCapability(player)
         };
-
-        // Use reflection for properties added after the initial Nimbus.Shared release so that
-        // a stale shared DLL on the server does not cause MissingMethodException at runtime.
-        var reqType = typeof(TransferIntentRequest);
-        var clientIdProp = reqType.GetProperty(nameof(TransferIntentRequest.ClientTransferId));
-        if (clientIdProp != null && clientIdProp.PropertyType == typeof(string) && clientIdProp.CanWrite)
-            clientIdProp.SetValue(req, transferId);
-
-        var seamlessProp = reqType.GetProperty(nameof(TransferIntentRequest.ClientSupportsSeamlessTransfers));
-        if (seamlessProp != null && seamlessProp.PropertyType == typeof(bool) && seamlessProp.CanWrite)
-            seamlessProp.SetValue(req, HasSeamlessCapability(player));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(config.RegistryHttpTimeoutSeconds + 1));
         return await registry.PostTransferIntentAsync(req, cts.Token).ConfigureAwait(false)
@@ -438,32 +501,18 @@ public sealed class NimbusServerModSystem : ModSystem
 
     private void TrySendSeamlessCommit(IServerPlayer player, string transferId)
     {
-        try
-        {
-            channel?.SendPacket(new NimbusSeamlessCommit { TransferId = transferId }, player);
-            api?.Logger.Notification($"Nimbus seamless commit sent to {player.PlayerName} ({transferId})");
-        }
-        catch (Exception ex)
-        {
-            api?.Logger.Warning($"Nimbus seamless commit send failed: {ex.Message}");
-        }
+        try { channel?.SendPacket(new NimbusSeamlessCommit { TransferId = transferId }, player); }
+        catch (Exception ex) { api?.Logger.Warning($"Nimbus seamless commit send failed: {ex.Message}"); }
     }
 
     private void TrySendSeamlessAbort(IServerPlayer player, string transferId, string message)
     {
         try
         {
-            channel?.SendPacket(new NimbusSeamlessAbort
-            {
-                TransferId = transferId,
-                Message = message
-            }, player);
-            api?.Logger.Warning($"Nimbus seamless abort sent to {player.PlayerName} ({transferId}): {message}");
+            channel?.SendPacket(new NimbusSeamlessAbort { TransferId = transferId, Message = message }, player);
+            api?.Logger.Warning($"Nimbus: seamless transfer aborted for {player.PlayerName}: {message}");
         }
-        catch (Exception ex)
-        {
-            api?.Logger.Warning($"Nimbus seamless abort send failed: {ex.Message}");
-        }
+        catch (Exception ex) { api?.Logger.Warning($"Nimbus: seamless abort send failed: {ex.Message}"); }
     }
 
     private sealed record NimbusClientCapability(int ProtocolVersion, bool SupportsSeamlessTransfers);

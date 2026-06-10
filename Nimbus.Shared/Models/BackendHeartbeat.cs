@@ -1,6 +1,6 @@
 namespace Nimbus.Shared.Models;
 
-// Heartbeat payload sent by a Stratum backend to the Nimbus registry.
+// Heartbeat payload sent by a backend to the Nimbus registry.
 public sealed class BackendHeartbeat
 {
     public string ServerId { get; set; } = "";
@@ -20,7 +20,6 @@ public sealed class BackendHeartbeat
     // True when the backend requires a valid reservation on identification.
     public bool ReservationRequired { get; set; }
 
-    public string StratumVersion { get; set; } = "";
     public string GameVersion { get; set; } = "";
     public BackendModInfo[] RequiredClientMods { get; set; } = Array.Empty<BackendModInfo>();
 }

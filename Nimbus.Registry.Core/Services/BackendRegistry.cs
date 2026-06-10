@@ -51,7 +51,6 @@ public sealed class BackendRegistry
                 ReservationRequired = hb.ReservationRequired,
                 LastSeenUnix = rec.LastSeenUnix,
                 Stale = stale,
-                StratumVersion = hb.StratumVersion,
                 GameVersion = hb.GameVersion,
                 RequiredClientMods = hb.RequiredClientMods
             });

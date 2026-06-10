@@ -56,7 +56,6 @@ internal sealed class UdpRelay
                 var currentTarget = ResolveTarget(src);
                 if (!EndpointEquals(sess.Target, currentTarget))
                 {
-                    Log.Info($"udp rebind for {src}: {sess.Target} -> {currentTarget}");
                     sess.Dispose();
                     sessions.TryRemove(src, out _);
                     sess = sessions.GetOrAdd(src, ep => CreateSession(ep, inbound, currentTarget));
@@ -100,7 +99,6 @@ internal sealed class UdpRelay
         catch (Exception ex) { Log.Warn($"udp upstream connect failed for {clientSrc}: {ex.Message}"); }
 
         var sess = new ClientUdpSession(clientSrc, upstream, target);
-        Log.Info($"udp session opened for {clientSrc} via local {upstream.Client.LocalEndPoint} -> {target}");
 
         // Pump replies backend->client.
         _ = Task.Run(async () =>
@@ -139,10 +137,7 @@ internal sealed class UdpRelay
                 if (now - kv.Value.LastActivityUtc > IdleTimeout)
                 {
                     if (sessions.TryRemove(kv.Key, out var dead))
-                    {
                         dead.Dispose();
-                        Log.Info($"udp session idle-closed for {kv.Key}");
-                    }
                 }
             }
         }

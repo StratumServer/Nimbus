@@ -2,7 +2,7 @@ namespace Nimbus.ServerMod;
 
 public sealed class NimbusServerConfig
 {
-    public bool Enabled { get; set; } = false;
+    public bool Enabled { get; set; } = true;
     public string ServerId { get; set; } = "";
     public string DisplayName { get; set; } = "";
     public string PublicHost { get; set; } = "";
@@ -15,7 +15,7 @@ public sealed class NimbusServerConfig
     public int RegistryHttpTimeoutSeconds { get; set; } = 5;
 
     public bool Maintenance { get; set; } = false;
-    public bool ReservationRequired { get; set; } = false;
+    public bool ReservationRequired { get; set; } = true;
     public bool AllowPlayerServerCommand { get; set; } = true;
     public string TransferMode { get; set; } = "redirect";
     public int SeamlessPrepareAckTimeoutSeconds { get; set; } = 8;

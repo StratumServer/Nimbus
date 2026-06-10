@@ -26,7 +26,7 @@ namespace Nimbus.Proxy;
 //   secret = ""
 //
 //   [registry]
-//   mode = "disabled"          # "embedded" | "remote" | "disabled"
+//   mode = "embedded"          # "embedded" | "remote" | "disabled"
 internal sealed class ProxyConfig
 {
     public string Bind { get; set; } = "0.0.0.0:42420";
@@ -78,6 +78,22 @@ internal sealed class ProxyConfig
         }
         _resolvedBackends = list;
         return list;
+    }
+
+    // Copy hot-reloadable fields from a freshly-loaded config in-place so all existing
+    // references (ProxyListener, BackendRouter, etc.) see the updated values immediately.
+    // Structural settings that require restart (bind, admin, registry, metrics) are left unchanged.
+    public void UpdateFrom(ProxyConfig fresh)
+    {
+        Servers = fresh.Servers;
+        Try = fresh.Try;
+        ProxyProtocolServers = fresh.ProxyProtocolServers;
+        Transfers = fresh.Transfers;
+        Logging = fresh.Logging;
+        Status = fresh.Status;
+        Plugins = fresh.Plugins;
+        Advanced = fresh.Advanced;
+        _resolvedBackends = null;
     }
 
     public BackendEndpoint? FindBackend(string name)
@@ -182,7 +198,7 @@ internal sealed class RegistryConfig
     //               external backends to heartbeat against).
     // "remote"   -> proxy talks to a standalone Nimbus.Registry over HTTP.
     // "disabled" -> no registry. Single-backend deployments work via [servers].
-    public string Mode { get; set; } = "disabled";
+    public string Mode { get; set; } = "embedded";
 
     // Common to embedded + remote. SourceServerId on minted reservations.
     public string ProxyId { get; set; } = "nimbus-proxy";

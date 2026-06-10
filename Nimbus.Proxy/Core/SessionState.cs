@@ -46,9 +46,6 @@ internal sealed class SessionState
         }
 
         if (next != phase)
-        {
-            Log.Info($"[s{sessionId}] phase {phase} -> {next}  (trigger: {(clientToServer ? "c->s" : "s->c")} {packetName})");
             phase = next;
-        }
     }
 }

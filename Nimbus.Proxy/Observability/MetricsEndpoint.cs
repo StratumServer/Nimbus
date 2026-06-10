@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Nimbus.Proxy;
 
@@ -26,6 +27,8 @@ internal sealed class MetricsEndpoint
 
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls(cfg.Bind);
+        builder.Logging.ClearProviders();
+        builder.Logging.AddFilter((_, level) => level >= LogLevel.Error);
         var app = builder.Build();
 
         app.MapGet(cfg.Path, () => Results.Text(ProxyMetrics.RenderPrometheus(), "text/plain"));

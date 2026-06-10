@@ -35,8 +35,6 @@ internal sealed partial class ProxySession
             oldPumpS2C = pumpS2C;
         }
 
-        Log.Info($"[s{Id}] SEAMLESS -> {target} (phase {Phase}, captured ident {capturedIdentification.Length}B, reason='{swapReason ?? "<none>"}')");
-
         // ServerPreConnect: handlers can swap target or cancel before we open the new upstream.
         if (events != null)
         {
@@ -81,7 +79,6 @@ internal sealed partial class ProxySession
         try
         {
             await newUp.GetStream().WriteAsync(capturedIdentification, sessionStopToken).ConfigureAwait(false);
-            Log.Info($"[s{Id}] replayed Identification to new backend");
         }
         catch (Exception ex)
         {
@@ -116,12 +113,14 @@ internal sealed partial class ProxySession
         // RunAsync starts waiting on the new pumps after this flips back.
         swapping = false;
 
-        Log.Info($"[s{Id}] seamless complete; new upstream {target} is live");
         ProxyMetrics.SeamlessSucceeded();
-        Log.Info($"[s{Id}] AUDIT op=seamless target={target} reason='{swapReason ?? ""}' uid={capturedPlayerUid ?? ""} result=ok duration_ms={sw.ElapsedMilliseconds}");
+        var prevId = previous?.ServerId ?? previous?.ToString() ?? "?";
+        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"}: {prevId} → {target.ServerId ?? target.ToString()} (seamless, {sw.ElapsedMilliseconds}ms)");
         if (events != null)
         {
             try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
+            catch { }
+            try { await events.FireAsync(new PlayerTransferredEvent(this, previous, target.ToServerInfo(), "seamless")).ConfigureAwait(false); }
             catch { }
         }
         return null;

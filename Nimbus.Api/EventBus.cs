@@ -21,6 +21,14 @@ public sealed class EventBus
     public void Subscribe<T>(Action<T> handler) where T : ProxyEvent
         => Subscribe<T>(e => { handler(e); return Task.CompletedTask; });
 
+    public void ClearSubscriptions()
+    {
+        lock (subscribeLock)
+        {
+            handlers.Clear();
+        }
+    }
+
     public async Task FireAsync<T>(T evt) where T : ProxyEvent
     {
         if (!handlers.TryGetValue(typeof(T), out var list)) return;

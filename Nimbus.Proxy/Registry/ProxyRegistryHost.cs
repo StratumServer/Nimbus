@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Nimbus.Registry;
 using Nimbus.Registry.Services;
 
@@ -78,6 +79,11 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
         {
             var builder = WebApplication.CreateBuilder();
             builder.WebHost.UseUrls(cfg.Registry.EmbeddedBind);
+            builder.Logging.ClearProviders();
+            builder.Logging.SetMinimumLevel(LogLevel.Warning);
+            builder.Logging.AddFilter("Microsoft", LogLevel.None);
+            builder.Logging.AddFilter("System", LogLevel.None);
+            builder.Logging.AddProvider(new RegistryConsoleLoggerProvider());
             builder.AddNimbusRegistry(coreCfg, withMasterServer: cfg.Registry.AdvertiseOnMasterServer);
 
             var app = builder.Build();

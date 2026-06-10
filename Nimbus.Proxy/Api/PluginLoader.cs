@@ -10,7 +10,7 @@ internal sealed class PluginLoader
 
     private readonly List<LoadedPlugin> loaded = new();
     private readonly HashSet<string> loadedIds = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> disabledIds;
+    private HashSet<string> disabledIds;
     private readonly PluginLoaderOptions options;
 
     public IReadOnlyList<LoadedPlugin> Loaded => loaded;
@@ -178,6 +178,23 @@ internal sealed class PluginLoader
             catch (Exception ex) { Log.Warn($"plugins: Shutdown() threw for {lp.Instance.Name}: {ex.Message}"); }
         }
     }
+
+    public void Reload(string pluginsDir, EventBus events, IProxyApi api, IEnumerable<string>? newDisabledIds = null)
+    {
+        ShutdownAll();
+        events.ClearSubscriptions();
+        loaded.Clear();
+        loadedIds.Clear();
+        if (newDisabledIds != null)
+            disabledIds = new HashSet<string>(newDisabledIds, StringComparer.OrdinalIgnoreCase);
+
+        // Force GC to release file locks on the old collectible contexts before reloading.
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        LoadAll(pluginsDir, api);
+    }
 }
 
 internal sealed record LoadedPlugin(IPlugin Instance, IPluginMetadata Metadata, string SourceFile);
@@ -202,7 +219,7 @@ internal sealed class PluginLoadContext : AssemblyLoadContext
     private readonly AssemblyDependencyResolver resolver;
 
     public PluginLoadContext(string pluginPath)
-        : base(Path.GetFileNameWithoutExtension(pluginPath), isCollectible: false)
+        : base(Path.GetFileNameWithoutExtension(pluginPath), isCollectible: true)
     {
         resolver = new AssemblyDependencyResolver(Path.GetFullPath(pluginPath));
     }

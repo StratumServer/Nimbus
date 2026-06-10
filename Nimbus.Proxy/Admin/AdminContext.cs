@@ -12,10 +12,11 @@ internal sealed class AdminContext
     public AdminPermissions Permissions { get; }
     public IReadOnlyCollection<IAdminCommand> Commands { get; }
     public IReadOnlyList<LoadedPlugin> Plugins { get; }
+    public Func<string>? Reload { get; }
 
     public AdminContext(ProxyListener proxy, ProxyConfig cfg, JsonElement request,
         CancellationToken stopToken, AdminPermissions permissions, IReadOnlyCollection<IAdminCommand> commands,
-        IReadOnlyList<LoadedPlugin> plugins)
+        IReadOnlyList<LoadedPlugin> plugins, Func<string>? reload = null)
     {
         Proxy = proxy;
         Cfg = cfg;
@@ -24,6 +25,7 @@ internal sealed class AdminContext
         Permissions = permissions;
         Commands = commands;
         Plugins = plugins;
+        Reload = reload;
     }
 }
 
