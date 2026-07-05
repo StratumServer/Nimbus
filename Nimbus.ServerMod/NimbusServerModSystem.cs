@@ -158,9 +158,12 @@ public sealed class NimbusServerModSystem : ModSystem
         int failures = 0;
         while (!ct.IsCancellationRequested)
         {
+            // Re-read the field each round: a config reload can swap or clear the client.
+            var client = registry;
+            if (client == null) break;
             try
             {
-                var response = await registry.HeartbeatAsync(BuildHeartbeat(), ct).ConfigureAwait(false);
+                var response = await client.HeartbeatAsync(BuildHeartbeat(), ct).ConfigureAwait(false);
                 if (response?.Ok == true)
                 {
                     LastStatus = "ok";
@@ -173,7 +176,7 @@ public sealed class NimbusServerModSystem : ModSystem
                     LastStatus = "heartbeat rejected: " + (response?.Message ?? "no response");
                 }
 
-                var snapshot = await registry.GetServersAsync(ct).ConfigureAwait(false);
+                var snapshot = await client.GetServersAsync(ct).ConfigureAwait(false);
                 if (snapshot != null)
                 {
                     LastSnapshot = snapshot;
@@ -241,12 +244,39 @@ public sealed class NimbusServerModSystem : ModSystem
             fresh.Normalize();
             config = fresh;
             api.StoreModConfig(config, ConfigFileName);
+            RewireRegistry();
             return TextCommandResult.Success($"Nimbus config reloaded. {config.StatusSummary()}");
         }
         catch (Exception ex)
         {
             return TextCommandResult.Error($"Nimbus config reload failed: {ex.Message}");
         }
+    }
+
+    // Reload used to swap only the config object, so a changed RegistryUrl or SharedSecret
+    // kept talking to the old registry until a full restart. Recreate the client to match
+    // the fresh config, and start the heartbeat loop if the mod booted unconfigured.
+    private void RewireRegistry()
+    {
+        var old = registry;
+        if (config.Enabled && IsConfigured(config))
+        {
+            registry = new NimbusRegistryClient(config);
+            if (heartbeatTask == null || heartbeatTask.IsCompleted)
+            {
+                stop?.Dispose();
+                stop = new CancellationTokenSource();
+                if (startUnix == 0) startUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                heartbeatTask = Task.Run(() => HeartbeatLoopAsync(stop.Token));
+            }
+            LastStatus = "starting";
+        }
+        else
+        {
+            registry = null;
+            LastStatus = config.Enabled ? "misconfigured" : "disabled";
+        }
+        old?.Dispose();
     }
 
     private void OnPlayerJoin(IServerPlayer player)
