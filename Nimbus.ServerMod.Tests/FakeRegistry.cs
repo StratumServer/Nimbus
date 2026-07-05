@@ -1,0 +1,161 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+
+namespace Nimbus.ServerMod.Tests;
+
+/// <summary>
+/// In-process stand-in for the Nimbus registry, listening on a real loopback HTTP port.
+/// The mod under test talks to it through its own <c>NimbusRegistryClient</c>, so the full
+/// HTTP + HMAC path is exercised. Signature verification is REIMPLEMENTED here (not shared
+/// with Nimbus code) on purpose: it cross-checks the client's canonical-string construction
+/// against an independent implementation of the documented format
+/// <c>METHOD\nPATH\nPROTOCOL\nTIMESTAMP\nNONCE\nSHA256HEX(body)</c>.
+/// </summary>
+public sealed class FakeRegistry : IDisposable
+{
+    public sealed record ReceivedRequest(
+        string Method,
+        string Path,
+        string? Uid,
+        string? Target,
+        bool HasSignatureHeaders,
+        bool SignatureValid);
+
+    private readonly HttpListener listener;
+    private readonly Thread pump;
+    private readonly string sharedSecret;
+    private readonly object gate = new();
+    private volatile bool stopped;
+
+    /// <summary>Base URL to put in the mod's RegistryUrl, e.g. "http://127.0.0.1:PORT/".</summary>
+    public string Url { get; }
+
+    /// <summary>Every request received so far, in order.</summary>
+    public IReadOnlyList<ReceivedRequest> Requests
+    {
+        get { lock (gate) return requests.ToList(); }
+    }
+
+    private readonly List<ReceivedRequest> requests = new();
+
+    /// <summary>
+    /// Reservation returned (once) by the next consume-by-uid call, as an anonymous object
+    /// serialized to camelCase JSON. Null means "no reservation" ({"ok":false}).
+    /// </summary>
+    public object? NextReservation { get; set; }
+
+    public FakeRegistry(string sharedSecret)
+    {
+        this.sharedSecret = sharedSecret;
+        int port = FreeLoopbackPort();
+        Url = $"http://127.0.0.1:{port}/";
+        listener = new HttpListener();
+        listener.Prefixes.Add(Url);
+        listener.Start();
+        pump = new Thread(Loop) { IsBackground = true, Name = "fake-nimbus-registry" };
+        pump.Start();
+    }
+
+    private static int FreeLoopbackPort()
+    {
+        using var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        return ((IPEndPoint)probe.LocalEndpoint).Port;
+    }
+
+    private void Loop()
+    {
+        while (!stopped)
+        {
+            HttpListenerContext ctx;
+            try { ctx = listener.GetContext(); }
+            catch when (stopped) { return; }
+            catch (Exception) { return; }
+            try { Handle(ctx); }
+            catch { try { ctx.Response.StatusCode = 500; ctx.Response.Close(); } catch { } }
+        }
+    }
+
+    private void Handle(HttpListenerContext ctx)
+    {
+        byte[] body;
+        using (var ms = new MemoryStream())
+        {
+            ctx.Request.InputStream.CopyTo(ms);
+            body = ms.ToArray();
+        }
+
+        string path = ctx.Request.Url!.AbsolutePath;
+        var query = System.Web.HttpUtility.ParseQueryString(ctx.Request.Url.Query);
+        bool hasHeaders = ctx.Request.Headers["X-Nimbus-Signature"] != null
+                       && ctx.Request.Headers["X-Nimbus-Timestamp"] != null
+                       && ctx.Request.Headers["X-Nimbus-Nonce"] != null
+                       && ctx.Request.Headers["X-Nimbus-Protocol"] != null;
+        bool sigValid = hasHeaders && VerifySignature(ctx.Request, path, body);
+
+        lock (gate)
+        {
+            requests.Add(new ReceivedRequest(
+                ctx.Request.HttpMethod, path, query["uid"], query["target"], hasHeaders, sigValid));
+        }
+
+        object payload;
+        if (path == "/api/reservations/consume-by-uid")
+        {
+            var reservation = NextReservation;
+            NextReservation = null; // single-use, like the real ReservationStore
+            payload = reservation is null
+                ? new { ok = false, error = "no reservation" }
+                : new { ok = true, reservation };
+        }
+        else if (path == "/api/heartbeat")
+        {
+            payload = new { ok = true };
+        }
+        else
+        {
+            ctx.Response.StatusCode = 404;
+            ctx.Response.Close();
+            return;
+        }
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(payload);
+        ctx.Response.StatusCode = 200;
+        ctx.Response.ContentType = "application/json";
+        ctx.Response.OutputStream.Write(json);
+        ctx.Response.Close();
+    }
+
+    // Independent reimplementation of Nimbus's HmacSigner canonical string.
+    private bool VerifySignature(HttpListenerRequest req, string path, byte[] body)
+    {
+        string? provided = req.Headers["X-Nimbus-Signature"];
+        string? ts = req.Headers["X-Nimbus-Timestamp"];
+        string? nonce = req.Headers["X-Nimbus-Nonce"];
+        string? proto = req.Headers["X-Nimbus-Protocol"];
+        if (provided is null || ts is null || nonce is null || proto is null) return false;
+
+        string bodyHash = Convert.ToHexString(SHA256.HashData(body));
+        string canonical = string.Concat(
+            req.HttpMethod.ToUpperInvariant(), "\n",
+            path, "\n",
+            proto, "\n",
+            ts, "\n",
+            nonce, "\n",
+            bodyHash);
+        byte[] mac = HMACSHA256.HashData(Encoding.UTF8.GetBytes(sharedSecret), Encoding.UTF8.GetBytes(canonical));
+        string expected = Convert.ToHexString(mac);
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.ASCII.GetBytes(expected), Encoding.ASCII.GetBytes(provided.ToUpperInvariant()));
+    }
+
+    public void Dispose()
+    {
+        stopped = true;
+        try { listener.Stop(); } catch { }
+        try { listener.Close(); } catch { }
+    }
+}
