@@ -309,8 +309,13 @@ public sealed class NimbusServerModSystem : ModSystem
             {
                 const string reason = "Direct connections are not permitted. Please connect via the Nimbus proxy.";
                 api?.Logger.Notification($"[Nimbus] {playerName} blocked — no valid proxy reservation");
-                try { player.SendMessage(0, reason, EnumChatType.Notification); } catch { }
-                try { player.Disconnect(reason); } catch { }
+                // This continuation runs on a thread-pool thread (Task.Run + ConfigureAwait(false));
+                // the server API is not safe to call off the game thread, so hand the kick back.
+                api?.Event.EnqueueMainThreadTask(() =>
+                {
+                    try { player.SendMessage(0, reason, EnumChatType.Notification); } catch { }
+                    try { player.Disconnect(reason); } catch { }
+                }, "nimbus-reservation-kick");
             }
         }
         catch (OperationCanceledException) { }
