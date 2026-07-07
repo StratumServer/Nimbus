@@ -21,6 +21,7 @@ public sealed class FakeRegistry : IDisposable
         string Path,
         string? Uid,
         string? Target,
+        string Body,
         bool HasSignatureHeaders,
         bool SignatureValid);
 
@@ -47,6 +48,19 @@ public sealed class FakeRegistry : IDisposable
     /// </summary>
     public object? NextReservation { get; set; }
 
+    /// <summary>
+    /// Snapshot served by GET /api/servers, camelCase JSON. Null means 404 (the mod treats
+    /// that as "no snapshot yet"). Not consumed: served on every poll until changed.
+    /// </summary>
+    public object? ServersSnapshot { get; set; }
+
+    /// <summary>
+    /// Response to POST /api/transfer-intents, camelCase JSON. Null means the registry
+    /// rejects the intent ({"ok":false, "error":"target server not registered"}).
+    /// Not consumed: served on every post until changed.
+    /// </summary>
+    public object? TransferIntentResponse { get; set; }
+
     public FakeRegistry(string sharedSecret)
     {
         this.sharedSecret = sharedSecret;
@@ -58,6 +72,30 @@ public sealed class FakeRegistry : IDisposable
         pump = new Thread(Loop) { IsBackground = true, Name = "fake-nimbus-registry" };
         pump.Start();
     }
+
+    /// <summary>Convenience: a /api/servers snapshot wrapping the given backends.</summary>
+    public static object Snapshot(params object[] backends) => new
+    {
+        backends,
+        totalPlayers = 0,
+        totalCapacity = 0,
+        generatedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+    };
+
+    /// <summary>Convenience: a healthy backend entry unless flagged otherwise.</summary>
+    public static object Backend(string serverId, bool stale = false, bool maintenance = false) => new
+    {
+        serverId,
+        displayName = serverId,
+        publicHost = "10.0.0.1",
+        publicPort = 42421,
+        players = 0,
+        maxPlayers = 32,
+        stale,
+        maintenance,
+        lastSeenUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        gameVersion = "1.22.0",
+    };
 
     private static int FreeLoopbackPort()
     {
@@ -99,10 +137,11 @@ public sealed class FakeRegistry : IDisposable
         lock (gate)
         {
             requests.Add(new ReceivedRequest(
-                ctx.Request.HttpMethod, path, query["uid"], query["target"], hasHeaders, sigValid));
+                ctx.Request.HttpMethod, path, query["uid"], query["target"],
+                Encoding.UTF8.GetString(body), hasHeaders, sigValid));
         }
 
-        object payload;
+        object? payload;
         if (path == "/api/reservations/consume-by-uid")
         {
             var reservation = NextReservation;
@@ -114,6 +153,21 @@ public sealed class FakeRegistry : IDisposable
         else if (path == "/api/heartbeat")
         {
             payload = new { ok = true };
+        }
+        else if (path == "/api/servers")
+        {
+            payload = ServersSnapshot;
+            if (payload is null)
+            {
+                ctx.Response.StatusCode = 404;
+                ctx.Response.Close();
+                return;
+            }
+        }
+        else if (path == "/api/transfer-intents")
+        {
+            payload = TransferIntentResponse
+                ?? new { ok = false, error = "target server not registered" };
         }
         else
         {
