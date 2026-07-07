@@ -3,6 +3,7 @@
   <Project Path="Nimbus.Api/Nimbus.Api.csproj" />
   <Project Path="Nimbus.SamplePlugin/Nimbus.SamplePlugin.csproj" />
   <Project Path="Nimbus.Client/Nimbus.Client.csproj" />
+  <Project Path="Nimbus.ServerMod.Tests/Nimbus.ServerMod.Tests.csproj" />
   <Project Path="Nimbus.ServerMod/Nimbus.ServerMod.csproj" />
   <Project Path="Nimbus.Registry.Core/Nimbus.Registry.Core.csproj" />
   <Project Path="Nimbus.Registry/Nimbus.Registry.csproj" />

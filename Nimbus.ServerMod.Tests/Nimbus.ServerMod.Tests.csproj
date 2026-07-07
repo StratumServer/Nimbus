@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Pixnop.Atlas.XUnit" Version="0.4.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same resolution convention as the sibling projects, but Private=true: the test
+         runner needs the dll next to the test assembly to JIT scenario bodies. Running
+         the suite additionally needs a full VS 1.22.x install via the VINTAGE_STORY
+         environment variable (Atlas boots a real embedded server). -->
+    <Reference Include="VintagestoryAPI" HintPath="..\..\bin\$(Configuration)\net10.0\VintagestoryAPI.dll" Private="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Build-order only: the staged dlls below are the real mod under test. No assembly
+         reference on purpose: the game's ModLoader loads its own copy of the staged dll,
+         so compile-time types would never be identity-equal anyway (see NimbusHarness). -->
+    <ProjectReference Include="..\Nimbus.ServerMod\Nimbus.ServerMod.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!-- Stage the mod under test next to the test assembly, where [assembly: AtlasMods]
+       expects it (mod/Nimbus.ServerMod.dll + its Nimbus.Shared dependency). -->
+  <Target Name="StageModUnderTest" AfterTargets="Build">
+    <ItemGroup>
+      <ModDll Include="..\Nimbus.ServerMod\bin\$(Configuration)\$(TargetFramework)\Nimbus.ServerMod.dll" />
+      <ModDll Include="..\Nimbus.Shared\bin\$(Configuration)\$(TargetFramework)\Nimbus.Shared.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ModDll)" DestinationFolder="$(OutDir)mod" SkipUnchangedFiles="true" />
+  </Target>
+</Project>
