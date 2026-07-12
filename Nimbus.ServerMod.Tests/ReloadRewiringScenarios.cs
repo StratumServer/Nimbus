@@ -1,6 +1,5 @@
 using Atlas.Api;
 using Atlas.XUnit;
-using Vintagestory.API.Config;
 using Xunit;
 
 namespace Nimbus.ServerMod.Tests;
@@ -8,31 +7,15 @@ namespace Nimbus.ServerMod.Tests;
 /// <summary>
 /// Exercises the config-file + "/nimbus reload" path end to end: the mod boots
 /// unconfigured (no config file exists at server start), the scenario writes
-/// nimbus-server.json into the live data path and reloads. No reflection wiring at all;
-/// this is exactly what a server operator does.
+/// nimbus-server.json into the live data path and reloads. This is exactly what a
+/// server operator does; the shared NimbusHarness helper does the same for every class.
 /// </summary>
 public class ReloadRewiringScenarios : AtlasScenarioBase
 {
     private const string Secret = "reload-secret";
 
-    private static string ConfigPath
-        => Path.Combine(GamePaths.DataPath, "ModConfig", "nimbus-server.json");
-
     private static void WriteConfig(string registryUrl)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
-        File.WriteAllText(ConfigPath, $$"""
-            {
-              "Enabled": true,
-              "ServerId": "backend-test",
-              "DisplayName": "Atlas backend",
-              "PublicHost": "127.0.0.1",
-              "RegistryUrl": "{{registryUrl}}",
-              "SharedSecret": "{{Secret}}",
-              "ReservationRequired": true
-            }
-            """);
-    }
+        => NimbusHarness.WriteConfig(registryUrl, Secret);
 
     private static object MakeReservation(string playerName) => new
     {

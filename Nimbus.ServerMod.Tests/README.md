@@ -1,10 +1,9 @@
 # Nimbus.ServerMod.Tests
 
-Integration scenarios for `Nimbus.ServerMod`'s reservation gating (the inbound half of a
-transfer), running on a real embedded Vintage Story server via
-[Atlas](https://github.com/Pixnop/Atlas). No proxy process and no real network client:
-the registry is faked on a loopback HTTP port (`FakeRegistry`) and players join through
-Atlas's in-memory dummy client.
+Integration scenarios for `Nimbus.ServerMod`, running on a real embedded Vintage Story
+server via [Atlas](https://github.com/Pixnop/Atlas). No proxy process and no real
+network client: the registry is faked on a loopback HTTP port (`FakeRegistry`) and
+players join through Atlas's in-memory dummy client.
 
 ## Running
 
@@ -21,8 +20,10 @@ suite on 1.22 is representative; earlier game versions stay manual-test territor
 
 ## What is covered
 
+Inbound (reservation gating):
+
 - Valid reservation on join → player admitted, `GetForwardedPlayer` exposes the real
-  client IP.
+  client IP; the forwarding record is cleared when the player disconnects.
 - No reservation + `ReservationRequired=true` → player is kicked.
 - No reservation + `ReservationRequired=false` → direct join allowed, no forwarding data.
 - The consume call carries all four `X-Nimbus-*` headers and its HMAC verifies against an
@@ -31,20 +32,40 @@ suite on 1.22 is representative; earlier game versions stay manual-test territor
 - Characterization: registry unreachable + `ReservationRequired=true` currently admits
   the player (fail-open). If fail-closed is the intended trade-off, flip that test.
 
+Outbound (transfer commands):
+
+- `/nimbus send` posts a signed transfer intent with the right identity, target, mode
+  and requester; unknown, stale, in-maintenance and same-server targets are rejected
+  eagerly, before any registry call.
+- `/server` honours `AllowPlayerServerCommand` for player callers and rejects console
+  callers through its `RequiresPlayer` precondition.
+- Seamless mode without a client ack (the dummy player has no Nimbus client mod) aborts
+  on the prepare timeout and never reaches the registry.
+
+Operations:
+
+- The config-file + `/nimbus reload` path wires an unconfigured server and follows
+  registry URL changes (`ReloadRewiringScenarios`).
+- Heartbeats are HMAC-signed and carry the configured identity and game version.
+- `/nimbus status` and `/nimbus servers` reflect the configured identity and the polled
+  snapshot, including health flags.
+
 Out of scope by design (single embedded server, in-memory sockets, no client-side code):
-two-server transfers, proxy frame handling, and the seamless client handshake.
+two-server transfers, proxy frame handling, and the seamless client handshake beyond the
+timeout path.
 
 ## Design notes
 
-- **Reflection, not references** (`NimbusHarness`): the game's ModLoader loads a *copy*
-  of the staged `Nimbus.ServerMod.dll`, so its types are never identity-equal to
-  compile-time references. The harness finds the ModSystem by name and drives it by
-  reflection.
-- **Post-boot rewiring**: the mod reads `nimbus-server.json` once in `StartServerSide`
-  and only creates its registry client there; the harness swaps the private
-  `config`/`registry` fields after boot. Making `/nimbus reload` re-create the registry
-  client would remove most of the harness (and fix the operator-facing gap where
-  changing `RegistryUrl` + reload has no effect until restart).
-- **Kick detection**: a kicked dummy player never closes its in-memory socket, so the
-  reliable in-process signal is the `PlayerDisconnect` server event, the same one the
-  mod uses to clear its per-player state.
+- **Operator-style setup** (`NimbusHarness.ConfigureAsync`): scenarios configure the mod
+  exactly like an operator does, by writing `nimbus-server.json` into the live data path
+  and running `/nimbus reload` (which recreates the registry client since #4). No private
+  state is written.
+- **Reflection for reads only**: the game's ModLoader loads a *copy* of the staged
+  `Nimbus.ServerMod.dll`, so its types are never identity-equal to compile-time
+  references; reading mod state back (`GetForwardedPlayer`) goes through reflection.
+- **Kick detection**: `ITestPlayer.IsConnected` (Atlas 0.5+) reports the settled state
+  after a server-side kick; wait with `Until(() => !player.IsConnected)`.
+- **Shared world state**: scenarios in a class share the mod instance, and
+  `LastSnapshot` survives reconfiguration (a 404 from `/api/servers` does not clear it).
+  Scenarios that assert on an *unknown* transfer target must use a name no other
+  scenario ever puts in a snapshot.

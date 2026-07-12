@@ -352,6 +352,9 @@ public sealed class NimbusServerModSystem : ModSystem
 
         api.ChatCommands.GetOrCreate("server")
             .WithDescription("Move yourself to another Nimbus backend")
+            // Without a required privilege the engine refuses to execute the command at
+            // all ("Incomplete command"); chat matches the /join alias below.
+            .RequiresPrivilege(Privilege.chat)
             .RequiresPlayer()
             .WithArgs(parsers.Word("serverId"))
             .HandleWith(SelfServerCommand);
