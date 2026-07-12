@@ -1,0 +1,98 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  VS_VERSION: "1.22.3"
+
+jobs:
+  build-and-test:
+    name: Build & ServerMod tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache Vintage Story server
+        id: cache-vs
+        uses: actions/cache@v4
+        with:
+          path: ~/vs
+          key: vs-server-linux-x64-${{ env.VS_VERSION }}
+
+      - name: Download Vintage Story server
+        if: steps.cache-vs.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          curl -sSL --proto '=https' --proto-redir '=https' -o vs_server.tar.gz "https://cdn.vintagestory.at/gamefiles/stable/vs_server_linux-x64_${VS_VERSION}.tar.gz"
+          mkdir -p "$HOME/vs"
+          tar -xzf vs_server.tar.gz -C "$HOME/vs"
+
+      - name: Export VINTAGE_STORY
+        run: |
+          set -e
+          DLL_DIR="$(dirname "$(find "$HOME/vs" -name VintagestoryAPI.dll | head -1)")"
+          echo "VINTAGE_STORY=$DLL_DIR" >> "$GITHUB_ENV"
+          echo "Resolved VINTAGE_STORY=$DLL_DIR"
+
+      # The csproj files resolve game dlls relative to the repo's parent directory:
+      # ../../bin/<Config>/net10.0/VintagestoryAPI.dll and ../../.vanilla/Lib/protobuf-net.dll
+      # (seen from each project folder). Mirror that layout around the checkout.
+      # VintagestoryAPI.pdb is required next to the dll: the engine's LoggerBase reads its
+      # own source path from stack-trace file info at boot and crashes without it.
+      - name: Mirror the expected dll layout
+        run: |
+          set -e
+          PARENT="$(dirname "$GITHUB_WORKSPACE")"
+          mkdir -p "$PARENT/bin/Release/net10.0" "$PARENT/.vanilla/Lib"
+          cp "$VINTAGE_STORY/VintagestoryAPI.dll" "$VINTAGE_STORY/VintagestoryAPI.pdb" "$PARENT/bin/Release/net10.0/"
+          cp "$VINTAGE_STORY/Lib/protobuf-net.dll" "$PARENT/.vanilla/Lib/"
+
+      # Nimbus.slnx references Nimbus.Client and Nimbus.Tests, which are not in the public
+      # repo, so the solution cannot build from a fresh clone; build an explicit list.
+      - name: Build
+        run: |
+          set -e
+          for p in Nimbus.Shared Nimbus.Api Nimbus.SamplePlugin Nimbus.Registry.Core \
+                   Nimbus.Registry Nimbus.Proxy Nimbus.Cli Nimbus.ServerMod \
+                   Nimbus.Registry.Core.Tests Nimbus.Proxy.Tests Nimbus.ServerMod.Tests; do
+            dotnet build "$p/$p.csproj" -c Release
+          done
+
+      - name: Registry unit tests
+        run: |
+          dotnet test Nimbus.Registry.Core.Tests/Nimbus.Registry.Core.Tests.csproj \
+            -c Release --no-build \
+            --logger "trx;LogFileName=registry-tests.trx" \
+            --results-directory TestResults
+
+      - name: Proxy protocol unit tests
+        run: |
+          dotnet test Nimbus.Proxy.Tests/Nimbus.Proxy.Tests.csproj \
+            -c Release --no-build \
+            --logger "trx;LogFileName=proxy-tests.trx" \
+            --results-directory TestResults
+
+      - name: ServerMod integration tests
+        run: |
+          dotnet test Nimbus.ServerMod.Tests/Nimbus.ServerMod.Tests.csproj \
+            -c Release --no-build \
+            --logger "trx;LogFileName=servermod-tests.trx" \
+            --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-trx
+          path: TestResults/*.trx
