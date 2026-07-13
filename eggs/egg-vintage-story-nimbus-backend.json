@@ -1,0 +1,102 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PANEL - PTERODACTYL/PELICAN COMPATIBLE",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-07-13T00:00:00+00:00",
+    "name": "Vintage Story (Nimbus backend)",
+    "author": "77785313+Pixnop@users.noreply.github.com",
+    "description": "Vintage Story dedicated server with the Nimbus backend mod preinstalled, ready to join a Nimbus proxy network. The panel's variables drive nimbus-server.json (server id, registry URL, shared secret) and are re-applied on every boot.",
+    "features": null,
+    "docker_images": {
+        ".NET 10": "ghcr.io/parkervcp/yolks:dotnet_10"
+    },
+    "file_denylist": [],
+    "startup": "dotnet VintagestoryServer.dll --dataPath /home/container/data --port {{SERVER_PORT}}",
+    "config": {
+        "files": "{\"data/ModConfig/nimbus-server.json\": {\"parser\": \"json\", \"find\": {\"ServerId\": \"{{server.build.env.NIMBUS_SERVER_ID}}\", \"DisplayName\": \"{{server.build.env.NIMBUS_SERVER_ID}}\", \"RegistryUrl\": \"{{server.build.env.NIMBUS_REGISTRY_URL}}\", \"SharedSecret\": \"{{server.build.env.NIMBUS_SHARED_SECRET}}\", \"PublicHost\": \"{{server.build.env.NIMBUS_PUBLIC_HOST}}\", \"PublicPort\": \"{{server.build.default.port}}\", \"ReservationRequired\": \"{{server.build.env.NIMBUS_RESERVATION_REQUIRED}}\"}}}",
+        "startup": "{\"done\": \"Dedicated Server now running\"}",
+        "logs": "{}",
+        "stop": "/stop"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Vintage Story dedicated server + Nimbus backend mod installer.\n# Source of the egg's scripts.installation.script field (see eggs/README.md).\n# Runs in the panel's install container; server files land in /mnt/server.\nset -euo pipefail\n\napt-get update -qq && apt-get install -y -qq curl unzip > /dev/null\n\nVS_VERSION=\"${VS_VERSION:-1.22.3}\"\nNIMBUS_DOWNLOAD_URL=\"${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/0.1.0-dev/Nimbus-v0.1.0.zip}\"\n\ncd /mnt/server\n\necho \"Downloading Vintage Story dedicated server ${VS_VERSION}...\"\ncurl -sSL --fail -o vs_server.tar.gz \\\n  \"https://cdn.vintagestory.at/gamefiles/stable/vs_server_linux-x64_${VS_VERSION}.tar.gz\"\ntar -xzf vs_server.tar.gz\nrm vs_server.tar.gz\n\necho \"Installing the Nimbus backend mod...\"\nmkdir -p data/Mods data/ModConfig\ncurl -sSL --fail -o /tmp/nimbus.zip \"${NIMBUS_DOWNLOAD_URL}\"\nrm -rf /tmp/nimbus && mkdir -p /tmp/nimbus\nunzip -qo /tmp/nimbus.zip -d /tmp/nimbus\nMOD_DIR=$(find /tmp/nimbus -type d -name \"Nimbus.ServerMod\" | head -1)\nif [ -z \"${MOD_DIR}\" ]; then\n  echo \"Nimbus.ServerMod folder not found in the release zip\" >&2\n  exit 1\nfi\nrm -rf data/Mods/Nimbus.ServerMod\ncp -r \"${MOD_DIR}\" data/Mods/\nrm -rf /tmp/nimbus /tmp/nimbus.zip\n\n# Initial mod config; the panel's file parser re-stamps these values on every boot,\n# so panel variables stay authoritative after the install.\nif [ ! -f data/ModConfig/nimbus-server.json ]; then\n  cat > data/ModConfig/nimbus-server.json <<EOF\n{\n  \"Enabled\": true,\n  \"ServerId\": \"${NIMBUS_SERVER_ID:-backend-1}\",\n  \"DisplayName\": \"${NIMBUS_SERVER_ID:-backend-1}\",\n  \"PublicHost\": \"${NIMBUS_PUBLIC_HOST:-127.0.0.1}\",\n  \"PublicPort\": 42421,\n  \"RegistryUrl\": \"${NIMBUS_REGISTRY_URL:-http://127.0.0.1:8765}\",\n  \"SharedSecret\": \"${NIMBUS_SHARED_SECRET:-change-me-and-keep-secret}\",\n  \"ReservationRequired\": true\n}\nEOF\nfi\n\necho \"Install complete.\"\n",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Vintage Story version",
+            "description": "Game version to install, from the stable CDN (must be 1.19 or newer for Nimbus).",
+            "env_variable": "VS_VERSION",
+            "default_value": "1.22.3",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:20",
+            "field_type": "text"
+        },
+        {
+            "name": "Nimbus release URL",
+            "description": "Download URL of the Nimbus release zip; the Nimbus.ServerMod folder inside it is installed as a mod.",
+            "env_variable": "NIMBUS_DOWNLOAD_URL",
+            "default_value": "https://github.com/StratumServer/Nimbus/releases/download/0.1.0-dev/Nimbus-v0.1.0.zip",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Nimbus server id",
+            "description": "Unique id of this backend in the Nimbus network. Must match the proxy's [servers] entry.",
+            "env_variable": "NIMBUS_SERVER_ID",
+            "default_value": "backend-1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|alpha_dash|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Nimbus registry URL",
+            "description": "URL of the Nimbus registry (the proxy's embedded registry bind, or a standalone registry).",
+            "env_variable": "NIMBUS_REGISTRY_URL",
+            "default_value": "http://127.0.0.1:8765",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Nimbus shared secret",
+            "description": "HMAC shared secret of the Nimbus network. Must match the registry's secret.",
+            "env_variable": "NIMBUS_SHARED_SECRET",
+            "default_value": "change-me-and-keep-secret",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Nimbus public host",
+            "description": "Host address this backend advertises to the registry (how the proxy network reaches it).",
+            "env_variable": "NIMBUS_PUBLIC_HOST",
+            "default_value": "127.0.0.1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Require proxy reservations",
+            "description": "When true, players connecting without a proxy reservation are kicked (recommended: keeps players from bypassing the proxy).",
+            "env_variable": "NIMBUS_RESERVATION_REQUIRED",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
+            "field_type": "text"
+        }
+    ]
+}
