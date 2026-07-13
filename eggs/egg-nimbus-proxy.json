@@ -1,0 +1,72 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PANEL - PTERODACTYL/PELICAN COMPATIBLE",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-07-13T00:00:00+00:00",
+    "name": "Nimbus proxy",
+    "author": "77785313+Pixnop@users.noreply.github.com",
+    "description": "The Nimbus proxy process: fronts every backend on one address, with the embedded registry serving backend heartbeats over HTTP. The install writes nimbus.proxy.toml from the egg variables; edit that file (or reinstall) for changes, and grow the [servers] pool there for real networks.",
+    "features": null,
+    "docker_images": {
+        ".NET 10": "ghcr.io/parkervcp/yolks:dotnet_10"
+    },
+    "file_denylist": [],
+    "startup": "dotnet Nimbus.Proxy.dll",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"listening on\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Nimbus proxy installer. Source of the proxy egg's scripts.installation.script field.\n# Runs in the panel's install container; server files land in /mnt/server.\nset -euo pipefail\n\napt-get update -qq && apt-get install -y -qq curl unzip > /dev/null\n\nNIMBUS_DOWNLOAD_URL=\"${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/0.1.0-dev/Nimbus-v0.1.0.zip}\"\n\ncd /mnt/server\n\necho \"Downloading the Nimbus release...\"\ncurl -sSL --fail -o /tmp/nimbus.zip \"${NIMBUS_DOWNLOAD_URL}\"\nrm -rf /tmp/nimbus && mkdir -p /tmp/nimbus\nunzip -qo /tmp/nimbus.zip -d /tmp/nimbus\nPROXY_DIR=$(find /tmp/nimbus -type d -name \"Nimbus\" | head -1)\nif [ -z \"${PROXY_DIR}\" ]; then\n  echo \"Nimbus proxy folder not found in the release zip\" >&2\n  exit 1\nfi\ncp -r \"${PROXY_DIR}\"/. /mnt/server/\nrm -rf /tmp/nimbus /tmp/nimbus.zip\n\n# The proxy reads nimbus.proxy.toml next to the binary. Written once here from the egg\n# variables (Wings has no TOML parser, so panel-variable changes need a reinstall or a\n# manual edit of this file). The backend pool below is a starter: real networks edit\n# [servers] and try directly.\nif [ ! -f nimbus.proxy.toml ]; then\n  cat > nimbus.proxy.toml <<EOF\nbind = \"0.0.0.0:${SERVER_PORT:-42420}\"\ntry = [ \"default\" ]\n\n[servers]\ndefault = \"${NIMBUS_DEFAULT_BACKEND:-127.0.0.1:42421}\"\n\n[registry]\nmode = \"embedded\"\n# Backends heartbeat here; keep it reachable from your backend containers.\nembedded_bind = \"${NIMBUS_EMBEDDED_REGISTRY_BIND:-http://0.0.0.0:8765}\"\n# The proxy refuses to start on a non-loopback registry bind until this is changed.\nembedded_shared_secret = \"${NIMBUS_SHARED_SECRET:-change-me-and-keep-secret}\"\n\n[metrics]\nenabled = true\nbind = \"http://127.0.0.1:42500\"\nEOF\nfi\n\necho \"Install complete.\"\n",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Nimbus release URL",
+            "description": "Download URL of the Nimbus release zip; the proxy bundle inside it is installed.",
+            "env_variable": "NIMBUS_DOWNLOAD_URL",
+            "default_value": "https://github.com/StratumServer/Nimbus/releases/download/0.1.0-dev/Nimbus-v0.1.0.zip",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Default backend",
+            "description": "host:port of the first backend, written as the starter [servers] entry. Edit nimbus.proxy.toml to grow the pool.",
+            "env_variable": "NIMBUS_DEFAULT_BACKEND",
+            "default_value": "127.0.0.1:42421",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Embedded registry bind",
+            "description": "HTTP URL the embedded registry listens on for backend heartbeats. Keep it reachable from your backend containers.",
+            "env_variable": "NIMBUS_EMBEDDED_REGISTRY_BIND",
+            "default_value": "http://0.0.0.0:8765",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Nimbus shared secret",
+            "description": "HMAC secret of the Nimbus network; every proxy, registry and backend must use the same value. REQUIRED: replace the default with a long random string. The proxy refuses to start on a non-loopback registry bind until this is changed.",
+            "env_variable": "NIMBUS_SHARED_SECRET",
+            "default_value": "change-me-and-keep-secret",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:128",
+            "field_type": "text"
+        }
+    ]
+}

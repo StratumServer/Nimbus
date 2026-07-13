@@ -70,7 +70,7 @@
         },
         {
             "name": "Nimbus shared secret",
-            "description": "HMAC shared secret of the Nimbus network. Must match the registry's secret.",
+            "description": "HMAC secret of the Nimbus network; every proxy, registry and backend must use the same value. REQUIRED: replace the default with a long random string. Must match the registry this backend heartbeats to.",
             "env_variable": "NIMBUS_SHARED_SECRET",
             "default_value": "change-me-and-keep-secret",
             "user_viewable": true,

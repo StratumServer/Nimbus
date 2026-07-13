@@ -30,12 +30,29 @@ Import it via Admin → Nests/Eggs → Import Egg (Pterodactyl) or Admin → Egg
 (Pelican), assign an allocation, set the variables, done. Runs on
 `ghcr.io/parkervcp/yolks:dotnet_10` (Vintage Story 1.22+ requires the .NET 10 runtime).
 
+## egg-nimbus-proxy.json
+
+The proxy process as a panel server: the install pulls the proxy bundle from the release
+zip and writes `nimbus.proxy.toml` from the egg variables (bind on the panel's primary
+allocation, a starter `[servers]` entry, the embedded registry's HTTP bind and shared
+secret). Wings has no TOML parser, so later changes mean editing that file or
+reinstalling; real networks grow the `[servers]` pool in the file directly. The proxy
+refuses to start until the shared secret is changed from its default (its config
+validator treats a non-loopback registry bind with a default secret as an error), which
+makes the panel's variable screen the natural place to set it.
+
+## egg-nimbus-registry.json
+
+The standalone registry, for multi-proxy deployments (single-proxy networks should keep
+the proxy's embedded registry and skip this egg). Release zips do not ship it, so the
+install builds it from source (`NIMBUS_GIT_REPO` / `NIMBUS_GIT_REF`) in the .NET 10 SDK
+container and publishes into the server folder.
+
 ## Maintaining
 
-`install-vs-nimbus.sh` is the readable source of the egg's embedded install script; if
-you change it, regenerate the JSON (the script is embedded verbatim in
-`scripts.installation.script`).
+The `install-*.sh` files are the readable sources of each egg's embedded install
+script; after editing one, regenerate the JSON files with:
 
-Not covered yet: an egg for the proxy process itself and one for the standalone
-registry. Both are plain .NET console apps, so they are straightforward follow-ups once
-this shape is agreed on.
+```sh
+cd eggs && python3 generate.py
+```
