@@ -5,6 +5,12 @@ public sealed class NimbusServerConfig
     public bool Enabled { get; set; } = true;
     public string ServerId { get; set; } = "";
     public string DisplayName { get; set; } = "";
+
+    // Address this backend advertises to the registry: where the NETWORK reaches this
+    // server, not where players connect (players connect to the proxy's bind). The proxy
+    // dials it for seamless transfers and stamps it into redirect packets; it must be
+    // reachable from the proxy, and today's RedirectFix clients reconnect to the proxy's
+    // cached address regardless. See the README's "Addresses" section for the full map.
     public string PublicHost { get; set; } = "";
     public int PublicPort { get; set; } = 42420;
     public List<string> Tags { get; set; } = new();

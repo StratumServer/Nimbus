@@ -5,6 +5,10 @@ public sealed class BackendHeartbeat
 {
     public string ServerId { get; set; } = "";
     public string DisplayName { get; set; } = "";
+
+    // Where the NETWORK reaches this backend (proxy-side dials and redirect stamping),
+    // not where players connect. Distinct from the registry's Identity.PublicHost, which
+    // is the PROXY's public address advertised on the VS master server.
     public string PublicHost { get; set; } = "";
     public int PublicPort { get; set; } = 42420;
     public string[] Tags { get; set; } = Array.Empty<string>();
