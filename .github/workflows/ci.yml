@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, indev]
   pull_request:
-    branches: [main]
+    branches: [main, indev]
 
 env:
   VS_VERSION: "1.22.3"
