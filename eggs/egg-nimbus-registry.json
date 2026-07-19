@@ -1,0 +1,62 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PANEL - PTERODACTYL/PELICAN COMPATIBLE",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-07-13T00:00:00+00:00",
+    "name": "Nimbus registry (standalone)",
+    "author": "77785313+Pixnop@users.noreply.github.com",
+    "description": "The standalone Nimbus registry for multi-proxy deployments (single-proxy networks can use the proxy's embedded registry instead). Not shipped in release zips, so the install builds it from source with the .NET 10 SDK. The install writes nimbus.registry.toml from the egg variables; edit that file (or reinstall) for changes.",
+    "features": null,
+    "docker_images": {
+        ".NET 10": "ghcr.io/parkervcp/yolks:dotnet_10"
+    },
+    "file_denylist": [],
+    "startup": "dotnet Nimbus.Registry.dll",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"registry listening on\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Standalone Nimbus registry installer. Source of the registry egg's\n# scripts.installation.script field. The registry is not shipped in the release zip,\n# so it is built from source; the install container is the .NET 10 SDK image.\n# Server files land in /mnt/server.\nset -euo pipefail\n\napt-get update -qq && apt-get install -y -qq git > /dev/null\n\nNIMBUS_GIT_REPO=\"${NIMBUS_GIT_REPO:-https://github.com/StratumServer/Nimbus.git}\"\nNIMBUS_GIT_REF=\"${NIMBUS_GIT_REF:-main}\"\n\necho \"Building the Nimbus registry from ${NIMBUS_GIT_REPO}@${NIMBUS_GIT_REF}...\"\nrm -rf /tmp/nimbus-src\ngit clone --depth 1 --branch \"${NIMBUS_GIT_REF}\" \"${NIMBUS_GIT_REPO}\" /tmp/nimbus-src\ndotnet publish /tmp/nimbus-src/Nimbus.Registry/Nimbus.Registry.csproj \\\n  -c Release -o /mnt/server --nologo\nrm -rf /tmp/nimbus-src\n\ncd /mnt/server\n\n# The registry reads nimbus.registry.toml next to the binary. Written once here from the\n# egg variables (Wings has no TOML parser, so panel-variable changes need a reinstall or\n# a manual edit of this file).\nif [ ! -f nimbus.registry.toml ]; then\n  cat > nimbus.registry.toml <<EOF\nbind_url = \"http://0.0.0.0:${SERVER_PORT:-8765}\"\nshared_secret = \"${NIMBUS_SHARED_SECRET:-change-me-and-keep-secret}\"\nEOF\nfi\n\necho \"Install complete.\"\n",
+            "container": "mcr.microsoft.com/dotnet/sdk:10.0",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Git repository",
+            "description": "Repository the registry is built from.",
+            "env_variable": "NIMBUS_GIT_REPO",
+            "default_value": "https://github.com/StratumServer/Nimbus.git",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Git ref",
+            "description": "Branch or tag to build.",
+            "env_variable": "NIMBUS_GIT_REF",
+            "default_value": "main",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:100",
+            "field_type": "text"
+        },
+        {
+            "name": "Nimbus shared secret",
+            "description": "HMAC secret of the Nimbus network; every proxy, registry and backend must use the same value. REQUIRED: replace the default with a long random string. Backends and proxies authenticate against this registry with it.",
+            "env_variable": "NIMBUS_SHARED_SECRET",
+            "default_value": "change-me-and-keep-secret",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:128",
+            "field_type": "text"
+        }
+    ]
+}
