@@ -16,6 +16,7 @@ public static class RegistryHosting
     public static void AddNimbusRegistry(this WebApplicationBuilder builder, RegistryConfig cfg, bool withMasterServer = true)
     {
         builder.Services.AddSingleton(cfg);
+        builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<BackendRegistry>();
         builder.Services.AddSingleton<ReservationStore>();
         builder.Services.AddSingleton<TransferIntentStore>();

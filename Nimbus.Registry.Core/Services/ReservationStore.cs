@@ -8,6 +8,9 @@ namespace Nimbus.Registry.Services;
 public sealed class ReservationStore
 {
     private readonly ConcurrentDictionary<string, TransferReservation> _reservations = new();
+    private readonly TimeProvider _clock;
+
+    public ReservationStore(TimeProvider? clock = null) => _clock = clock ?? TimeProvider.System;
 
     public void Add(TransferReservation r) => _reservations[r.Id] = r;
 
@@ -16,7 +19,7 @@ public sealed class ReservationStore
     public TransferReservation? Consume(string id, string targetServerId)
     {
         if (!_reservations.TryGetValue(id, out var r)) return null;
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
         if (now > r.ExpiresAtUnix) { _reservations.TryRemove(id, out _); return null; }
         if (!string.Equals(r.TargetServerId, targetServerId, StringComparison.OrdinalIgnoreCase)) return null;
         return _reservations.TryRemove(id, out var taken) ? taken : null;
@@ -30,7 +33,7 @@ public sealed class ReservationStore
     // reservation id (vanilla clients have no way to carry one).
     public TransferReservation? ConsumeByUid(string playerUid, string targetServerId)
     {
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
         foreach (var kv in _reservations)
         {
             var r = kv.Value;
@@ -44,7 +47,7 @@ public sealed class ReservationStore
 
     public int Prune()
     {
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
         int dropped = 0;
         foreach (var kv in _reservations)
         {

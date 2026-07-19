@@ -8,8 +8,13 @@ public sealed class NonceCache
 {
     private readonly ConcurrentDictionary<string, long> _seen = new();
     private readonly RegistryConfig _cfg;
+    private readonly TimeProvider _clock;
 
-    public NonceCache(RegistryConfig cfg) { _cfg = cfg; }
+    public NonceCache(RegistryConfig cfg, TimeProvider? clock = null)
+    {
+        _cfg = cfg;
+        _clock = clock ?? TimeProvider.System;
+    }
 
     // Returns true if the nonce is fresh and was added, false if it's a replay.
     public bool TryRecord(string nonce, long nowUnix)
@@ -19,7 +24,7 @@ public sealed class NonceCache
 
     public int Prune()
     {
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
         int dropped = 0;
         foreach (var kv in _seen)
         {
