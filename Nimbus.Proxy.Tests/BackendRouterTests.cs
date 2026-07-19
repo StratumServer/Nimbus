@@ -5,28 +5,6 @@ namespace Nimbus.Proxy.Tests;
 
 public class BackendRouterTests
 {
-    private sealed class FakeRegistryClient : IRegistryClient
-    {
-        public NetworkSnapshot? Snapshot;
-        public bool Throw;
-
-        public Task<NetworkSnapshot?> GetServersAsync(CancellationToken ct, bool forceRefresh = false)
-            => Throw
-                ? throw new InvalidOperationException("registry down")
-                : Task.FromResult(Snapshot);
-
-        public Task<TransferReservation?> MintReservationAsync(string playerUid, string playerName,
-            string targetServerId, string? reason, CancellationToken ct,
-            string? realRemoteIp = null, int realRemotePort = 0)
-            => throw new NotSupportedException("not used by the router");
-
-        public Task<BackendSnapshot?> ResolveByServerIdAsync(string serverId, CancellationToken ct)
-            => throw new NotSupportedException("not used by the router");
-
-        public Task<List<TransferIntent>> DrainTransferIntentsAsync(CancellationToken ct)
-            => throw new NotSupportedException("not used by the router");
-    }
-
     private static ProxyConfig Config(params string[] serverIds)
     {
         var cfg = new ProxyConfig { Servers = new(), Try = new() };
