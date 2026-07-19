@@ -59,8 +59,10 @@ internal sealed class MetricsEndpoint
         return app;
     }
 
-    // Empty token = open endpoint (the default bind is loopback). With a token, accept the
-    // Authorization header or ?token= for panels that cannot set headers.
+    // Empty token = open endpoint (the default bind is loopback). With a token, the
+    // Authorization header is the preferred credential; ?token= is a compatibility
+    // fallback for panels that cannot set headers (query strings can leak into access
+    // logs, so the header should win wherever the caller has a choice).
     private bool IsAuthorized(HttpContext ctx)
     {
         string token = cfg.StatusApiToken;
