@@ -16,6 +16,13 @@ public sealed class NimbusServerConfig
 
     public bool Maintenance { get; set; } = false;
     public bool ReservationRequired { get; set; } = true;
+
+    // Behavior when ReservationRequired is on but the registry can't be reached to confirm a
+    // reservation. Default (false) fails open: the player is let in, so a registry outage does
+    // not lock everyone out. Set true to fail closed: the player is kicked, so a registry
+    // outage cannot be used to bypass the proxy on a reservation-gated network.
+    public bool FailClosedWhenRegistryUnreachable { get; set; } = false;
+
     public bool AllowPlayerServerCommand { get; set; } = true;
     public string TransferMode { get; set; } = "redirect";
     public int SeamlessPrepareAckTimeoutSeconds { get; set; } = 8;

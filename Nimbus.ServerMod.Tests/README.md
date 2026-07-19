@@ -29,8 +29,10 @@ Inbound (reservation gating):
 - The consume call carries all four `X-Nimbus-*` headers and its HMAC verifies against an
   independent reimplementation of the canonical string (so a signing bug cannot
   self-validate).
-- Characterization: registry unreachable + `ReservationRequired=true` currently admits
-  the player (fail-open). If fail-closed is the intended trade-off, flip that test.
+- Registry unreachable + `ReservationRequired=true`: fails open by default (player
+  admitted, so an outage does not lock everyone out) and fails closed when
+  `FailClosedWhenRegistryUnreachable=true` (player kicked, so an outage cannot be used to
+  bypass the proxy). Both modes are covered.
 
 Outbound (transfer commands):
 
