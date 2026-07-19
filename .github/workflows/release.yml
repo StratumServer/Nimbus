@@ -1,0 +1,121 @@
+name: release
+
+# Tag-driven releases: push a tag like v0.2.0 and this builds the full bundle and
+# attaches it to a GitHub release. Two artifacts:
+#   Nimbus-v<version>.zip            the operator bundle (proxy, standalone registry,
+#                                    ServerMod folder mod) in the release_full/ layout
+#                                    the panel eggs and existing installs expect
+#   Nimbus.ServerMod-v<version>.zip  the ServerMod alone, modinfo.json at the zip root,
+#                                    ready to upload to mods.vintagestory.at
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  VS_VERSION: "1.22.3"
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # The tag is the single source of truth; refuse to ship if the code disagrees,
+      # so a release can never carry a stale version string.
+      - name: Check the tag matches the code's versions
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+          MOD_VERSION=$(grep -oP 'Version = "\K[^"]+' Nimbus.ServerMod/AssemblyInfo.cs | head -1)
+          PROTO_VERSION=$(grep -oP 'NimbusVersion = "\K[^"]+' Nimbus.Shared/NimbusProtocol.cs)
+          FAIL=0
+          [ "$MOD_VERSION" = "$VERSION" ] || { echo "::error::Nimbus.ServerMod/AssemblyInfo.cs says '$MOD_VERSION', tag says '$VERSION'"; FAIL=1; }
+          [ "$PROTO_VERSION" = "$VERSION" ] || { echo "::error::Nimbus.Shared/NimbusProtocol.cs NimbusVersion says '$PROTO_VERSION', tag says '$VERSION'"; FAIL=1; }
+          exit $FAIL
+
+      - name: Cache Vintage Story server
+        id: cache-vs
+        uses: actions/cache@v4
+        with:
+          path: ~/vs
+          key: vs-server-linux-x64-${{ env.VS_VERSION }}
+
+      - name: Download Vintage Story server
+        if: steps.cache-vs.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          curl -sSL --proto '=https' --proto-redir '=https' -o vs_server.tar.gz "https://cdn.vintagestory.at/gamefiles/stable/vs_server_linux-x64_${VS_VERSION}.tar.gz"
+          mkdir -p "$HOME/vs"
+          tar -xzf vs_server.tar.gz -C "$HOME/vs"
+
+      # Same layout mirroring as ci.yml: the csproj files resolve the game dlls
+      # relative to the repo's parent directory.
+      - name: Mirror the expected dll layout
+        run: |
+          set -e
+          DLL_DIR="$(dirname "$(find "$HOME/vs" -name VintagestoryAPI.dll | head -1)")"
+          PARENT="$(dirname "$GITHUB_WORKSPACE")"
+          mkdir -p "$PARENT/bin/Release/net10.0" "$PARENT/.vanilla/Lib"
+          cp "$DLL_DIR/VintagestoryAPI.dll" "$DLL_DIR/VintagestoryAPI.pdb" "$PARENT/bin/Release/net10.0/"
+          cp "$DLL_DIR/Lib/protobuf-net.dll" "$PARENT/.vanilla/Lib/"
+
+      - name: Build the bundle
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGE=stage/release_full
+
+          dotnet publish Nimbus.Proxy/Nimbus.Proxy.csproj -c Release -o "$STAGE/Nimbus" --nologo
+          dotnet publish Nimbus.Registry/Nimbus.Registry.csproj -c Release -o "$STAGE/Nimbus.Registry" --nologo
+
+          dotnet build Nimbus.ServerMod/Nimbus.ServerMod.csproj -c Release --nologo
+          mkdir -p "$STAGE/Nimbus.ServerMod"
+          cp Nimbus.ServerMod/bin/Release/net10.0/Nimbus.ServerMod.dll \
+             Nimbus.ServerMod/bin/Release/net10.0/Nimbus.ServerMod.deps.json \
+             Nimbus.Shared/bin/Release/net10.0/Nimbus.Shared.dll \
+             Nimbus.Shared/bin/Release/net10.0/Nimbus.Shared.deps.json \
+             "$STAGE/Nimbus.ServerMod/"
+          # Same shape (and the same modid, which is the mod's published identity) as
+          # the historical release; only the version is stamped from the tag.
+          cat > "$STAGE/Nimbus.ServerMod/modinfo.json" <<EOF
+          {
+            "type": "code",
+            "name": "Nimbus",
+            "modid": "Nimbus.ServerMod",
+            "version": "$VERSION",
+            "description": "The backend servermod for Nimbus",
+            "authors": [ "imtsubaki (tsu)", "Pixnop" ],
+            "requiredOnClient": false,
+            "requiredOnServer": true,
+            "dependencies": {
+              "game": ""
+            }
+          }
+          EOF
+
+          (cd stage && zip -qr "../Nimbus-v$VERSION.zip" release_full)
+          (cd "$STAGE/Nimbus.ServerMod" && zip -qr "$GITHUB_WORKSPACE/Nimbus.ServerMod-v$VERSION.zip" .)
+          command ls -la Nimbus-v$VERSION.zip Nimbus.ServerMod-v$VERSION.zip
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "Nimbus-v$VERSION.zip" \
+            "Nimbus.ServerMod-v$VERSION.zip" \
+            --title "Nimbus v$VERSION" \
+            --generate-notes
