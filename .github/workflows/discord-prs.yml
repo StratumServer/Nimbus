@@ -1,156 +1,378 @@
 name: Discord GitHub Notifications
 
 on:
-  # pull_request_target, not pull_request: fork PRs get no secrets under
-  # pull_request, so DISCORD_WEBHOOK resolved empty, the curl failed, and every
-  # external PR wore a red X while the team never got the ping. This trigger
-  # runs in the base-repo context (secrets available) and is safe here because
-  # no job ever checks out or executes PR code; they only read event metadata.
+  # Runs in the base repository, allowing fork PR notifications to access the
+  # webhook secret. Never check out or execute pull request code in this job.
   pull_request_target:
-    types: [opened, reopened, ready_for_review, synchronize, closed]
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - closed
 
   pull_request_review:
-    types: [submitted]
+    types:
+      - submitted
 
   issues:
-    types: [opened, reopened, closed, assigned, labeled, unlabeled]
+    types:
+      - opened
+      - reopened
+      - assigned
+      - closed
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: discord-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
-  notify-pr:
-    if: github.event_name == 'pull_request_target'
+  notify:
+    name: Send Discord notification
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Send PR notification
-        env:
-          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
-          ACTION: ${{ github.event.action }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_MERGED: ${{ github.event.pull_request.merged }}
-        run: |
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "DISCORD_WEBHOOK is not available in this context; skipping the notification"
-            exit 0
-          fi
-          case "$ACTION" in
-            opened)
-              MSG="$(printf '🟢 **New pull request** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$PR_AUTHOR" "$PR_TITLE" "$PR_URL")"
-              ;;
-            reopened)
-              MSG="$(printf '🔁 **Pull request reopened** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$PR_AUTHOR" "$PR_TITLE" "$PR_URL")"
-              ;;
-            ready_for_review)
-              MSG="$(printf '👀 **Pull request ready for review** #%s\n**%s**\n%s' "$PR_NUMBER" "$PR_TITLE" "$PR_URL")"
-              ;;
-            synchronize)
-              MSG="$(printf '✏️ **Pull request updated** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$PR_AUTHOR" "$PR_TITLE" "$PR_URL")"
-              ;;
-            closed)
-              if [ "$PR_MERGED" = "true" ]; then
-                MSG="$(printf '✅ **Pull request merged** #%s\n**%s**\n%s' "$PR_NUMBER" "$PR_TITLE" "$PR_URL")"
-              else
-                MSG="$(printf '🔒 **Pull request closed** #%s\n**%s**\n%s' "$PR_NUMBER" "$PR_TITLE" "$PR_URL")"
-              fi
-              ;;
-            *)
-              MSG="$(printf '📌 **Pull request event:** `%s` #%s\n**%s**\n%s' "$ACTION" "$PR_NUMBER" "$PR_TITLE" "$PR_URL")"
-              ;;
-          esac
-
-          jq -n --arg content "$MSG" '{content: $content}' > payload.json
-
-          curl -H "Content-Type: application/json" \
-            -d @payload.json \
-            "$WEBHOOK_URL"
-
-  notify-review:
-    if: github.event_name == 'pull_request_review'
-    runs-on: ubuntu-latest
+    # Ordinary review comments are intentionally ignored.
+    if: >-
+      github.event_name != 'pull_request_review' ||
+      github.event.review.state == 'approved' ||
+      github.event.review.state == 'changes_requested'
 
     steps:
-      - name: Send review notification
+      - name: Build Discord payload
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+
+          const event = JSON.parse(
+            fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")
+          );
+
+          const eventName = process.env.EVENT_NAME;
+          const action = process.env.EVENT_ACTION;
+          const repository = process.env.REPOSITORY;
+          const repositoryUrl = process.env.REPOSITORY_URL;
+
+          const colors = {
+            green: 0x3fb950,
+            purple: 0xa371f7,
+            yellow: 0xd29922,
+            red: 0xf85149,
+            gray: 0x8b949e,
+            blue: 0x58a6ff
+          };
+
+          function clean(value = "") {
+            return String(value)
+              .replace(/@everyone/gi, "@\u200beveryone")
+              .replace(/@here/gi, "@\u200bhere")
+              .replace(/<@&/g, "<@\u200b&")
+              .trim();
+          }
+
+          function truncate(value, length) {
+            value = clean(value);
+
+            if (!value) {
+              return "";
+            }
+
+            return value.length > length
+              ? `${value.slice(0, length - 1).trimEnd()}…`
+              : value;
+          }
+
+          function description(body, fallback) {
+            const text = truncate(body, 500);
+            return text || fallback;
+          }
+
+          function labels(items = []) {
+            if (!items.length) {
+              return null;
+            }
+
+            return truncate(
+              items.map(label => `\`${clean(label.name)}\``).join(" "),
+              1024
+            );
+          }
+
+          function field(name, value, inline = true) {
+            return {
+              name,
+              value: clean(value) || "—",
+              inline
+            };
+          }
+
+          let embed;
+          let targetUrl;
+          let buttonLabel;
+
+          if (eventName === "pull_request_target") {
+            const pr = event.pull_request;
+            targetUrl = pr.html_url;
+            buttonLabel = `View pull request #${pr.number}`;
+
+            let heading;
+            let color;
+
+            switch (action) {
+              case "opened":
+                if (pr.draft) {
+                  heading = "Draft pull request opened";
+                  color = colors.gray;
+                } else {
+                  heading = "Pull request opened";
+                  color = colors.green;
+                }
+                break;
+
+              case "reopened":
+                heading = "Pull request reopened";
+                color = colors.blue;
+                break;
+
+              case "ready_for_review":
+                heading = "Pull request ready for review";
+                color = colors.purple;
+                break;
+
+              case "closed":
+                if (pr.merged) {
+                  heading = "Pull request merged";
+                  color = colors.purple;
+                } else {
+                  heading = "Pull request closed";
+                  color = colors.red;
+                }
+                break;
+
+              default:
+                process.exit(0);
+            }
+
+            const prLabels = labels(pr.labels);
+
+            embed = {
+              title: `${heading}  ·  #${pr.number}`,
+              url: pr.html_url,
+              color,
+              author: {
+                name: clean(pr.user.login),
+                url: pr.user.html_url,
+                icon_url: pr.user.avatar_url
+              },
+              description:
+                `### ${truncate(pr.title, 256)}\n` +
+                description(
+                  pr.body,
+                  pr.draft
+                    ? "_This pull request is still being drafted._ drafted"
+                    : "_No description was provided._"
+                ),
+              fields: [
+                field(
+                  "Changes",
+                  `**+${pr.additions}** additions\n**−${pr.deletions}** deletions`
+                ),
+                field(
+                  "Scope",
+                  `**${pr.changed_files}** files\n**${pr.commits}** commits`
+                ),
+                field(
+                  "Branches",
+                  `\`${pr.head.label}\` → \`${pr.base.ref}\``,
+                  false
+                )
+              ],
+              footer: {
+                text: `${repository}  •  Pull request`
+              },
+              timestamp: pr.updated_at
+            };
+
+            if (prLabels) {
+              embed.fields.push(field("Labels", prLabels, false));
+            }
+          }
+
+          if (eventName === "pull_request_review") {
+            const pr = event.pull_request;
+            const review = event.review;
+
+            targetUrl = review.html_url || pr.html_url;
+            buttonLabel = `View review on #${pr.number}`;
+
+            const approved = review.state === "approved";
+
+            embed = {
+              title: approved
+                ? `Pull request approved  ·  #${pr.number}`
+                : `Changes requested  ·  #${pr.number}`,
+              url: targetUrl,
+              color: approved ? colors.green : colors.yellow,
+              author: {
+                name: clean(review.user.login),
+                url: review.user.html_url,
+                icon_url: review.user.avatar_url
+              },
+              description:
+                `### ${truncate(pr.title, 256)}\n` +
+                description(
+                  review.body,
+                  approved
+                    ? "_Approved without an additional comment._"
+                    : "_Changes were requested without an additional comment._"
+                ),
+              fields: [
+                field("Author", `\`${pr.user.login}\``),
+                field("Branch", `\`${pr.head.ref}\``)
+              ],
+              footer: {
+                text: `${repository}  •  Pull request review`
+              },
+              timestamp: review.submitted_at
+            };
+          }
+
+          if (eventName === "issues") {
+            const issue = event.issue;
+            targetUrl = issue.html_url;
+            buttonLabel = `View issue #${issue.number}`;
+
+            let heading;
+            let color;
+
+            switch (action) {
+              case "opened":
+                heading = "Issue opened";
+                color = colors.green;
+                break;
+
+              case "reopened":
+                heading = "Issue reopened";
+                color = colors.blue;
+                break;
+
+              case "assigned":
+                heading = "Issue assigned";
+                color = colors.purple;
+                break;
+
+              case "closed":
+                heading =
+                  issue.state_reason === "not_planned"
+                    ? "Issue closed as not planned"
+                    : "Issue completed";
+                color =
+                  issue.state_reason === "not_planned"
+                    ? colors.gray
+                    : colors.purple;
+                break;
+
+              default:
+                process.exit(0);
+            }
+
+            const issueLabels = labels(issue.labels);
+            const assignees = (issue.assignees || [])
+              .map(user => `\`${clean(user.login)}\``)
+              .join(", ");
+
+            embed = {
+              title: `${heading}  ·  #${issue.number}`,
+              url: issue.html_url,
+              color,
+              author: {
+                name: clean(issue.user.login),
+                url: issue.user.html_url,
+                icon_url: issue.user.avatar_url
+              },
+              description:
+                `### ${truncate(issue.title, 256)}\n` +
+                description(issue.body, "_No description was provided._"),
+              fields: [],
+              footer: {
+                text: `${repository}  •  Issue`
+              },
+              timestamp: issue.updated_at
+            };
+
+            if (action === "assigned" && event.assignee) {
+              embed.fields.push(
+                field("Assigned to", `\`${event.assignee.login}\``)
+              );
+            } else if (assignees) {
+              embed.fields.push(field("Assigned to", assignees));
+            }
+
+            if (issueLabels) {
+              embed.fields.push(field("Labels", issueLabels, false));
+            }
+          }
+
+          if (!embed || !targetUrl) {
+            process.exit(0);
+          }
+
+          const payload = {
+            username: "Nimbus GitHub",
+            allowed_mentions: {
+              parse: []
+            },
+            embeds: [embed],
+            components: [
+              {
+                type: 1,
+                components: [
+                  {
+                    type: 2,
+                    style: 5,
+                    label: buttonLabel,
+                    url: targetUrl
+                  },
+                  {
+                    type: 2,
+                    style: 5,
+                    label: "Repository",
+                    url: repositoryUrl
+                  }
+                ]
+              }
+            ]
+          };
+
+          fs.writeFileSync("payload.json", JSON.stringify(payload));
+          NODE
+
+      - name: Send notification
         env:
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
-          REVIEW_STATE: ${{ github.event.review.state }}
-          REVIEWER: ${{ github.event.review.user.login }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if [ -z "$WEBHOOK_URL" ]; then
-            echo "DISCORD_WEBHOOK is not available in this context; skipping the notification"
+            echo "::notice::DISCORD_WEBHOOK is unavailable; skipping notification"
             exit 0
           fi
-          case "$REVIEW_STATE" in
-            approved)
-              MSG="$(printf '✅ **Pull request approved** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$REVIEWER" "$PR_TITLE" "$PR_URL")"
-              ;;
-            changes_requested)
-              MSG="$(printf '⚠️ **Changes requested** on #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$REVIEWER" "$PR_TITLE" "$PR_URL")"
-              ;;
-            commented)
-              MSG="$(printf '💬 **Pull request reviewed** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$REVIEWER" "$PR_TITLE" "$PR_URL")"
-              ;;
-            *)
-              MSG="$(printf '📌 **Pull request review:** `%s` on #%s by `%s`\n**%s**\n%s' "$REVIEW_STATE" "$PR_NUMBER" "$REVIEWER" "$PR_TITLE" "$PR_URL")"
-              ;;
-          esac
 
-          jq -n --arg content "$MSG" '{content: $content}' > payload.json
-
-          curl -H "Content-Type: application/json" \
-            -d @payload.json \
-            "$WEBHOOK_URL"
-
-  notify-issue:
-    if: github.event_name == 'issues'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Send issue notification
-        env:
-          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
-          ACTION: ${{ github.event.action }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_URL: ${{ github.event.issue.html_url }}
-          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_LABEL: ${{ github.event.label.name }}
-          ISSUE_ASSIGNEE: ${{ github.event.assignee.login }}
-        run: |
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "DISCORD_WEBHOOK is not available in this context; skipping the notification"
+          if [ ! -f payload.json ]; then
+            echo "This event does not require a Discord notification"
             exit 0
           fi
-          case "$ACTION" in
-            opened)
-              MSG="$(printf '🟢 **New issue** #%s by `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_AUTHOR" "$ISSUE_TITLE" "$ISSUE_URL")"
-              ;;
-            reopened)
-              MSG="$(printf '🔁 **Issue reopened** #%s by `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_AUTHOR" "$ISSUE_TITLE" "$ISSUE_URL")"
-              ;;
-            closed)
-              MSG="$(printf '✅ **Issue closed** #%s\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_TITLE" "$ISSUE_URL")"
-              ;;
-            assigned)
-              MSG="$(printf '👤 **Issue assigned** #%s to `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_ASSIGNEE" "$ISSUE_TITLE" "$ISSUE_URL")"
-              ;;
-            labeled)
-              MSG="$(printf '🏷️ **Issue labeled** #%s with `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_LABEL" "$ISSUE_TITLE" "$ISSUE_URL")"
-              ;;
-            unlabeled)
-              MSG="$(printf '🏷️ **Issue unlabeled** #%s removed `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_LABEL" "$ISSUE_TITLE" "$ISSUE_URL")"
-              ;;
-            *)
-              MSG="$(printf '📌 **Issue event:** `%s` #%s\n**%s**\n%s' "$ACTION" "$ISSUE_NUMBER" "$ISSUE_TITLE" "$ISSUE_URL")"
-              ;;
-          esac
 
-          jq -n --arg content "$MSG" '{content: $content}' > payload.json
-
-          curl -H "Content-Type: application/json" \
-            -d @payload.json \
-            "$WEBHOOK_URL"
+          curl \
+            --fail-with-body \
+            --retry 3 \
+            --retry-all-errors \
+            --header "Content-Type: application/json" \
+            --data @payload.json \
+            "${WEBHOOK_URL}?wait=true&with_components=true"
