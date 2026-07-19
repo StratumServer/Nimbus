@@ -1,0 +1,156 @@
+name: Discord GitHub Notifications
+
+on:
+  # pull_request_target, not pull_request: fork PRs get no secrets under
+  # pull_request, so DISCORD_WEBHOOK resolved empty, the curl failed, and every
+  # external PR wore a red X while the team never got the ping. This trigger
+  # runs in the base-repo context (secrets available) and is safe here because
+  # no job ever checks out or executes PR code; they only read event metadata.
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, closed]
+
+  pull_request_review:
+    types: [submitted]
+
+  issues:
+    types: [opened, reopened, closed, assigned, labeled, unlabeled]
+
+jobs:
+  notify-pr:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send PR notification
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
+          ACTION: ${{ github.event.action }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK is not available in this context; skipping the notification"
+            exit 0
+          fi
+          case "$ACTION" in
+            opened)
+              MSG="$(printf '🟢 **New pull request** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$PR_AUTHOR" "$PR_TITLE" "$PR_URL")"
+              ;;
+            reopened)
+              MSG="$(printf '🔁 **Pull request reopened** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$PR_AUTHOR" "$PR_TITLE" "$PR_URL")"
+              ;;
+            ready_for_review)
+              MSG="$(printf '👀 **Pull request ready for review** #%s\n**%s**\n%s' "$PR_NUMBER" "$PR_TITLE" "$PR_URL")"
+              ;;
+            synchronize)
+              MSG="$(printf '✏️ **Pull request updated** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$PR_AUTHOR" "$PR_TITLE" "$PR_URL")"
+              ;;
+            closed)
+              if [ "$PR_MERGED" = "true" ]; then
+                MSG="$(printf '✅ **Pull request merged** #%s\n**%s**\n%s' "$PR_NUMBER" "$PR_TITLE" "$PR_URL")"
+              else
+                MSG="$(printf '🔒 **Pull request closed** #%s\n**%s**\n%s' "$PR_NUMBER" "$PR_TITLE" "$PR_URL")"
+              fi
+              ;;
+            *)
+              MSG="$(printf '📌 **Pull request event:** `%s` #%s\n**%s**\n%s' "$ACTION" "$PR_NUMBER" "$PR_TITLE" "$PR_URL")"
+              ;;
+          esac
+
+          jq -n --arg content "$MSG" '{content: $content}' > payload.json
+
+          curl -H "Content-Type: application/json" \
+            -d @payload.json \
+            "$WEBHOOK_URL"
+
+  notify-review:
+    if: github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send review notification
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          REVIEWER: ${{ github.event.review.user.login }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK is not available in this context; skipping the notification"
+            exit 0
+          fi
+          case "$REVIEW_STATE" in
+            approved)
+              MSG="$(printf '✅ **Pull request approved** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$REVIEWER" "$PR_TITLE" "$PR_URL")"
+              ;;
+            changes_requested)
+              MSG="$(printf '⚠️ **Changes requested** on #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$REVIEWER" "$PR_TITLE" "$PR_URL")"
+              ;;
+            commented)
+              MSG="$(printf '💬 **Pull request reviewed** #%s by `%s`\n**%s**\n%s' "$PR_NUMBER" "$REVIEWER" "$PR_TITLE" "$PR_URL")"
+              ;;
+            *)
+              MSG="$(printf '📌 **Pull request review:** `%s` on #%s by `%s`\n**%s**\n%s' "$REVIEW_STATE" "$PR_NUMBER" "$REVIEWER" "$PR_TITLE" "$PR_URL")"
+              ;;
+          esac
+
+          jq -n --arg content "$MSG" '{content: $content}' > payload.json
+
+          curl -H "Content-Type: application/json" \
+            -d @payload.json \
+            "$WEBHOOK_URL"
+
+  notify-issue:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send issue notification
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
+          ACTION: ${{ github.event.action }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_LABEL: ${{ github.event.label.name }}
+          ISSUE_ASSIGNEE: ${{ github.event.assignee.login }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK is not available in this context; skipping the notification"
+            exit 0
+          fi
+          case "$ACTION" in
+            opened)
+              MSG="$(printf '🟢 **New issue** #%s by `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_AUTHOR" "$ISSUE_TITLE" "$ISSUE_URL")"
+              ;;
+            reopened)
+              MSG="$(printf '🔁 **Issue reopened** #%s by `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_AUTHOR" "$ISSUE_TITLE" "$ISSUE_URL")"
+              ;;
+            closed)
+              MSG="$(printf '✅ **Issue closed** #%s\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_TITLE" "$ISSUE_URL")"
+              ;;
+            assigned)
+              MSG="$(printf '👤 **Issue assigned** #%s to `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_ASSIGNEE" "$ISSUE_TITLE" "$ISSUE_URL")"
+              ;;
+            labeled)
+              MSG="$(printf '🏷️ **Issue labeled** #%s with `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_LABEL" "$ISSUE_TITLE" "$ISSUE_URL")"
+              ;;
+            unlabeled)
+              MSG="$(printf '🏷️ **Issue unlabeled** #%s removed `%s`\n**%s**\n%s' "$ISSUE_NUMBER" "$ISSUE_LABEL" "$ISSUE_TITLE" "$ISSUE_URL")"
+              ;;
+            *)
+              MSG="$(printf '📌 **Issue event:** `%s` #%s\n**%s**\n%s' "$ACTION" "$ISSUE_NUMBER" "$ISSUE_TITLE" "$ISSUE_URL")"
+              ;;
+          esac
+
+          jq -n --arg content "$MSG" '{content: $content}' > payload.json
+
+          curl -H "Content-Type: application/json" \
+            -d @payload.json \
+            "$WEBHOOK_URL"
