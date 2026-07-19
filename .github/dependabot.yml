@@ -1,0 +1,19 @@
+# Weekly dependency PRs, targeting indev like every other change.
+# NuGet updates are grouped into one PR per week (the Atlas harness moves fast and the
+# test packages move together); actions updates are rare enough to stay individual.
+version: 2
+updates:
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "indev"
+    groups:
+      nuget:
+        patterns: ["*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "indev"
