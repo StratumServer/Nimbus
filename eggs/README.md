@@ -48,6 +48,22 @@ the proxy's embedded registry and skip this egg). Release zips do not ship it, s
 install builds it from source (`NIMBUS_GIT_REPO` / `NIMBUS_GIT_REF`) in the .NET 10 SDK
 container and publishes into the server folder.
 
+## Reaching the registry between containers
+
+Backends heartbeat to `NIMBUS_REGISTRY_URL`, and under Wings every server lives in its
+own container, so how that URL resolves depends on your networking:
+
+- **Via the node's address** (the default Wings setup): point `NIMBUS_REGISTRY_URL` at
+  `http://<node-ip>:8765` and give the **proxy server a second allocation for port
+  8765** in the panel; without that allocation the embedded registry's port is not
+  exposed outside the proxy's container.
+- **Direct container networking**: if your Wings config puts the containers on a shared
+  Docker network, backends can reach the proxy's container directly (e.g.
+  `http://<proxy-container-name>:8765`) and no extra allocation is needed.
+
+The standalone registry egg does not have this concern: its bind uses the panel's
+primary allocation, so it is already reachable via the node address.
+
 ## Maintaining
 
 The `install-*.sh` files are the readable sources of each egg's embedded install
