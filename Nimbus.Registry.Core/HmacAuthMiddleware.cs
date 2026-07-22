@@ -13,11 +13,13 @@ public sealed class HmacAuthMiddleware
     private readonly RequestDelegate _next;
     private readonly RegistryConfig _cfg;
     private readonly NonceCache _nonces;
+    private readonly TimeProvider _clock;
     private readonly ILogger<HmacAuthMiddleware> _log;
 
-    public HmacAuthMiddleware(RequestDelegate next, RegistryConfig cfg, NonceCache nonces, ILogger<HmacAuthMiddleware> log)
+    public HmacAuthMiddleware(RequestDelegate next, RegistryConfig cfg, NonceCache nonces,
+        TimeProvider clock, ILogger<HmacAuthMiddleware> log)
     {
-        _next = next; _cfg = cfg; _nonces = nonces; _log = log;
+        _next = next; _cfg = cfg; _nonces = nonces; _clock = clock; _log = log;
     }
 
     public async Task Invoke(HttpContext ctx)
@@ -50,7 +52,7 @@ public sealed class HmacAuthMiddleware
             return;
         }
 
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
         if (Math.Abs(now - ts) > NimbusProtocol.MaxClockSkewSeconds)
         {
             await Reject(ctx, "clock skew");

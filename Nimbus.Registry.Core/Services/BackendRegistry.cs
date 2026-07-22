@@ -10,10 +10,12 @@ public sealed class BackendRegistry
 {
     private readonly ConcurrentDictionary<string, BackendRecord> _backends = new(StringComparer.OrdinalIgnoreCase);
     private readonly RegistryConfig _cfg;
+    private readonly TimeProvider _clock;
 
-    public BackendRegistry(RegistryConfig cfg)
+    public BackendRegistry(RegistryConfig cfg, TimeProvider? clock = null)
     {
         _cfg = cfg;
+        _clock = clock ?? TimeProvider.System;
     }
 
     public void Upsert(BackendHeartbeat hb)
@@ -21,7 +23,7 @@ public sealed class BackendRegistry
         var rec = new BackendRecord
         {
             Heartbeat = hb,
-            LastSeenUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            LastSeenUnix = _clock.GetUtcNow().ToUnixTimeSeconds()
         };
         _backends[hb.ServerId] = rec;
     }
@@ -31,7 +33,7 @@ public sealed class BackendRegistry
 
     public NetworkSnapshot Snapshot()
     {
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
         var snap = new NetworkSnapshot { GeneratedAtUnix = now };
         foreach (var rec in _backends.Values)
         {
@@ -66,7 +68,7 @@ public sealed class BackendRegistry
     // Drop entries that haven't sent a heartbeat in RegistryConfig.BackendDropSeconds.
     public int Prune()
     {
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
         int dropped = 0;
         foreach (var kv in _backends)
         {

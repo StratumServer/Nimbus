@@ -5,12 +5,13 @@ namespace Nimbus.Registry.Core.Tests;
 
 public class NonceCacheTests
 {
-    private static long Now => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    private readonly FakeClock clock = new();
+    private long Now => clock.NowUnix;
 
     [Fact]
     public void TryRecord_AcceptsFresh_RejectsReplay()
     {
-        var cache = new NonceCache(new RegistryConfig());
+        var cache = new NonceCache(new RegistryConfig(), clock);
 
         Assert.True(cache.TryRecord("nonce-1", Now));
         Assert.False(cache.TryRecord("nonce-1", Now));
@@ -21,8 +22,9 @@ public class NonceCacheTests
     public void Prune_DropsNoncesOlderThanWindow_KeepsFresh()
     {
         var cfg = new RegistryConfig { NonceWindowSeconds = 90 };
-        var cache = new NonceCache(cfg);
-        cache.TryRecord("old", Now - cfg.NonceWindowSeconds - 10);
+        var cache = new NonceCache(cfg, clock);
+        cache.TryRecord("old", Now);
+        clock.Advance(TimeSpan.FromSeconds(cfg.NonceWindowSeconds + 10)); // the window really elapses
         cache.TryRecord("fresh", Now);
 
         Assert.Equal(1, cache.Prune());

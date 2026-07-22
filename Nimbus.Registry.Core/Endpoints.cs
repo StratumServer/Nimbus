@@ -19,7 +19,7 @@ public static class Endpoints
             $"Nimbus registry. protocol={NimbusProtocol.ProtocolVersion} version={NimbusProtocol.NimbusVersion}",
             "text/plain"));
 
-        app.MapGet("/health", () => Results.Ok(new { ok = true, ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds() }));
+        app.MapGet("/health", (TimeProvider clock) => Results.Ok(new { ok = true, ts = clock.GetUtcNow().ToUnixTimeSeconds() }));
 
         // Heartbeat.
         app.MapPost("/api/heartbeat", async (HttpContext ctx, BackendRegistry reg, RegistryConfig cfg, ILoggerFactory lf) =>
@@ -43,7 +43,7 @@ public static class Endpoints
         app.MapGet("/api/servers", (BackendRegistry reg) => Results.Ok(reg.Snapshot()));
 
         // Reservations.
-        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationStore store, BackendRegistry reg, RegistryConfig cfg) =>
+        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationStore store, BackendRegistry reg, RegistryConfig cfg, TimeProvider clock) =>
         {
             ReservationRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<ReservationRequest>(); }
@@ -68,7 +68,7 @@ public static class Endpoints
                 PlayerName = req.PlayerName,
                 SourceServerId = req.SourceServerId,
                 TargetServerId = req.TargetServerId,
-                ExpiresAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + req.TtlSeconds,
+                ExpiresAtUnix = clock.GetUtcNow().ToUnixTimeSeconds() + req.TtlSeconds,
                 Reason = req.Reason,
                 RealRemoteIp = req.RealRemoteIp ?? "",
                 RealRemotePort = req.RealRemotePort,
