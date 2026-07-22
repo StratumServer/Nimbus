@@ -29,6 +29,24 @@ The short version:
 3. Install `Nimbus.ServerMod` on each backend, fill in `nimbus-server.json`.
 4. Distribute [RedirectFix](https://github.com/StratumServer/redirectfix) to your players.
 
+## Addresses: who connects where
+
+Three different addresses exist in a Nimbus network, and mixing them up is the most
+common misconfiguration:
+
+| Setting | Lives in | Means |
+|---------|----------|-------|
+| `bind` | `nimbus.proxy.toml` | The address **players** connect to. The only address you publish. |
+| `PublicHost` / `PublicPort` | `nimbus-server.json` (each backend) | The address **the network** reaches that backend on: the proxy dials it for seamless transfers, admin `swap` uses it, and it is stamped into redirect packets. It must be reachable from the proxy; it does not need to be reachable by players. |
+| `identity.public_host` / `public_port` | registry config | The **proxy's** public address, advertised to the VS master server when `advertise_on_master_server` is on. |
+
+Note on redirects: the redirect packet carries the backend's `PublicHost`, but
+[RedirectFix](https://github.com/StratumServer/redirectfix) clients reconnect to the
+proxy's cached address and a staged sticky route sends them to the right backend, so the
+stamped host is not what the client actually dials today. Keep backends unreachable from
+the internet and force everything through the proxy with `ReservationRequired`; the
+client-mod-free path (#18) will revisit what the redirect packet should carry.
+
 ## Wiki
 
 Full documentation lives in the [wiki](https://github.com/StratumServer/Nimbus/wiki):
