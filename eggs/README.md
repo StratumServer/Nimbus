@@ -44,9 +44,9 @@ makes the panel's variable screen the natural place to set it.
 ## egg-nimbus-registry.json
 
 The standalone registry, for multi-proxy deployments (single-proxy networks should keep
-the proxy's embedded registry and skip this egg). Release zips do not ship it, so the
-install builds it from source (`NIMBUS_GIT_REPO` / `NIMBUS_GIT_REF`) in the .NET 10 SDK
-container and publishes into the server folder.
+the proxy's embedded registry and skip this egg). Since v0.2.0 the release zip ships the
+registry, so the install downloads it from `NIMBUS_DOWNLOAD_URL` (defaulting to the
+latest release) and extracts the `Nimbus.Registry` bundle, like the proxy egg does.
 
 ## Reaching the registry between containers
 
