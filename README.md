@@ -1,5 +1,8 @@
 # Nimbus
 
+[![Release](https://img.shields.io/github/v/release/StratumServer/Nimbus?logo=github)](https://github.com/StratumServer/Nimbus/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/StratumServer/Nimbus/ci.yml?branch=main&logo=github&label=ci)](https://github.com/StratumServer/Nimbus/actions/workflows/ci.yml)
+[![Mod DB](https://img.shields.io/badge/mod%20db-nimbusproxy-90c95b)](https://mods.vintagestory.at/nimbusproxy)
 [![Stars](https://img.shields.io/github/stars/StratumServer/Nimbus?style=flat&logo=github)](https://github.com/StratumServer/Nimbus/stargazers)
 [![Issues](https://img.shields.io/github/issues/StratumServer/Nimbus?logo=github)](https://github.com/StratumServer/Nimbus/issues)
 [![Last commit](https://img.shields.io/github/last-commit/StratumServer/Nimbus?logo=github)](https://github.com/StratumServer/Nimbus/commits)
@@ -18,13 +21,25 @@ A [Velocity](https://papermc.io/software/velocity)-style proxy for [Vintage Stor
 | **Nimbus.Registry** | Standalone registry exe for multi-proxy deployments. For single-proxy setups the registry runs embedded inside the proxy. |
 | **nimctl** | CLI for the proxy admin socket. List players, transfer sessions, drain backends, reload config. |
 
+## Download
+
+Grab the [latest release](https://github.com/StratumServer/Nimbus/releases/latest). Built and tested against Vintage Story 1.22.5.
+
+| Asset | Contents |
+| --- | --- |
+| `Nimbus-vX.Y.Z.zip` | The full bundle: proxy, standalone registry, ServerMod, license files. |
+| `Nimbus.ServerMod-vX.Y.Z.zip` | Just the server mod, also published on the [mod DB](https://mods.vintagestory.at/nimbusproxy). |
+
+Running on a game panel (Pterodactyl/Pelican)? Ready-made eggs for the proxy, the
+registry, and a VS-backend-with-mod server live in [`eggs/`](eggs/).
+
 ## Quick start
 
 See the **[Getting Started guide](https://github.com/StratumServer/Nimbus/wiki/Getting-Started)** for a full walkthrough.
 
 The short version:
 
-1. Run `Nimbus.Proxy` 0 a config file is written on first run.
+1. Run `Nimbus.Proxy`: a config file is written on first run.
 2. Add your VS servers to `[servers]` in `nimbus.proxy.toml`.
 3. Install `Nimbus.ServerMod` on each backend, fill in `nimbus-server.json`.
 4. Distribute [RedirectFix](https://github.com/StratumServer/redirectfix) to your players.
