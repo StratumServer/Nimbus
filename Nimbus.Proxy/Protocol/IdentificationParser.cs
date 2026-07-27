@@ -16,12 +16,7 @@ internal static class IdentificationParser
     {
         playerUid = "";
         playerName = "";
-        if (rawFrame.Length < 5) return false;
-
-        // VS TCP header: 4 bytes BE, bit 31 = compressed flag, bits 30..0 = payload length.
-        uint header = (uint)((rawFrame[0] << 24) | (rawFrame[1] << 16) | (rawFrame[2] << 8) | rawFrame[3]);
-        bool compressed = (header & 0x80000000u) != 0;
-        int payloadLen = (int)(header & 0x7FFFFFFFu);
+        if (!VsWire.TryParseHeader(rawFrame, out bool compressed, out int payloadLen)) return false;
         if (compressed) return false; // Identification frames are never compressed.
         if (payloadLen <= 0 || 4 + payloadLen > rawFrame.Length) return false;
 
