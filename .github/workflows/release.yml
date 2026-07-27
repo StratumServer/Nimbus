@@ -46,7 +46,7 @@ jobs:
 
       - name: Cache Vintage Story server
         id: cache-vs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/vs
           key: vs-server-linux-x64-${{ env.VS_VERSION }}
