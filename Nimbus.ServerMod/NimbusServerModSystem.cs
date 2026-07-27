@@ -304,6 +304,21 @@ public sealed class NimbusServerModSystem : ModSystem
                 forwarding[playerUid] = reservation;
                 var realIp = string.IsNullOrEmpty(reservation.RealRemoteIp) ? "?" : reservation.RealRemoteIp;
                 api?.Logger.Notification($"[Nimbus] {playerName} forwarded from {realIp}");
+
+                // Commit half of the seamless handshake (#19): the source backend sent
+                // NimbusSeamlessPrepare with this transferId and can no longer reach the
+                // client, so the target closes the loop once the join consumed the
+                // reservation. Sent from the game thread; SendPacket is not thread-safe.
+                // Clients without the Nimbus channel never registered it and see nothing.
+                if (!string.IsNullOrEmpty(reservation.ClientTransferId))
+                {
+                    var transferId = reservation.ClientTransferId;
+                    api?.Event.EnqueueMainThreadTask(() =>
+                    {
+                        TrySendSeamlessCommit(player, transferId);
+                        api?.Logger.Notification($"[Nimbus] seamless commit sent to {playerName} ({transferId})");
+                    }, "nimbus-seamless-commit");
+                }
             }
             else if (config.ReservationRequired)
             {

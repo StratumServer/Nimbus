@@ -13,7 +13,7 @@ internal interface IRegistryClient
 {
     Task<TransferReservation?> MintReservationAsync(
         string playerUid, string playerName, string targetServerId, string? reason, CancellationToken ct,
-        string? realRemoteIp = null, int realRemotePort = 0);
+        string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null);
 
     Task<NetworkSnapshot?> GetServersAsync(CancellationToken ct, bool forceRefresh = false);
 

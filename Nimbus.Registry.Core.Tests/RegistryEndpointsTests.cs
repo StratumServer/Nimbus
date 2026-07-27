@@ -308,6 +308,39 @@ public class RegistryEndpointsTests
         var resp = await host.Client.GetAsync($"{host.BaseUrl}/api/bans");
 
         Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
+
+    [Fact]
+public async Task Reservation_CarriesTheClientTransferId_ThroughMintAndConsume()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/heartbeat", body: Heartbeat()));
+
+        var mint = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/reservations",
+            body: new { PlayerUid = "uid-9", PlayerName = "carol", TargetServerId = "backend-1", ClientTransferId = "A1B2C3D4E5" }));
+        Assert.Equal(HttpStatusCode.OK, mint.StatusCode);
+        var minted = await mint.Content.ReadFromJsonAsync<ReservationResponse>();
+        Assert.Equal("A1B2C3D4E5", minted!.Reservation!.ClientTransferId);
+
+        // The target backend consumes by uid on join; the transferId must survive the trip
+        // so the target can send the seamless commit (#19).
+        var consume = await host.Client.SendAsync(
+            Signed(HttpMethod.Post, host.BaseUrl, "/api/reservations/consume-by-uid?uid=uid-9&target=backend-1"));
+        Assert.Equal(HttpStatusCode.OK, consume.StatusCode);
+        var consumed = await consume.Content.ReadFromJsonAsync<ReservationResponse>();
+        Assert.Equal("A1B2C3D4E5", consumed!.Reservation!.ClientTransferId);
+    }
+
+    [Fact]
+    public async Task Reservation_WithoutAClientTransferId_DefaultsToEmpty()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/heartbeat", body: Heartbeat()));
+
+        var mint = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/reservations",
+            body: new { PlayerUid = "uid-10", TargetServerId = "backend-1" }));
+
+        var minted = await mint.Content.ReadFromJsonAsync<ReservationResponse>();
+        Assert.Equal("", minted!.Reservation!.ClientTransferId);
     }
 
     [Fact]

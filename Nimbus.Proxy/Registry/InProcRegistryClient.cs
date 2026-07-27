@@ -30,7 +30,7 @@ internal sealed class InProcRegistryClient : IRegistryClient
 
     public Task<TransferReservation?> MintReservationAsync(
         string playerUid, string playerName, string targetServerId, string? reason, CancellationToken ct,
-        string? realRemoteIp = null, int realRemotePort = 0)
+        string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null)
     {
         if (string.IsNullOrEmpty(playerUid) || string.IsNullOrEmpty(targetServerId))
             return Task.FromResult<TransferReservation?>(null);
@@ -59,6 +59,7 @@ internal sealed class InProcRegistryClient : IRegistryClient
             Reason = reason,
             RealRemoteIp = realRemoteIp ?? "",
             RealRemotePort = realRemotePort,
+            ClientTransferId = clientTransferId ?? "",
         };
         reservations.Add(r);
         return Task.FromResult<TransferReservation?>(r);

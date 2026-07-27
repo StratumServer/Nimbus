@@ -18,7 +18,7 @@ internal sealed class FakeRegistryClient : IRegistryClient
 
     public Task<TransferReservation?> MintReservationAsync(string playerUid, string playerName,
         string targetServerId, string? reason, CancellationToken ct,
-        string? realRemoteIp = null, int realRemotePort = 0)
+        string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null)
         => throw new NotSupportedException("not used by these tests");
 
     public Task<BackendSnapshot?> ResolveByServerIdAsync(string serverId, CancellationToken ct)

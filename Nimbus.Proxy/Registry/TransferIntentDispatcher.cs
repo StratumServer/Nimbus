@@ -91,7 +91,8 @@ internal sealed class TransferIntentDispatcher
             }
 
             string requestedMode = seamless ? "seamless" : "redirect";
-            var result = await match.RequestTransferAsync(target, requestedMode, registry, intent.Reason, cfg.Registry.FailOnError).ConfigureAwait(false);
+            var result = await match.RequestTransferAsync(target, requestedMode, registry, intent.Reason, cfg.Registry.FailOnError,
+                intent.ClientTransferId).ConfigureAwait(false);
 
             if (result.failReason != null)
                 Log.Warn($"intent {intent.Id} dispatch failed: {result.failReason}");
