@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 env:
-  VS_VERSION: "1.22.3"
+  VS_VERSION: "1.22.5"
 
 jobs:
   release:
