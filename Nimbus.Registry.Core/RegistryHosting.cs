@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Nimbus.Registry.MasterServer;
@@ -16,7 +17,9 @@ public static class RegistryHosting
     public static void AddNimbusRegistry(this WebApplicationBuilder builder, RegistryConfig cfg, bool withMasterServer = true)
     {
         builder.Services.AddSingleton(cfg);
-        builder.Services.AddSingleton(TimeProvider.System);
+        // TryAdd, not Add: a host that embeds the registry may register its own clock
+        // before calling this, and the last registration would otherwise win and drop it.
+        builder.Services.TryAddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<BackendRegistry>();
         builder.Services.AddSingleton<ReservationStore>();
         builder.Services.AddSingleton<TransferIntentStore>();
