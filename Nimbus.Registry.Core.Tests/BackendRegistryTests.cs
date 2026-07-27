@@ -6,6 +6,8 @@ namespace Nimbus.Registry.Core.Tests;
 
 public class BackendRegistryTests
 {
+    private readonly FakeClock clock = new();
+
     private static BackendHeartbeat Heartbeat(string id = "backend-1", int players = 3,
         int maxPlayers = 10, bool maintenance = false) => new()
     {
@@ -21,7 +23,7 @@ public class BackendRegistryTests
     [Fact]
     public void Snapshot_CountsFreshBackends()
     {
-        var registry = new BackendRegistry(new RegistryConfig());
+        var registry = new BackendRegistry(new RegistryConfig(), clock);
         registry.Upsert(Heartbeat("a", players: 3, maxPlayers: 10));
         registry.Upsert(Heartbeat("b", players: 2, maxPlayers: 20));
 
@@ -36,10 +38,12 @@ public class BackendRegistryTests
     [Fact]
     public void Snapshot_MarksStale_AndExcludesFromCapacity()
     {
-        // LastSeenUnix is stamped internally with the real clock, so force staleness
-        // deterministically with a negative window instead of sleeping.
-        var registry = new BackendRegistry(new RegistryConfig { BackendStaleSeconds = -1 });
+        // The injected clock makes the stale window testable for real: heartbeat at t0,
+        // then let more than BackendStaleSeconds elapse.
+        var cfg = new RegistryConfig { BackendStaleSeconds = 20 };
+        var registry = new BackendRegistry(cfg, clock);
         registry.Upsert(Heartbeat("a", players: 3, maxPlayers: 10));
+        clock.Advance(TimeSpan.FromSeconds(cfg.BackendStaleSeconds + 1));
 
         var snap = registry.Snapshot();
 
@@ -51,7 +55,7 @@ public class BackendRegistryTests
     [Fact]
     public void Upsert_SameServerId_Replaces()
     {
-        var registry = new BackendRegistry(new RegistryConfig());
+        var registry = new BackendRegistry(new RegistryConfig(), clock);
         registry.Upsert(Heartbeat("a", players: 1));
         registry.Upsert(Heartbeat("A", players: 7)); // ids are case-insensitive
 
@@ -64,8 +68,10 @@ public class BackendRegistryTests
     [Fact]
     public void Prune_DropsBackendsPastDropWindow()
     {
-        var registry = new BackendRegistry(new RegistryConfig { BackendDropSeconds = -1 });
+        var cfg = new RegistryConfig { BackendDropSeconds = 120 };
+        var registry = new BackendRegistry(cfg, clock);
         registry.Upsert(Heartbeat("a"));
+        clock.Advance(TimeSpan.FromSeconds(cfg.BackendDropSeconds + 1));
 
         Assert.Equal(1, registry.Prune());
         Assert.Null(registry.Get("a"));
