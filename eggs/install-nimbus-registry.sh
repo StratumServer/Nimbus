@@ -1,23 +1,27 @@
 #!/bin/bash
 # Standalone Nimbus registry installer. Source of the registry egg's
-# scripts.installation.script field. The registry is not shipped in the release zip,
-# so it is built from source; the install container is the .NET 10 SDK image.
-# Server files land in /mnt/server.
+# scripts.installation.script field. Since v0.2.0 the release zip ships the registry
+# (release_full/Nimbus.Registry), so the install downloads it like the proxy egg does
+# instead of building from source. Server files land in /mnt/server.
 set -euo pipefail
 
-apt-get update -qq && apt-get install -y -qq git > /dev/null
+apt-get update -qq && apt-get install -y -qq curl unzip > /dev/null
 
-NIMBUS_GIT_REPO="${NIMBUS_GIT_REPO:-https://github.com/StratumServer/Nimbus.git}"
-NIMBUS_GIT_REF="${NIMBUS_GIT_REF:-main}"
-
-echo "Building the Nimbus registry from ${NIMBUS_GIT_REPO}@${NIMBUS_GIT_REF}..."
-rm -rf /tmp/nimbus-src
-git clone --depth 1 --branch "${NIMBUS_GIT_REF}" "${NIMBUS_GIT_REPO}" /tmp/nimbus-src
-dotnet publish /tmp/nimbus-src/Nimbus.Registry/Nimbus.Registry.csproj \
-  -c Release -o /mnt/server --nologo
-rm -rf /tmp/nimbus-src
+NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.2.0/Nimbus-v0.2.0.zip}"
 
 cd /mnt/server
+
+echo "Downloading the Nimbus release..."
+curl -sSL --fail -o /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
+rm -rf /tmp/nimbus && mkdir -p /tmp/nimbus
+unzip -qo /tmp/nimbus.zip -d /tmp/nimbus
+REGISTRY_DIR=$(find /tmp/nimbus -type d -name "Nimbus.Registry" | head -1)
+if [ -z "${REGISTRY_DIR}" ]; then
+  echo "Nimbus.Registry folder not found in the release zip (needs v0.2.0 or newer)" >&2
+  exit 1
+fi
+cp -r "${REGISTRY_DIR}"/. /mnt/server/
+rm -rf /tmp/nimbus /tmp/nimbus.zip
 
 # The registry reads nimbus.registry.toml next to the binary. Written once here from the
 # egg variables (Wings has no TOML parser, so panel-variable changes need a reinstall or

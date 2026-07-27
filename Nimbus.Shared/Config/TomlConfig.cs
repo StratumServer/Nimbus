@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.Json;
 using Tomlyn;
-using Tomlyn.Model;
 
 namespace Nimbus.Shared;
 
@@ -9,10 +8,17 @@ namespace Nimbus.Shared;
 // (same path, .json extension) on first load.
 public static class TomlConfig
 {
-    private static readonly TomlModelOptions Options = new()
+    // Tomlyn 2.x takes a JsonNamingPolicy instead of a convert callback. Wrap our
+    // existing ToSnakeCase so on-disk key names stay bit-for-bit identical to the
+    // files written by Tomlyn 0.x (acronym handling: HTTPServer -> http_server).
+    private sealed class SnakeCaseNamingPolicy : JsonNamingPolicy
     {
-        ConvertPropertyName = ToSnakeCase,
-        ConvertFieldName = ToSnakeCase,
+        public override string ConvertName(string name) => ToSnakeCase(name);
+    }
+
+    private static readonly TomlSerializerOptions Options = new()
+    {
+        PropertyNamingPolicy = new SnakeCaseNamingPolicy(),
     };
 
     // Load `T` from `tomlPath`. If the file does not exist:
@@ -53,13 +59,13 @@ public static class TomlConfig
     public static T LoadFile<T>(string tomlPath) where T : class, new()
     {
         var text = File.ReadAllText(tomlPath);
-        var result = Toml.ToModel<T>(text, sourcePath: tomlPath, options: Options);
+        var result = TomlSerializer.Deserialize<T>(text, Options);
         return result ?? new T();
     }
 
     public static void Save<T>(string tomlPath, T value) where T : class
     {
-        var text = Toml.FromModel(value, Options);
+        var text = TomlSerializer.Serialize(value, Options);
         File.WriteAllText(tomlPath, text, new UTF8Encoding(false));
     }
 
