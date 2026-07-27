@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 env:
-  VS_VERSION: "1.22.3"
+  VS_VERSION: "1.22.5"
 
 jobs:
   release:
@@ -24,10 +24,10 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
@@ -46,7 +46,7 @@ jobs:
 
       - name: Cache Vintage Story server
         id: cache-vs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/vs
           key: vs-server-linux-x64-${{ env.VS_VERSION }}

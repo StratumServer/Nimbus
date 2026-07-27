@@ -7,7 +7,7 @@ on:
     branches: [main, indev]
 
 env:
-  VS_VERSION: "1.22.3"
+  VS_VERSION: "1.22.5"
 
 jobs:
   build-and-test:
@@ -16,16 +16,16 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
       - name: Cache Vintage Story server
         id: cache-vs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/vs
           key: vs-server-linux-x64-${{ env.VS_VERSION }}
@@ -92,7 +92,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tests-trx
           path: TestResults/*.trx
