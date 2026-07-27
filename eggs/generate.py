@@ -8,7 +8,7 @@ import json
 
 AUTHOR = "77785313+Pixnop@users.noreply.github.com"
 RUNTIME_IMAGE = {".NET 10": "ghcr.io/parkervcp/yolks:dotnet_10"}
-RELEASE_URL = "https://github.com/StratumServer/Nimbus/releases/download/0.1.0-dev/Nimbus-v0.1.0.zip"
+RELEASE_URL = "https://github.com/StratumServer/Nimbus/releases/download/v0.2.0/Nimbus-v0.2.0.zip"
 
 def var(name, description, env, default, rules="required|string", field_type="text"):
     return {

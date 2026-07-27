@@ -7,7 +7,7 @@ public sealed class HubFallbackPlugin : IPlugin
     private const string PluginName = "hub-fallback";
 
     public string Name => PluginName;
-    public string Version => "0.1.0";
+    public string Version => "0.2.0";
 
     public void Initialize(IProxyApi api)
     {

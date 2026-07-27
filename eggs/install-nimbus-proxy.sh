@@ -5,7 +5,7 @@ set -euo pipefail
 
 apt-get update -qq && apt-get install -y -qq curl unzip > /dev/null
 
-NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/0.1.0-dev/Nimbus-v0.1.0.zip}"
+NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.2.0/Nimbus-v0.2.0.zip}"
 
 cd /mnt/server
 
