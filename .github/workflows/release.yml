@@ -104,6 +104,7 @@ jobs:
           }
           EOF
 
+          cp LICENSE NOTICE "$STAGE/"
           (cd stage && zip -qr "../Nimbus-v$VERSION.zip" release_full)
           (cd "$STAGE/Nimbus.ServerMod" && zip -qr "$GITHUB_WORKSPACE/Nimbus.ServerMod-v$VERSION.zip" .)
           command ls -la Nimbus-v$VERSION.zip Nimbus.ServerMod-v$VERSION.zip

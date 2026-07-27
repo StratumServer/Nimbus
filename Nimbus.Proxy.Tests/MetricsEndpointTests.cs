@@ -50,7 +50,7 @@ public class MetricsEndpointTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
-        Assert.Equal("0.1.0-dev", doc.RootElement.GetProperty("proxy").GetProperty("version").GetString());
+        Assert.Equal(Nimbus.Shared.NimbusProtocol.NimbusVersion, doc.RootElement.GetProperty("proxy").GetProperty("version").GetString());
         var backend = doc.RootElement.GetProperty("backends").EnumerateArray().Single();
         Assert.Equal("hub", backend.GetProperty("serverId").GetString());
         Assert.False(backend.GetProperty("registered").GetBoolean());
