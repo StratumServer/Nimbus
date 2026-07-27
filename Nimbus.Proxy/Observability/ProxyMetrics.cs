@@ -22,6 +22,9 @@ internal static class ProxyMetrics
     private static long registryIntentPollFailures;
     private static long drainedServers;
 
+    // Live session count, for the /status report.
+    public static long ActiveSessionCount => Interlocked.Read(ref activeSessions);
+
     public static void SessionAccepted()
     {
         Interlocked.Increment(ref sessionsAccepted);

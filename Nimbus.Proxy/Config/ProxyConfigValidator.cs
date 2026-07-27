@@ -172,7 +172,11 @@ internal static class ProxyConfigValidator
         if (!Uri.TryCreate(cfg.Metrics.Bind, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
             result.Error("metrics.bind must be an absolute http or https URL");
         else if (!IsLoopbackOrLocalhost(uri.Host))
+        {
             result.Warn("metrics.bind is not loopback. Metrics are unauthenticated");
+            if (cfg.Metrics.StatusApi && string.IsNullOrWhiteSpace(cfg.Metrics.StatusApiToken))
+                result.Warn("metrics.bind is not loopback and metrics.status_api_token is empty; /status is readable by anyone who can reach the bind");
+        }
         if (string.IsNullOrWhiteSpace(cfg.Metrics.Path) || !cfg.Metrics.Path.StartsWith('/'))
             result.Error("metrics.path must start with '/'");
     }

@@ -11,6 +11,9 @@ namespace Nimbus.Registry.Services;
 public sealed class TransferIntentStore
 {
     private readonly ConcurrentDictionary<string, TransferIntent> _intents = new();
+    private readonly TimeProvider _clock;
+
+    public TransferIntentStore(TimeProvider? clock = null) => _clock = clock ?? TimeProvider.System;
 
     public TransferIntent Add(TransferIntentRequest req)
     {
@@ -27,7 +30,7 @@ public sealed class TransferIntentStore
             Mode = string.IsNullOrEmpty(req.Mode) ? "redirect" : req.Mode,
             ClientSupportsSeamlessTransfers = req.ClientSupportsSeamlessTransfers,
             Reason = req.Reason,
-            ExpiresAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + ttl,
+            ExpiresAtUnix = _clock.GetUtcNow().ToUnixTimeSeconds() + ttl,
             RequestedBy = req.RequestedBy ?? "",
         };
         _intents[intent.Id] = intent;
@@ -38,7 +41,7 @@ public sealed class TransferIntentStore
     // mid-drain may or may not show up in this batch, which is fine for our use.
     public List<TransferIntent> Drain()
     {
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
         var taken = new List<TransferIntent>();
         foreach (var kv in _intents)
         {
@@ -51,7 +54,7 @@ public sealed class TransferIntentStore
 
     public int Prune()
     {
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
         int dropped = 0;
         foreach (var kv in _intents)
         {

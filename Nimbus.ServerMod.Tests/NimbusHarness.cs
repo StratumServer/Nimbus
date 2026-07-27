@@ -27,10 +27,11 @@ public sealed class NimbusHarness
         bool reservationRequired = true,
         string transferMode = "redirect",
         bool allowPlayerServerCommand = true,
-        int seamlessPrepareAckTimeoutSeconds = 1)
+        int seamlessPrepareAckTimeoutSeconds = 1,
+        bool failClosedWhenRegistryUnreachable = false)
     {
         WriteConfig(registryUrl, sharedSecret, reservationRequired, transferMode,
-            allowPlayerServerCommand, seamlessPrepareAckTimeoutSeconds);
+            allowPlayerServerCommand, seamlessPrepareAckTimeoutSeconds, failClosedWhenRegistryUnreachable);
 
         CommandResult reload = await world.ExecuteCommand("/nimbus reload");
         if (!reload.Ok)
@@ -50,7 +51,8 @@ public sealed class NimbusHarness
         bool reservationRequired = true,
         string transferMode = "redirect",
         bool allowPlayerServerCommand = true,
-        int seamlessPrepareAckTimeoutSeconds = 1)
+        int seamlessPrepareAckTimeoutSeconds = 1,
+        bool failClosedWhenRegistryUnreachable = false)
     {
         string path = Path.Combine(GamePaths.DataPath, "ModConfig", "nimbus-server.json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -63,6 +65,7 @@ public sealed class NimbusHarness
               "RegistryUrl": "{{registryUrl}}",
               "SharedSecret": "{{sharedSecret}}",
               "ReservationRequired": {{(reservationRequired ? "true" : "false")}},
+              "FailClosedWhenRegistryUnreachable": {{(failClosedWhenRegistryUnreachable ? "true" : "false")}},
               "TransferMode": "{{transferMode}}",
               "AllowPlayerServerCommand": {{(allowPlayerServerCommand ? "true" : "false")}},
               "HeartbeatIntervalSeconds": 1,

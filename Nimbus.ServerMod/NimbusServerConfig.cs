@@ -5,6 +5,12 @@ public sealed class NimbusServerConfig
     public bool Enabled { get; set; } = true;
     public string ServerId { get; set; } = "";
     public string DisplayName { get; set; } = "";
+
+    // Address this backend advertises to the registry: where the NETWORK reaches this
+    // server, not where players connect (players connect to the proxy's bind). The proxy
+    // dials it for seamless transfers and stamps it into redirect packets; it must be
+    // reachable from the proxy, and today's RedirectFix clients reconnect to the proxy's
+    // cached address regardless. See the README's "Addresses" section for the full map.
     public string PublicHost { get; set; } = "";
     public int PublicPort { get; set; } = 42420;
     public List<string> Tags { get; set; } = new();
@@ -16,6 +22,13 @@ public sealed class NimbusServerConfig
 
     public bool Maintenance { get; set; } = false;
     public bool ReservationRequired { get; set; } = true;
+
+    // Behavior when ReservationRequired is on but the registry can't be reached to confirm a
+    // reservation. Default (false) fails open: the player is let in, so a registry outage does
+    // not lock everyone out. Set true to fail closed: the player is kicked, so a registry
+    // outage cannot be used to bypass the proxy on a reservation-gated network.
+    public bool FailClosedWhenRegistryUnreachable { get; set; } = false;
+
     public bool AllowPlayerServerCommand { get; set; } = true;
     public string TransferMode { get; set; } = "redirect";
     public int SeamlessPrepareAckTimeoutSeconds { get; set; } = 8;

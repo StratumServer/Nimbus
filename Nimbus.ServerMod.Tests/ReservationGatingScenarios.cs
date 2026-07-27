@@ -103,12 +103,10 @@ public class ReservationGatingScenarios : AtlasScenarioBase
     }
 
     [AtlasScenario]
-    public async Task Join_WhenRegistryIsUnreachable_IsCurrentlyAdmitted_FailOpen()
+    public async Task Join_WhenRegistryIsUnreachable_FailsOpenByDefault()
     {
-        // CHARACTERIZATION test: with ReservationRequired=true and the registry DOWN, the
-        // mod catches the HTTP failure, logs a warning, and lets the player in (fail-open).
-        // If this is not the intended trade-off, this test is the repro; flipping it to
-        // fail-closed would make this scenario expect a kick instead.
+        // Default trade-off (#14): a registry outage must not lock everyone out, so with
+        // ReservationRequired=true and the registry DOWN the player is still admitted.
         var nimbus = await NimbusHarness.ConfigureAsync(
             World, "http://127.0.0.1:9/", Secret, reservationRequired: true); // discard port: refused
 
@@ -117,8 +115,32 @@ public class ReservationGatingScenarios : AtlasScenarioBase
 
         await World.Ticks(60); // plenty for a connection-refused round trip
 
-        Assert.True(erin.IsConnected, "current behavior is fail-open when the registry is unreachable");
+        Assert.True(erin.IsConnected, "default behavior is fail-open when the registry is unreachable");
         Assert.Null(nimbus.GetForwardedPlayer(uid));
+    }
+
+    [AtlasScenario]
+    public async Task Join_WhenRegistryIsUnreachable_AndFailClosed_IsKicked()
+    {
+        // Opt-in strict mode (#14): the operator chose that an unreachable registry cannot
+        // be used to bypass the proxy, so the player is kicked instead of admitted.
+        await NimbusHarness.ConfigureAsync(
+            World, "http://127.0.0.1:9/", Secret, reservationRequired: true,
+            failClosedWhenRegistryUnreachable: true);
+
+        bool kicked = false;
+        World.Api.Event.PlayerDisconnect += p => { if (p.PlayerName == "frank") kicked = true; };
+
+        try
+        {
+            await World.JoinPlayer("frank");
+        }
+        catch (AtlasSetupException)
+        {
+            return; // kick landed during the join handshake; that is the expected outcome
+        }
+
+        await World.Until(() => kicked, timeoutTicks: 300);
     }
 
     [AtlasScenario]

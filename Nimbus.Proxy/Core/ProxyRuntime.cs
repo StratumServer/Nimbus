@@ -30,7 +30,9 @@ internal sealed class ProxyRuntime : IDisposable
         });
         pluginsDir = ResolveStatePath(cfg.Plugins.Directory);
         admin = new AdminListener(cfg, listener, stopToken, () => plugins.Loaded, Reload);
-        metrics = new MetricsEndpoint(cfg.Metrics, stopToken);
+        long startUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        metrics = new MetricsEndpoint(cfg.Metrics, stopToken,
+            ct => StatusReport.BuildAsync(cfg, listener.Router, registry, startUnix, ct));
 
         try { plugins.LoadAll(pluginsDir, new ProxyApi(listener)); }
         catch (Exception ex) { Log.Warn($"plugins: discovery failed: {ex.Message}"); }

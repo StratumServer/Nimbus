@@ -234,6 +234,17 @@ internal sealed class MetricsConfig
     public bool Enabled { get; set; } = true;
     public string Bind { get; set; } = "http://127.0.0.1:42500";
     public string Path { get; set; } = "/metrics";
+
+    // Read-only JSON network status at /status on the same host, meant for game panels
+    // (Pterodactyl, AMP, ...) and dashboards.
+    public bool StatusApi { get; set; } = true;
+
+    // Optional bearer token for /status. Empty = open (fine on the loopback default bind);
+    // set it before exposing the bind beyond localhost. "Authorization: Bearer <token>" is
+    // the preferred way to send it; "?token=<token>" exists only as a compatibility
+    // fallback for panels that cannot set headers, and query strings can end up in access
+    // logs, so prefer the header wherever possible.
+    public string StatusApiToken { get; set; } = "";
 }
 
 internal sealed class StatusConfig

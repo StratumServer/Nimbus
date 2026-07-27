@@ -11,7 +11,11 @@ namespace Nimbus.Proxy;
 //   flag, and the first few payload bytes.
 //
 // A single socket read can contain partial frames, multiple frames, or both. We buffer
-// leftovers across calls.
+// leftovers across calls. The buffer is drained with a moving read offset: consuming a
+// frame just advances `start`, and the remainder is compacted to the front at most once
+// per OnBytes call (when appending needs the room), instead of memmoving the tail after
+// every frame. This is the hot path: every byte of every session flows through here in
+// both directions.
 internal sealed class FrameSniffer
 {
     private readonly string label;
@@ -19,11 +23,14 @@ internal sealed class FrameSniffer
     private readonly bool clientToServer;
     private readonly SessionState? state;
     private byte[] buf = new byte[16 * 1024];
-    private int head;
+    private int start;   // read offset: first unconsumed byte
+    private int head;    // write offset: one past the last buffered byte
     private long frameCount;
     private long totalBytes;
 
-    private const int MaxFrameSize = 256 * 1024 * 1024; // 256 MB cap (VS uses 128MB MaxPacketSize)
+    private const int MaxFrameSize = VsWire.MaxFrameSize;
+
+    private int Buffered => head - start;
 
     // Optional raw frame sink (includes the 4-byte header). Used to capture the client's
     // Identification frame so it can be replayed against a different backend during a swap.
@@ -53,13 +60,24 @@ internal sealed class FrameSniffer
     {
         if (head + src.Length > buf.Length)
         {
-            int needed = head + src.Length;
-            int newSize = buf.Length;
-            while (newSize < needed) newSize *= 2;
-            if (newSize > MaxFrameSize + 64) newSize = MaxFrameSize + 64;
-            var grown = new byte[newSize];
-            Buffer.BlockCopy(buf, 0, grown, 0, head);
-            buf = grown;
+            // Reclaim the consumed prefix first; grow only if the live bytes plus the
+            // incoming ones genuinely don't fit.
+            if (start > 0)
+            {
+                Buffer.BlockCopy(buf, start, buf, 0, Buffered);
+                head -= start;
+                start = 0;
+            }
+            if (head + src.Length > buf.Length)
+            {
+                int needed = head + src.Length;
+                int newSize = buf.Length;
+                while (newSize < needed) newSize *= 2;
+                if (newSize > MaxFrameSize + 64) newSize = MaxFrameSize + 64;
+                var grown = new byte[newSize];
+                Buffer.BlockCopy(buf, 0, grown, 0, head);
+                buf = grown;
+            }
         }
         src.CopyTo(buf.AsSpan(head));
         head += src.Length;
@@ -67,24 +85,23 @@ internal sealed class FrameSniffer
 
     private void DrainFrames()
     {
-        while (head >= 4)
+        while (Buffered >= 4)
         {
-            int header = (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3];
-            bool compressed = (header & unchecked((int)0x80000000)) != 0;
-            int payloadLen = header & 0x7FFFFFFF;
+            VsWire.TryParseHeader(buf.AsSpan(start, 4), out bool compressed, out int payloadLen);
 
             if (payloadLen == 0)
             {
-                Shift(4);
+                start += 4;
                 continue;
             }
             if (payloadLen > MaxFrameSize)
             {
                 Log.Warn($"[s{sessionId} {label}] frame too large ({payloadLen} bytes), sniffer giving up");
+                start = 0;
                 head = 0;
                 return;
             }
-            if (head < 4 + payloadLen) return; // wait for more bytes
+            if (Buffered < 4 + payloadLen) break; // wait for more bytes
 
             frameCount++;
             string name;
@@ -96,7 +113,7 @@ internal sealed class FrameSniffer
             }
             else
             {
-                name = PacketDispatch.Describe(clientToServer, new ReadOnlySpan<byte>(buf, 4, payloadLen));
+                name = PacketDispatch.Describe(clientToServer, new ReadOnlySpan<byte>(buf, start + 4, payloadLen));
                 state?.OnFrame(clientToServer, name);
             }
 
@@ -104,7 +121,7 @@ internal sealed class FrameSniffer
             bool interesting = !compressed && IsHandshakePacket(name);
             if (Verbose || interesting)
             {
-                string preview = HexPreview(buf, 4, payloadLen, 12);
+                string preview = HexPreview(buf, start + 4, payloadLen, 12);
                 string msg = $"[s{sessionId} {label}] frame #{frameCount} {name} len={payloadLen} comp={(compressed ? 1 : 0)} bytes={preview}";
                 if (interesting) Log.Info(msg); else Log.Trace(msg);
             }
@@ -113,27 +130,19 @@ internal sealed class FrameSniffer
             if (OnRawFrame != null)
             {
                 var copy = new byte[4 + payloadLen];
-                Buffer.BlockCopy(buf, 0, copy, 0, 4 + payloadLen);
+                Buffer.BlockCopy(buf, start, copy, 0, 4 + payloadLen);
                 try { OnRawFrame(name, copy); } catch (Exception ex) { Log.Warn($"[s{sessionId} {label}] OnRawFrame threw: {ex.Message}"); }
             }
 
-            Shift(4 + payloadLen);
+            start += 4 + payloadLen;
         }
-    }
 
-    private void Shift(int n)
-    {
-        int remaining = head - n;
-        if (remaining > 0) Buffer.BlockCopy(buf, n, buf, 0, remaining);
-        head = remaining;
-    }
-
-    // Peek at the first byte of payload to get the protobuf field header.
-    // VS packets use field 1 (packet id discriminator), encoded as (1 << 3) | wireType.
-    private static int TryPeekProtobufFieldHeader(byte[] buf, int offset, int len)
-    {
-        if (len <= 0) return 0;
-        return buf[offset];
+        if (start == head)
+        {
+            // Fully drained: reset so the next read starts at the front without a compact.
+            start = 0;
+            head = 0;
+        }
     }
 
     private static bool IsHandshakePacket(string name)

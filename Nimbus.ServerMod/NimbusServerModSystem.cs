@@ -307,22 +307,42 @@ public sealed class NimbusServerModSystem : ModSystem
             }
             else if (config.ReservationRequired)
             {
-                const string reason = "Direct connections are not permitted. Please connect via the Nimbus proxy.";
                 api?.Logger.Notification($"[Nimbus] {playerName} blocked — no valid proxy reservation");
-                // This continuation runs on a thread-pool thread (Task.Run + ConfigureAwait(false));
-                // the server API is not safe to call off the game thread, so hand the kick back.
-                api?.Event.EnqueueMainThreadTask(() =>
-                {
-                    try { player.SendMessage(0, reason, EnumChatType.Notification); } catch { }
-                    try { player.Disconnect(reason); } catch { }
-                }, "nimbus-reservation-kick");
+                KickForReservation(player);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            // Registry unreachable (timeout; TaskCanceledException derives from this). Fail open
+            // by default so an outage does not lock everyone out; fail closed only when the
+            // operator opted in on a gated network.
+            if (config.ReservationRequired && config.FailClosedWhenRegistryUnreachable)
+            {
+                api?.Logger.Warning($"[Nimbus] {playerName} blocked — registry unreachable (fail-closed)");
+                KickForReservation(player);
+            }
+        }
         catch (Exception ex)
         {
             api?.Logger.Warning($"[Nimbus] Forwarding check failed for {playerName}: {ex.Message}");
+            if (config.ReservationRequired && config.FailClosedWhenRegistryUnreachable)
+            {
+                api?.Logger.Warning($"[Nimbus] {playerName} blocked — registry error (fail-closed)");
+                KickForReservation(player);
+            }
         }
+    }
+
+    private void KickForReservation(IServerPlayer player)
+    {
+        const string reason = "Direct connections are not permitted. Please connect via the Nimbus proxy.";
+        // CheckForwardingAsync resumes on a thread-pool thread (Task.Run + ConfigureAwait(false));
+        // the server API is not safe to call off the game thread, so hand the kick back.
+        api?.Event.EnqueueMainThreadTask(() =>
+        {
+            try { player.SendMessage(0, reason, EnumChatType.Notification); } catch { }
+            try { player.Disconnect(reason); } catch { }
+        }, "nimbus-reservation-kick");
     }
 
     // Returns Nimbus forwarding data for a player who joined via the proxy.

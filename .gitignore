@@ -24,4 +24,7 @@ Nimbus.SmokeTest/
 RedirectFix/
 Nimbus.Client/
 Nimbus.Tests/
-Nimbus.Cli/
+Nimbus.Cli/.vanilla/
+
+# Local build scaffolding: the game dlls the ServerMod csproj resolve from ../../
+.vanilla/
