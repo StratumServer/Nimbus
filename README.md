@@ -55,12 +55,14 @@ common misconfiguration:
 | `PublicHost` / `PublicPort` | `nimbus-server.json` (each backend) | The address **the network** reaches that backend on: the proxy dials it for seamless transfers, admin `swap` uses it, and it is stamped into redirect packets. It must be reachable from the proxy; it does not need to be reachable by players. |
 | `identity.public_host` / `public_port` | registry config | The **proxy's** public address, advertised to the VS master server when `advertise_on_master_server` is on. |
 
-Note on redirects: the redirect packet carries the backend's `PublicHost`, but
-[RedirectFix](https://github.com/StratumServer/redirectfix) clients reconnect to the
-proxy's cached address and a staged sticky route sends them to the right backend, so the
-stamped host is not what the client actually dials today. Keep backends unreachable from
-the internet and force everything through the proxy with `ReservationRequired`; the
-client-mod-free path (#18) will revisit what the redirect packet should carry.
+Note on redirects: [RedirectFix](https://github.com/StratumServer/redirectfix) clients
+reconnect to the proxy's cached address and a staged sticky route sends them to the right
+backend, so the host stamped into the redirect packet is not what the client actually
+dials today. By default that stamped host is the backend's `PublicHost`, which a future
+vanilla client with the redirect crash fixed would follow literally, bypassing the proxy.
+Set `transfers.redirect_address` in `nimbus.proxy.toml` to the proxy's player-facing
+address to stamp the proxy instead (#18), keep backends unreachable from the internet,
+and force everything through the proxy with `ReservationRequired`.
 
 ## Wiki
 

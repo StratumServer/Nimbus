@@ -95,6 +95,26 @@ internal static class ProxyConfigValidator
             result.Warn("transfers.require_seamless_capability = false allows seamless requests without the Nimbus client handshake");
         if (cfg.Transfers.EnableUnsafeSeamlessSplice)
             result.Warn("transfers.enable_unsafe_seamless_splice = true allows live splice without Nimbus client capability");
+
+        var redirectAddress = (cfg.Transfers.RedirectAddress ?? "").Trim();
+        if (redirectAddress.Length > 0 && !IsHostOrHostPort(redirectAddress))
+            result.Error($"transfers.redirect_address must be 'host' or 'host:port', got '{cfg.Transfers.RedirectAddress}'");
+    }
+
+    // "host" or "host:port". Hostnames are not resolved here; this only rejects strings a
+    // VS client could not dial (schemes, spaces, bad ports).
+    private static bool IsHostOrHostPort(string value)
+    {
+        if (value.Contains("://") || value.Any(char.IsWhiteSpace)) return false;
+        int idx = value.LastIndexOf(':');
+        string host = value;
+        if (idx >= 0 && !value.Contains('['))
+        {
+            if (idx == 0 || idx == value.Length - 1) return false;
+            if (!int.TryParse(value.AsSpan(idx + 1), out int port) || port <= 0 || port > 65535) return false;
+            host = value.Substring(0, idx);
+        }
+        return host.Length > 0;
     }
 
     private static void ValidateAdmin(ProxyConfig cfg, ProxyConfigValidation result)
