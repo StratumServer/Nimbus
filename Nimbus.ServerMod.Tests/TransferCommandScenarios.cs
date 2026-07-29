@@ -119,26 +119,9 @@ public class TransferCommandScenarios : AtlasScenarioBase
         Assert.Contains("not in the registry snapshot", unknown.Message);
     }
 
-    /// <summary>Runs a chat command as the given player (Atlas's ExecuteCommand runs as
-    /// the console, which the /server command's RequiresPlayer precondition rejects).</summary>
+    /// <summary>Runs a chat command as the given player; shared with the shortcut scenarios.</summary>
     private Task<CommandResult> ExecuteAs(ITestPlayer player, string command)
-    {
-        var tcs = new TaskCompletionSource<CommandResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        World.Api.ChatCommands.ExecuteUnparsed(command, new TextCommandCallingArgs
-        {
-            Caller = new Caller
-            {
-                Player = player.Player,
-                FromChatGroupId = GlobalConstants.GeneralChatGroup,
-            },
-        }, result =>
-        {
-            if (result.Status == EnumCommandStatus.Deferred) return;
-            tcs.TrySetResult(new CommandResult(
-                result.Status == EnumCommandStatus.Success, result.StatusMessage ?? "", result));
-        });
-        return tcs.Task;
-    }
+        => NimbusHarness.ExecuteAs(World, player, command);
 
     [AtlasScenario]
     public async Task Seamless_WithoutClientAck_AbortsBeforeAnyRegistryCall()
