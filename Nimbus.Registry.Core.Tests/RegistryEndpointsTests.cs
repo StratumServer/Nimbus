@@ -231,6 +231,86 @@ public class RegistryEndpointsTests
     }
 
     [Fact]
+    public async Task Ban_MintedThenListedThenLifted()
+    {
+        await using var host = await Host.StartAsync();
+
+        var added = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-b1", PlayerName = "griefer", Reason = "grief", BannedBy = "admin" }));
+        Assert.Equal(HttpStatusCode.OK, added.StatusCode);
+        var ban = await added.Content.ReadFromJsonAsync<BanResponse>();
+        Assert.True(ban!.Ok);
+        Assert.True(ban.Ban!.IsNetworkWide);
+        Assert.Equal(0, ban.Ban.ExpiresAtUnix);
+
+        var listed = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/bans"));
+        var list = await listed.Content.ReadFromJsonAsync<BanListResponse>();
+        Assert.Single(list!.Bans);
+        Assert.Equal("griefer", list.Bans[0].PlayerName);
+
+        var lifted = await host.Client.SendAsync(
+            Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift?uid=uid-b1"));
+        Assert.Equal(HttpStatusCode.OK, lifted.StatusCode);
+
+        var again = await host.Client.SendAsync(
+            Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift?uid=uid-b1"));
+        Assert.Equal(HttpStatusCode.NotFound, again.StatusCode);
+
+        var empty = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/bans"));
+        Assert.Empty((await empty.Content.ReadFromJsonAsync<BanListResponse>())!.Bans);
+    }
+
+    [Fact]
+    public async Task Ban_WithADuration_GetsAnExpiry()
+    {
+        await using var host = await Host.StartAsync();
+
+        var added = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-b2", DurationSeconds = 3600 }));
+
+        var ban = await added.Content.ReadFromJsonAsync<BanResponse>();
+        Assert.True(ban!.Ban!.ExpiresAtUnix > 0);
+    }
+
+    [Fact]
+    public async Task ScopedBan_IsLiftedOnlyWithItsServerId()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-b3", ServerId = "creative" }));
+
+        // Lifting without a scope targets the network-wide entry, which does not exist here.
+        var wrongScope = await host.Client.SendAsync(
+            Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift?uid=uid-b3"));
+        Assert.Equal(HttpStatusCode.NotFound, wrongScope.StatusCode);
+
+        var rightScope = await host.Client.SendAsync(
+            Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift?uid=uid-b3&server=creative"));
+        Assert.Equal(HttpStatusCode.OK, rightScope.StatusCode);
+    }
+
+    [Fact]
+    public async Task Ban_WithoutAPlayerUid_Is400()
+    {
+        await using var host = await Host.StartAsync();
+
+        var resp = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { Reason = "no uid" }));
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Bans_RequireASignature()
+    {
+        await using var host = await Host.StartAsync();
+
+        var resp = await host.Client.GetAsync($"{host.BaseUrl}/api/bans");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task Reservation_ForAnUnregisteredTarget_Is404()
     {
         await using var host = await Host.StartAsync();

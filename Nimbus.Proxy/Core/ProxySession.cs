@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using Nimbus.Shared.Models;
 
 namespace Nimbus.Proxy;
 
@@ -52,9 +53,15 @@ internal sealed partial class ProxySession : IPlayer
     //   0 = pending, 1 = done (or not needed), 2 = failed terminal.
     private int initialReservationState;
 
+    private readonly BanCache? bans;
+
+    // Set once the ban gate has told the client why it is being dropped. Stops the connect path
+    // from dialing a backend anyway and from forging a second, misleading disconnect.
+    private volatile bool rejectedByBan;
+
     public ProxySession(long id, ProxyConfig cfg, TcpClient client, CancellationToken stopToken,
         StickyRouteTable? stickies = null, IRegistryClient? registry = null, UdpRouteOverrides? udpOverrides = null,
-        EventBus? events = null)
+        EventBus? events = null, BanCache? bans = null)
     {
         Id = id;
         this.cfg = cfg;
@@ -69,6 +76,7 @@ internal sealed partial class ProxySession : IPlayer
         this.registry = registry;
         this.udpOverrides = udpOverrides;
         this.events = events;
+        this.bans = bans;
 
         // Sniffers always run on the client stream so registry-backed joins and transfers have
         // the player UID even when SniffFrames is disabled.
@@ -196,8 +204,50 @@ internal sealed partial class ProxySession : IPlayer
         capturedIdentification = frame;
         capturedPlayerUid = uid;
         capturedPlayerName = pname;
+
+        // Network ban gate. Synchronous against the warm cache: this runs on the byte pump, so
+        // it must not wait on the registry. A network-wide ban ends the session here, before any
+        // backend sees the player.
+        var ban = bans?.FindBlocking(uid);
+        if (ban != null)
+        {
+            rejectedByBan = true;
+            RejectBannedPlayer(ban);
+            return false;
+        }
+
         TryConsumeStickyRoute(uid);
         return true;
+    }
+
+    // Forges a vanilla disconnect so the player sees the ban reason instead of a dropped socket,
+    // then tears the session down. Fire-and-forget because the caller is on the pump.
+    private void RejectBannedPlayer(NetworkBan ban)
+    {
+        string until = ban.ExpiresAtUnix > 0
+            ? $" (until {DateTimeOffset.FromUnixTimeSeconds(ban.ExpiresAtUnix):u})"
+            : "";
+        string reason = string.IsNullOrWhiteSpace(ban.Reason)
+            ? $"You are banned from this network{until}."
+            : $"You are banned from this network{until}: {ban.Reason}";
+
+        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} rejected: network ban" +
+                 (string.IsNullOrWhiteSpace(ban.Reason) ? "" : $" ({ban.Reason})"));
+        ProxyMetrics.BannedJoinRejected();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var frame = DisconnectBuilder.BuildDisconnectFrame(reason);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await clientStream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
+                await clientStream.FlushAsync(cts.Token).ConfigureAwait(false);
+                try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { }
+            }
+            catch { }
+            finally { Close(); }
+        });
     }
 
     private void TryConsumeStickyRoute(string uid)
@@ -243,6 +293,9 @@ internal sealed partial class ProxySession : IPlayer
             }
             if (!connected)
             {
+                // The ban gate already sent the real reason; do not paper over it.
+                if (rejectedByBan) return;
+
                 Log.Warn($"[s{Id}] no candidate connected: {lastFailReason ?? "unknown"}; sending forged disconnect");
                 try
                 {
@@ -315,6 +368,9 @@ internal sealed partial class ProxySession : IPlayer
         if (!firstClientFrame.IsEmpty)
         {
             CaptureIdentification(firstClientFrame.Span, source: "first frame");
+            // A banned player must not cause an upstream connection at all.
+            if (rejectedByBan)
+                return (false, true, "player is banned from the network");
             // If the first frame already contained Identification, prime the reservation
             // before replaying bytes upstream. Missing UID here is non-fatal; the c->s pump
             // retries as soon as it captures Identification from later frames.

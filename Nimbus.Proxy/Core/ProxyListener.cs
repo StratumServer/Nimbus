@@ -28,6 +28,9 @@ internal sealed class ProxyListener
     // Plugin/event surface. Subscribed handlers run sequentially per-event.
     public EventBus Events { get; } = new();
 
+    // Warm list of network bans, consulted synchronously by the connection gate.
+    public BanCache Bans { get; }
+
     public ProxyListener(ProxyConfig cfg, CancellationToken stopToken, IRegistryClient? registry = null,
         PersistentDrainStore? drainStore = null)
     {
@@ -35,6 +38,7 @@ internal sealed class ProxyListener
         this.stopToken = stopToken;
         Registry = registry;
         Router = new BackendRouter(cfg, registry, drainStore);
+        Bans = new BanCache(registry, stopToken);
         Events.WarningSink = Log.Warn;
     }
 
@@ -51,7 +55,10 @@ internal sealed class ProxyListener
 
         _ = Task.Run(() => new StickyRouteSweeper(Stickies, stopToken).RunAsync(), stopToken);
         if (Registry != null)
+        {
             _ = Task.Run(() => new TransferIntentDispatcher(cfg, Registry, Sessions, stopToken).RunAsync(), stopToken);
+            _ = Task.Run(() => Bans.RunAsync(), stopToken);
+        }
         var statusResponder = new ServerStatusResponder(cfg, Registry, () => Sessions.Count, stopToken);
         var sessionRunner = new ClientSessionRunner(Router, Events, statusResponder, Stickies, cfg, stopToken);
 
@@ -64,7 +71,7 @@ internal sealed class ProxyListener
                 catch (OperationCanceledException) { break; }
 
                 long id = Interlocked.Increment(ref sessionCounter);
-                var session = new ProxySession(id, cfg, client, stopToken, Stickies, Registry, UdpOverrides, Events);
+                var session = new ProxySession(id, cfg, client, stopToken, Stickies, Registry, UdpOverrides, Events, Bans);
                 Sessions[id] = session;
                 ProxyMetrics.SessionAccepted();
                 _ = Task.Run(async () =>
