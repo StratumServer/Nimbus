@@ -8,7 +8,9 @@ namespace Nimbus.Proxy;
 //   * the VS TCP frame header: 4 big-endian bytes, bit 31 = zlib-compressed flag,
 //     bits 30..0 = payload length;
 //   * minimal protobuf writing (varints, tags, length-delimited fields), enough to
-//     forge the handful of vanilla packets the proxy fabricates.
+//     forge the handful of vanilla packets the proxy fabricates;
+//   * minimal protobuf reading (varints, field skipping, nested-field lookup), enough
+//     for the parsers that pull player identity and chat text out of sniffed frames.
 //
 // Byte-for-byte identical to the previous per-class implementations; the wire tests
 // in Nimbus.Proxy.Tests decode the produced frames with an independent reader.
@@ -76,6 +78,72 @@ internal static class VsWire
 
     // Envelope helper for forged server packets: Packet_Server.Id (field 90) as a varint,
     // then the nested body under its own field number, wrapped in a frame.
+    // --- Reading ---
+
+    public static bool TryReadVarint(ReadOnlySpan<byte> buf, ref int pos, out ulong value)
+    {
+        value = 0;
+        int shift = 0;
+        while (pos < buf.Length)
+        {
+            byte b = buf[pos++];
+            value |= (ulong)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0) return true;
+            shift += 7;
+            if (shift > 63) return false;
+        }
+        return false;
+    }
+
+    // Advances past the value of a field whose key was just read. False on truncated input or
+    // wire types the proxy never needs (groups).
+    public static bool SkipField(ReadOnlySpan<byte> buf, ref int pos, int wireType)
+    {
+        switch (wireType)
+        {
+            case 0: // varint
+                return TryReadVarint(buf, ref pos, out _);
+            case 1: // 64-bit
+                if (pos + 8 > buf.Length) return false;
+                pos += 8;
+                return true;
+            case 2: // length-delimited
+                if (!TryReadVarint(buf, ref pos, out ulong len)) return false;
+                if (pos + (int)len > buf.Length) return false;
+                pos += (int)len;
+                return true;
+            case 5: // 32-bit
+                if (pos + 4 > buf.Length) return false;
+                pos += 4;
+                return true;
+            default:
+                return false; // groups (3, 4) and unknown wire types
+        }
+    }
+
+    // Finds a length-delimited field by number and hands back its contents, for pulling a
+    // nested message out of a packet envelope.
+    public static bool TryFindNestedField(ReadOnlySpan<byte> body, int fieldNumber, out ReadOnlySpan<byte> nested)
+    {
+        nested = default;
+        int pos = 0;
+        while (pos < body.Length)
+        {
+            if (!TryReadVarint(body, ref pos, out ulong key)) return false;
+            int field = (int)(key >> 3);
+            int wireType = (int)(key & 0x7);
+            if (field == fieldNumber && wireType == 2)
+            {
+                if (!TryReadVarint(body, ref pos, out ulong len)) return false;
+                if (pos + (int)len > body.Length) return false;
+                nested = body.Slice(pos, (int)len);
+                return true;
+            }
+            if (!SkipField(body, ref pos, wireType)) return false;
+        }
+        return false;
+    }
+
     public static byte[] BuildServerPacketFrame(int packetId, int bodyField, byte[] body)
     {
         var env = new MemoryStream();

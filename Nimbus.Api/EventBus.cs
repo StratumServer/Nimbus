@@ -21,6 +21,11 @@ public sealed class EventBus
     public void Subscribe<T>(Action<T> handler) where T : ProxyEvent
         => Subscribe<T>(e => { handler(e); return Task.CompletedTask; });
 
+    // Lets a hot path skip the work of building an event nobody listens to. Cheap enough to call
+    // per frame: one dictionary lookup.
+    public bool HasSubscribers<T>() where T : ProxyEvent
+        => handlers.TryGetValue(typeof(T), out var list) && list.Count > 0;
+
     public void ClearSubscriptions()
     {
         lock (subscribeLock)
