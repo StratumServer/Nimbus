@@ -39,11 +39,14 @@ internal sealed partial class ProxySession
             Log.Warn($"[s{Id}] no sticky staged (stickies={(stickies != null ? "set" : "null")}, uid='{capturedPlayerUid ?? ""}'), reconnect may land on default backend");
         }
 
-        // Build the redirect host string per vanilla VS convention: "host" or "host:port".
-        string hostString = (target.Port > 0 && target.Port != 42420)
-            ? $"{target.Host}:{target.Port}"
-            : target.Host;
+        // What the forged packet carries: the configured proxy address when set, else the
+        // backend's address per vanilla VS convention ("host" or "host:port"). See
+        // RedirectTargeting for why stamping the proxy matters once vanilla clients follow
+        // the stamped host literally (#18).
+        var stamp = RedirectTargeting.Resolve(cfg.Transfers, target);
+        string hostString = stamp.HostString;
         string displayName = string.IsNullOrEmpty(target.ServerId) ? hostString : target.ServerId;
+        Log.Trace($"[s{Id}] redirect stamps {(stamp.ProxyStamped ? "proxy address" : "backend address")} '{hostString}'");
 
         byte[] frame;
         try { frame = RedirectBuilder.BuildRedirectFrame(hostString, displayName); }
