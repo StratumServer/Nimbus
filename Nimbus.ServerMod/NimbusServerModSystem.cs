@@ -29,6 +29,11 @@ public sealed class NimbusServerModSystem : ModSystem
     public DateTime LastSnapshotUtc { get; private set; }
     public string LastStatus { get; private set; } = "not started";
 
+    // Last seamless handshake this backend completed as the transfer TARGET, shown by
+    // /nimbus status. Seamless failures are otherwise invisible from the receiving side,
+    // which is where an operator looks when a player reports a stuck transfer screen.
+    public string LastSeamlessCommit { get; private set; } = "";
+
     public override bool ShouldLoad(EnumAppSide side)
         => side == EnumAppSide.Server;
 
@@ -316,6 +321,7 @@ public sealed class NimbusServerModSystem : ModSystem
                     api?.Event.EnqueueMainThreadTask(() =>
                     {
                         TrySendSeamlessCommit(player, transferId);
+                        LastSeamlessCommit = $"{playerName} ({transferId})";
                         api?.Logger.Notification($"[Nimbus] seamless commit sent to {playerName} ({transferId})");
                     }, "nimbus-seamless-commit");
                 }
@@ -509,6 +515,8 @@ public sealed class NimbusServerModSystem : ModSystem
             var age = (int)(DateTime.UtcNow - LastSnapshotUtc).TotalSeconds;
             sb.AppendLine($"Snapshot: {LastSnapshot.Backends.Count} backends, {LastSnapshot.TotalPlayers}/{LastSnapshot.TotalCapacity} players, {age}s old");
         }
+        if (LastSeamlessCommit.Length > 0)
+            sb.AppendLine("Last seamless commit: " + LastSeamlessCommit);
         return TextCommandResult.Success(sb.ToString());
     }
 

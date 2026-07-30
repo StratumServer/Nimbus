@@ -47,6 +47,22 @@ timeout, registry rejection, internal error). After the transfer has started the
 can no longer signal anything; a transfer that dies mid-flight surfaces to the client as
 a disconnect, which is also what the vanilla path would do.
 
+### Known gap: dispatch failures signal nothing
+
+The client contract is "exactly one of Commit or Abort" only for failures the source can
+see synchronously. `PostTransferIntentAsync` confirms the registry *accepted* the intent,
+not that the transfer happened. The proxy dispatches it later, and an unknown server id, a
+stale or maintenance target, or the dispatcher's ready-wait timeout all just log and
+return: `TransferIntentResponse` is fire-and-forget once queued, so nothing reaches back to
+the source backend.
+
+That leaves a real window, after `Ready` and before the redirect or splice begins, where
+the client sits veiled and receives neither packet. It predates this design (the
+dispatcher has always been fire-and-forget) and closing it needs a path from the proxy
+back to the source backend, most likely through the registry. Tracked separately as #51 rather
+than papered over: a client mod should treat a prepare with no resolution as expiring
+after a timeout, not assume one of the two packets always arrives.
+
 ## Consequences
 
 - The client mod's contract is now complete: `Prepare` -> freeze/veil, `Ready` -> ack,

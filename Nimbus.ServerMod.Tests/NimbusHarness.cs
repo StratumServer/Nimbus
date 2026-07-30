@@ -100,6 +100,10 @@ public sealed class NimbusHarness
         return tcs.Task;
     }
 
+    /// <summary>The mod's LastSeamlessCommit, empty until the target sends a commit.</summary>
+    public string LastSeamlessCommit
+        => (string)(modSystem.GetType().GetProperty("LastSeamlessCommit")!.GetValue(modSystem) ?? "");
+
     /// <summary>Calls the mod's public GetForwardedPlayer(uid); null when not forwarded.</summary>
     public object? GetForwardedPlayer(string playerUid)
         => modSystem.GetType().GetMethod("GetForwardedPlayer")!

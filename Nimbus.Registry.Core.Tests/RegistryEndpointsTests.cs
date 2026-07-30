@@ -308,9 +308,10 @@ public class RegistryEndpointsTests
         var resp = await host.Client.GetAsync($"{host.BaseUrl}/api/bans");
 
         Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
+    }
 
     [Fact]
-public async Task Reservation_CarriesTheClientTransferId_ThroughMintAndConsume()
+    public async Task Reservation_CarriesTheClientTransferId_ThroughMintAndConsume()
     {
         await using var host = await Host.StartAsync();
         await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/heartbeat", body: Heartbeat()));
