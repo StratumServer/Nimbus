@@ -108,3 +108,38 @@ public sealed class PlayerTransferredEvent : ProxyEvent
         Mode = mode;
     }
 }
+
+// Fires when a player sends a chat message, once per utterance, as seen on the wire between the
+// client and its backend. Read-only on purpose: handlers observe, they do not edit or cancel.
+//
+// Nimbus routes bytes and does not author game content, so there is no proxy-side way to change
+// or inject chat. Plugins get logging, moderation triggers, and outbound bridges (Discord, a web
+// feed); a mod that needs to write into chat does it backend-side with the real chat API.
+//
+// Only the client-to-server direction is surfaced. That is where an utterance appears exactly
+// once, whereas the server-to-client copy of the same line arrives once per recipient session,
+// which would make a relay fan out messages by player count.
+//
+// No ordering guarantee: each line is dispatched independently so a slow handler cannot stall
+// the byte pump, which means two lines from the same player can reach a handler out of order.
+// A bridge that cares about order should stamp or sequence on its own side.
+public sealed class PlayerChatEvent : ProxyEvent
+{
+    public IPlayer Player { get; }
+
+    // The backend the player was on when they said it, null if not connected yet.
+    public IServerInfo? Server { get; }
+
+    public string Message { get; }
+
+    // Vintage Story chat group the line was sent to (general, a private group, ...).
+    public int GroupId { get; }
+
+    public PlayerChatEvent(IPlayer player, IServerInfo? server, string message, int groupId)
+    {
+        Player = player;
+        Server = server;
+        Message = message;
+        GroupId = groupId;
+    }
+}

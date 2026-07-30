@@ -185,9 +185,32 @@ internal sealed partial class ProxySession : IPlayer
 
     private void OnClientFrame(string name, ReadOnlyMemory<byte> raw)
     {
-        if (name != "Identification") return;
+        if (name == "Identification")
+        {
+            CaptureIdentification(raw.Span, source: "sniffer");
+            return;
+        }
 
-        CaptureIdentification(raw.Span, source: "sniffer");
+        if (name == "Chatline")
+            SurfaceChatLine(raw.Span);
+    }
+
+    // Read-only PlayerChatEvent for plugins. Parsing is skipped entirely when nothing subscribed,
+    // so a proxy with no chat-aware plugin pays nothing on this path beyond the name compare.
+    private void SurfaceChatLine(ReadOnlySpan<byte> raw)
+    {
+        if (events == null || !events.HasSubscribers<PlayerChatEvent>()) return;
+        if (!ChatlineParser.TryExtract(raw, out string message, out int groupId)) return;
+
+        var server = currentBackend?.ToServerInfo();
+        var evt = new PlayerChatEvent(this, server, message, groupId);
+        // Off the pump: a slow handler must not stall the player's own traffic. Chat is observed,
+        // never gated, so nothing downstream waits on this.
+        _ = Task.Run(async () =>
+        {
+            try { await events.FireAsync(evt).ConfigureAwait(false); }
+            catch { }
+        });
     }
 
     private bool CaptureIdentification(ReadOnlySpan<byte> raw, string source)
