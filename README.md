@@ -79,6 +79,14 @@ call. Loosening cannot, because the engine-level gate registered at boot rejects
 before the handler runs. The asymmetry is intentional: a half-applied permission change fails
 closed, never open.
 
+## Checking a backend from the inside
+
+`/nimbus status` on a backend reports its own view: config summary, last registry
+exchange, snapshot age, and the last seamless handshake it completed as a transfer target.
+That last line is worth knowing about, because a seamless transfer that fails is otherwise
+invisible from the receiving side, which is where you look when a player reports a stuck
+transfer screen.
+
 ## Network bans
 
 A ban held by the registry covers the whole network, so a griefer does not have to be banned
