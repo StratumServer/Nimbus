@@ -76,8 +76,6 @@ internal static class VsWire
     public static void WriteStringField(Stream s, int fieldNumber, string value)
         => WriteBytesField(s, fieldNumber, Encoding.UTF8.GetBytes(value));
 
-    // Envelope helper for forged server packets: Packet_Server.Id (field 90) as a varint,
-    // then the nested body under its own field number, wrapped in a frame.
     // --- Reading ---
 
     public static bool TryReadVarint(ReadOnlySpan<byte> buf, ref int pos, out ulong value)
@@ -144,6 +142,8 @@ internal static class VsWire
         return false;
     }
 
+    // Envelope helper for forged server packets: Packet_Server.Id (field 90) as a varint,
+    // then the nested body under its own field number, wrapped in a frame.
     public static byte[] BuildServerPacketFrame(int packetId, int bodyField, byte[] body)
     {
         var env = new MemoryStream();

@@ -119,6 +119,10 @@ public sealed class PlayerTransferredEvent : ProxyEvent
 // Only the client-to-server direction is surfaced. That is where an utterance appears exactly
 // once, whereas the server-to-client copy of the same line arrives once per recipient session,
 // which would make a relay fan out messages by player count.
+//
+// No ordering guarantee: each line is dispatched independently so a slow handler cannot stall
+// the byte pump, which means two lines from the same player can reach a handler out of order.
+// A bridge that cares about order should stamp or sequence on its own side.
 public sealed class PlayerChatEvent : ProxyEvent
 {
     public IPlayer Player { get; }
