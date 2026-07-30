@@ -21,6 +21,7 @@ internal static class ProxyMetrics
     private static long adminDenied;
     private static long registryIntentPollFailures;
     private static long drainedServers;
+    private static long bannedJoinsRejected;
 
     // Live session count, for the /status report.
     public static long ActiveSessionCount => Interlocked.Read(ref activeSessions);
@@ -79,6 +80,9 @@ internal static class ProxyMetrics
     public static void SetDrainedServers(int count)
         => Interlocked.Exchange(ref drainedServers, Math.Max(0, count));
 
+    public static void BannedJoinRejected()
+        => Interlocked.Increment(ref bannedJoinsRejected);
+
     public static string RenderPrometheus()
     {
         var sb = new StringBuilder();
@@ -99,6 +103,7 @@ internal static class ProxyMetrics
         Metric(sb, "nimbus_proxy_admin_denied_total", "counter", "Admin commands denied by permissions.", Read(adminDenied));
         Metric(sb, "nimbus_proxy_registry_intent_poll_failures_total", "counter", "Transfer intent poll failures.", Read(registryIntentPollFailures));
         Metric(sb, "nimbus_proxy_drained_servers", "gauge", "Servers currently marked drained.", Read(drainedServers));
+        Metric(sb, "nimbus_proxy_banned_joins_rejected_total", "counter", "Joins rejected by a network ban.", Read(bannedJoinsRejected));
         return sb.ToString();
     }
 

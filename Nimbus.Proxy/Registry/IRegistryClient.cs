@@ -20,4 +20,13 @@ internal interface IRegistryClient
     Task<BackendSnapshot?> ResolveByServerIdAsync(string serverId, CancellationToken ct);
 
     Task<List<TransferIntent>> DrainTransferIntentsAsync(CancellationToken ct);
+
+    // Network bans. The proxy keeps a local cache of these (BanCache) because the connection
+    // gate cannot afford a registry round-trip per join; these calls are the refresh and the
+    // write path behind the admin commands.
+    Task<List<NetworkBan>?> GetBansAsync(CancellationToken ct);
+
+    Task<NetworkBan?> AddBanAsync(BanRequest request, CancellationToken ct);
+
+    Task<bool> LiftBanAsync(string playerUid, string? serverId, CancellationToken ct);
 }

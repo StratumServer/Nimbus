@@ -44,6 +44,26 @@ The short version:
 3. Install `Nimbus.ServerMod` on each backend, fill in `nimbus-server.json`.
 4. Distribute [RedirectFix](https://github.com/StratumServer/redirectfix) to your players.
 
+## Network bans
+
+A ban held by the registry covers the whole network, so a griefer does not have to be banned
+once per backend:
+
+```shell
+nimctl ban --player Griefer --reason "griefing" --duration 86400
+nimctl ban --uid <uid> --server creative     # one backend only
+nimctl bans
+nimctl unban --uid <uid>
+```
+
+Network-wide bans are enforced at the proxy door: the player is dropped while identifying, with
+the ban reason, and their login never reaches a backend. (A client that stalls long enough for the
+proxy to open an upstream first will have opened a TCP connection to the backend, but not a game
+session: the pump drops its traffic the moment the ban is recognised.) The proxy keeps a warm copy of the list
+so the check costs nothing per join, and a registry outage leaves the last known bans in force.
+Per-backend bans leave the rest of the network reachable. Vanilla per-server `/ban` keeps working
+and stays local to that savegame.
+
 ## Addresses: who connects where
 
 Three different addresses exist in a Nimbus network, and mixing them up is the most

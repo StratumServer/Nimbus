@@ -156,6 +156,79 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         catch { return new List<TransferIntent>(); }
     }
 
+    public async Task<List<NetworkBan>?> GetBansAsync(CancellationToken ct)
+    {
+        try
+        {
+            const string path = "api/bans";
+            using var msg = new HttpRequestMessage(HttpMethod.Get, path);
+            Sign(msg, "GET", "/" + path, Array.Empty<byte>());
+            using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                Log.Warn($"registry GET /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
+                return null;
+            }
+            var parsed = await resp.Content.ReadFromJsonAsync<BanListResponse>(cancellationToken: ct).ConfigureAwait(false);
+            return parsed?.Bans;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"registry GET /api/bans failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<NetworkBan?> AddBanAsync(BanRequest request, CancellationToken ct)
+    {
+        try
+        {
+            byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
+            const string path = "api/bans";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            Sign(msg, "POST", "/" + path, body);
+
+            using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                string detail = await SafeReadAsync(resp).ConfigureAwait(false);
+                Log.Warn($"registry POST /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
+                return null;
+            }
+            var parsed = await resp.Content.ReadFromJsonAsync<BanResponse>(cancellationToken: ct).ConfigureAwait(false);
+            return parsed != null && parsed.Ok ? parsed.Ban : null;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"registry ban add failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<bool> LiftBanAsync(string playerUid, string? serverId, CancellationToken ct)
+    {
+        try
+        {
+            byte[] body = Array.Empty<byte>();
+            string query = $"?uid={Uri.EscapeDataString(playerUid)}";
+            if (!string.IsNullOrEmpty(serverId)) query += $"&server={Uri.EscapeDataString(serverId)}";
+            const string path = "api/bans/lift";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path + query) { Content = new ByteArrayContent(body) };
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            // Signed over the path only; Sign strips the query, matching the other signed calls.
+            Sign(msg, "POST", "/" + path, body);
+
+            using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
+            return resp.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"registry ban lift failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
     private void Sign(HttpRequestMessage msg, string method, string canonicalPath, byte[] body)
     {
         long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
