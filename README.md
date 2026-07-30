@@ -44,6 +44,41 @@ The short version:
 3. Install `Nimbus.ServerMod` on each backend, fill in `nimbus-server.json`.
 4. Distribute [RedirectFix](https://github.com/StratumServer/redirectfix) to your players.
 
+## Shortcut commands
+
+Players would rather type `/hub` than `/server hub`. Each backend's `nimbus-server.json` can
+declare its own shortcuts:
+
+```json
+"ShortcutCommands": [
+  { "Name": "hub", "Targets": [ "hub" ] },
+  { "Name": "lobby", "Targets": [ "survival-lobby", "hub" ], "Description": "Back to your lobby" },
+  { "Name": "staff", "Targets": [ "staff" ], "Privilege": "controlserver" }
+]
+```
+
+`Targets` is a fallback chain tried in order, so `/lobby` can mean "this gamemode's lobby, or the
+hub if it has none", and a shortcut degrades gracefully when part of the network is down: the
+first target that is registered, healthy and not this server wins. `Privilege` defaults to `chat`
+(everyone) and takes any Vintage Story privilege, so `/staff` can stay admin-only.
+
+Shortcuts never shadow an existing command, which is why there is no `/tp` shortcut: that is
+vanilla teleport.
+
+Vintage Story registers chat commands at startup and cannot unregister one, so what a
+`/nimbus reload` can change is limited, and deliberately limited in the safe direction:
+
+| Change | Takes effect |
+|---|---|
+| Retargeting an existing shortcut | on reload |
+| Tightening a privilege (opening it up less) | on reload |
+| Loosening a privilege, adding or removing a shortcut | needs a restart |
+
+Tightening applies immediately because the handler re-checks the current privilege on every
+call. Loosening cannot, because the engine-level gate registered at boot rejects the caller
+before the handler runs. The asymmetry is intentional: a half-applied permission change fails
+closed, never open.
+
 ## Network bans
 
 A ban held by the registry covers the whole network, so a griefer does not have to be banned

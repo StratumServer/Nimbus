@@ -1,0 +1,19 @@
+{
+  "Enabled": true,
+  "ServerId": "backend-test",
+  "DisplayName": "Atlas backend",
+  "PublicHost": "127.0.0.1",
+  "RegistryUrl": "http://127.0.0.1:1",
+  "SharedSecret": "shortcut-secret",
+  "ReservationRequired": false,
+  "HeartbeatIntervalSeconds": 1,
+  "AllowPlayerServerCommand": true,
+  "ShortcutCommands": [
+    { "Name": "hub", "Targets": [ "hub2" ] },
+    { "Name": "lobby", "Targets": [ "survival-lobby", "hub2" ], "Description": "Back to your lobby" },
+    { "Name": "staff", "Targets": [ "staff" ], "Privilege": "controlserver" },
+    { "Name": "home", "Targets": [ "backend-test" ] },
+    { "Name": "tp", "Targets": [ "hub2" ] },
+    { "Name": "broken", "Targets": [] }
+  ]
+}
