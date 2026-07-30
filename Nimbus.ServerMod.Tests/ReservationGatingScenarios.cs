@@ -14,7 +14,7 @@ public class ReservationGatingScenarios : AtlasScenarioBase
 {
     private const string Secret = "atlas-shared-secret";
 
-    private static object MakeReservation(string realIp) => new
+    private static object MakeReservation(string realIp, string clientTransferId = "") => new
     {
         id = "res-atlas-1",
         playerUid = "",              // the mod matches by its own join UID, not this field
@@ -25,7 +25,44 @@ public class ReservationGatingScenarios : AtlasScenarioBase
         reason = "atlas scenario",
         realRemoteIp = realIp,
         realRemotePort = 54321,
+        clientTransferId,
     };
+
+    [AtlasScenario]
+    public async Task Join_WithASeamlessTransferId_SendsTheCommit()
+    {
+        using var registry = new FakeRegistry(Secret);
+        var nimbus = await NimbusHarness.ConfigureAsync(World, registry.Url, Secret, reservationRequired: true);
+
+        // A reservation minted for a seamless transfer carries the handshake id the source
+        // backend opened with the client. Consuming it on join is what tells this backend to
+        // close the loop, since the source can no longer reach the player (#19).
+        registry.NextReservation = MakeReservation("203.0.113.8", clientTransferId: "A1B2C3D4E5");
+        ITestPlayer heidi = await World.JoinPlayer("heidi");
+
+        await World.Until(() => nimbus.LastSeamlessCommit.Contains("A1B2C3D4E5"));
+
+        Assert.Contains("heidi", nimbus.LastSeamlessCommit);
+        Assert.True(heidi.IsConnected, "the commit must not disturb the join");
+    }
+
+    [AtlasScenario]
+    public async Task Join_WithoutATransferId_SendsNoCommit()
+    {
+        using var registry = new FakeRegistry(Secret);
+        var nimbus = await NimbusHarness.ConfigureAsync(World, registry.Url, Secret, reservationRequired: true);
+
+        // A plain transfer carries no handshake id, so nothing must be sent: an unmodded
+        // client would have no idea what to do with a commit packet.
+        registry.NextReservation = MakeReservation("203.0.113.9");
+        ITestPlayer ivan = await World.JoinPlayer("ivan");
+        string uid = ivan.Player.PlayerUID;
+
+        await World.Until(() => nimbus.GetForwardedPlayer(uid) != null);
+        await World.Ticks(20);
+
+        Assert.DoesNotContain("ivan", nimbus.LastSeamlessCommit);
+    }
 
     [AtlasScenario]
     public async Task Join_WithValidReservation_IsAdmitted_AndForwardingIsStored()

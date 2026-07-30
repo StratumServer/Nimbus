@@ -9,7 +9,7 @@ namespace Nimbus.Proxy;
 internal sealed partial class ProxySession
 {
     public async Task<string?> RequestSeamlessAsync(BackendEndpoint target, IRegistryClient? registry = null,
-        string? swapReason = null, bool failOnRegistryError = true)
+        string? swapReason = null, bool failOnRegistryError = true, string? clientTransferId = null)
     {
         ProxyMetrics.SeamlessRequested();
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -50,7 +50,7 @@ internal sealed partial class ProxySession
             target = pre.Target.ToEndpoint();
         }
 
-        var mintFail = await MintReservationIfPossibleAsync(target, registry, swapReason ?? "proxy seamless", failOnRegistryError).ConfigureAwait(false);
+        var mintFail = await MintReservationIfPossibleAsync(target, registry, swapReason ?? "proxy seamless", failOnRegistryError, clientTransferId).ConfigureAwait(false);
         if (mintFail != null) { swapping = false; ProxyMetrics.SeamlessFailed(); return mintFail; }
 
         var newUp = new TcpClient { NoDelay = true };

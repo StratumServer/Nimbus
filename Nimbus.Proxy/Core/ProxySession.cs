@@ -107,7 +107,8 @@ internal sealed partial class ProxySession : IPlayer
         => (await RequestTransferAsync(target.ToEndpoint(), mode, registry, reason, cfg.Registry.FailOnError).ConfigureAwait(false)).failReason;
 
     internal async Task<(string modeUsed, string? failReason)> RequestTransferAsync(BackendEndpoint target, string mode,
-        IRegistryClient? registry = null, string? reason = null, bool failOnRegistryError = true)
+        IRegistryClient? registry = null, string? reason = null, bool failOnRegistryError = true,
+        string? clientTransferId = null)
     {
         string normalized = string.Equals(mode, "splice", StringComparison.OrdinalIgnoreCase) ? "seamless" : mode;
         if (string.Equals(normalized, "seamless", StringComparison.OrdinalIgnoreCase))
@@ -125,21 +126,21 @@ internal sealed partial class ProxySession : IPlayer
 
                 Log.Warn($"[s{Id}] seamless requested but client has no Nimbus capability; falling back to redirect");
                 var redirectFail = await RequestRedirectAsync(target, registry,
-                    reason ?? "seamless unavailable, redirect fallback", failOnRegistryError).ConfigureAwait(false);
+                    reason ?? "seamless unavailable, redirect fallback", failOnRegistryError, clientTransferId).ConfigureAwait(false);
                 return ("redirect", redirectFail);
             }
 
             if (!cfg.Transfers.EnableUnsafeSeamlessSplice)
             {
                 var redirectFail = await RequestRedirectAsync(target, registry,
-                    reason ?? "seamless visual redirect", failOnRegistryError).ConfigureAwait(false);
+                    reason ?? "seamless visual redirect", failOnRegistryError, clientTransferId).ConfigureAwait(false);
                 return ("seamless", redirectFail);
             }
 
-            return ("seamless", await RequestSeamlessAsync(target, registry, reason, failOnRegistryError).ConfigureAwait(false));
+            return ("seamless", await RequestSeamlessAsync(target, registry, reason, failOnRegistryError, clientTransferId).ConfigureAwait(false));
         }
         if (string.Equals(normalized, "redirect", StringComparison.OrdinalIgnoreCase))
-            return ("redirect", await RequestRedirectAsync(target, registry, reason, failOnRegistryError).ConfigureAwait(false));
+            return ("redirect", await RequestRedirectAsync(target, registry, reason, failOnRegistryError, clientTransferId).ConfigureAwait(false));
         return (normalized, $"unknown transfer mode '{mode}'");
     }
 

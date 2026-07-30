@@ -36,7 +36,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
     /// </summary>
     public async Task<TransferReservation?> MintReservationAsync(
         string playerUid, string playerName, string targetServerId, string? reason, CancellationToken ct,
-        string? realRemoteIp = null, int realRemotePort = 0)
+        string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null)
     {
         var req = new ReservationRequest
         {
@@ -48,6 +48,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             Reason = reason,
             RealRemoteIp = realRemoteIp ?? "",
             RealRemotePort = realRemotePort,
+            ClientTransferId = clientTransferId ?? "",
         };
 
         try

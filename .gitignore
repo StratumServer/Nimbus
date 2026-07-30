@@ -1,6 +1,8 @@
 bin/
 obj/
-docs/
+# Generated docs are ignored, but committed design records live under docs/adr.
+docs/*
+!docs/adr/
 release_full/
 *.user
 *.suo

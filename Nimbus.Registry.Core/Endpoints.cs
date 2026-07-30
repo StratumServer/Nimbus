@@ -72,6 +72,7 @@ public static class Endpoints
                 Reason = req.Reason,
                 RealRemoteIp = req.RealRemoteIp ?? "",
                 RealRemotePort = req.RealRemotePort,
+                ClientTransferId = req.ClientTransferId ?? "",
             };
             store.Add(r);
             return Results.Ok(new ReservationResponse { Ok = true, Reservation = r });

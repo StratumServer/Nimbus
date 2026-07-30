@@ -10,7 +10,7 @@ namespace Nimbus.Proxy;
 internal sealed partial class ProxySession
 {
     public async Task<string?> RequestRedirectAsync(BackendEndpoint target, IRegistryClient? registry = null,
-        string? reason = null, bool failOnRegistryError = true)
+        string? reason = null, bool failOnRegistryError = true, string? clientTransferId = null)
     {
         ProxyMetrics.RedirectRequested();
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -24,7 +24,7 @@ internal sealed partial class ProxySession
         if (string.IsNullOrEmpty(target.Host)) { ProxyMetrics.RedirectFailed(); return "redirect target has empty host"; }
         if (target.Port <= 0 || target.Port > 65535) { ProxyMetrics.RedirectFailed(); return $"redirect target has invalid port {target.Port}"; }
 
-        var mintFail = await MintReservationIfPossibleAsync(target, registry, reason ?? "proxy redirect", failOnRegistryError).ConfigureAwait(false);
+        var mintFail = await MintReservationIfPossibleAsync(target, registry, reason ?? "proxy redirect", failOnRegistryError, clientTransferId).ConfigureAwait(false);
         if (mintFail != null) { ProxyMetrics.RedirectFailed(); return mintFail; }
 
         // RedirectFix reconnects through the cached proxy address. The next session consumes
@@ -84,7 +84,8 @@ internal sealed partial class ProxySession
     // accepts the player by UID without re-running auth. Returns null on success or a short
     // failure reason. When `failOnRegistryError` is false, mint failures are logged and null
     // is returned (caller proceeds and the backend auth gate decides).
-    private async Task<string?> MintReservationIfPossibleAsync(BackendEndpoint target, IRegistryClient? registry, string reason, bool failOnRegistryError)
+    private async Task<string?> MintReservationIfPossibleAsync(BackendEndpoint target, IRegistryClient? registry, string reason, bool failOnRegistryError,
+        string? clientTransferId = null)
     {
         if (registry == null || string.IsNullOrEmpty(target.ServerId))
         {
@@ -107,7 +108,7 @@ internal sealed partial class ProxySession
         mintCts.CancelAfter(TimeSpan.FromSeconds(10));
         var reservation = await registry.MintReservationAsync(
             capturedPlayerUid!, capturedPlayerName ?? "", target.ServerId, reason, mintCts.Token,
-            ClientEndpoint.ip, ClientEndpoint.port).ConfigureAwait(false);
+            ClientEndpoint.ip, ClientEndpoint.port, clientTransferId).ConfigureAwait(false);
         if (reservation == null)
         {
             if (failOnRegistryError)
