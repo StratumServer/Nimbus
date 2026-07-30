@@ -57,7 +57,9 @@ nimctl unban --uid <uid>
 ```
 
 Network-wide bans are enforced at the proxy door: the player is dropped while identifying, with
-the ban reason, before any backend sees the connection. The proxy keeps a warm copy of the list
+the ban reason, and their login never reaches a backend. (A client that stalls long enough for the
+proxy to open an upstream first will have opened a TCP connection to the backend, but not a game
+session: the pump drops its traffic the moment the ban is recognised.) The proxy keeps a warm copy of the list
 so the check costs nothing per join, and a registry outage leaves the last known bans in force.
 Per-backend bans leave the rest of the network reachable. Vanilla per-server `/ban` keeps working
 and stays local to that savegame.

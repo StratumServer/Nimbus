@@ -505,6 +505,19 @@ internal sealed partial class ProxySession : IPlayer
                 if (isC2S)
                 {
                     sniffer?.OnBytes(new ReadOnlySpan<byte>(buf, 0, read));
+
+                    // The ban gate normally fires before we dial a backend, but a client that
+                    // stays quiet past the first-frame read window (status.query_timeout_ms) gets
+                    // here with the pumps already running and its Identification in this very
+                    // buffer. Forwarding it would let a banned player's login reach the backend
+                    // in the ~150ms before the forged disconnect closes us down, so the pump has
+                    // to drop the chunk itself rather than trust the pre-connect check.
+                    if (rejectedByBan)
+                    {
+                        Log.Trace($"[s{Id}] dropping c->s chunk after ban rejection");
+                        break;
+                    }
+
                     if (initialReservationState == 0)
                     {
                         var mintFail = await EnsureInitialReservationAsync(currentBackend, "initial connect (stream)").ConfigureAwait(false);
