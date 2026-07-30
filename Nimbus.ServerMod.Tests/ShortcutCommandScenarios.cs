@@ -177,4 +177,37 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
         Assert.True(hub.Ok, hub.Message);
         Assert.Contains("creative", hub.Message);
     }
+
+    [AtlasScenario]
+    public async Task Shortcut_TightenedByReload_DeniesAPlayerWhoLostAccess()
+    {
+        using var registry = new FakeRegistry(Secret);
+        registry.ServersSnapshot = FakeRegistry.Snapshot(FakeRegistry.Backend("hub2"));
+        registry.TransferIntentResponse = new { ok = true };
+        await NimbusHarness.ConfigureAsync(World, registry.Url, Secret,
+            reservationRequired: false, shortcutCommandsJson: ShortcutsJson);
+
+        ITestPlayer gina = await World.JoinPlayer("gina");
+        await WaitForSnapshot("hub2");
+
+        // Open to everyone at boot: an ordinary player gets through.
+        CommandResult before = await NimbusHarness.ExecuteAs(World, gina, "/hub");
+        Assert.True(before.Ok, before.Message);
+
+        // The operator locks it down and reloads. The engine gate keeps the privilege it was
+        // registered with, so without the handler-side re-check this silently stays open.
+        await NimbusHarness.ConfigureAsync(World, registry.Url, Secret,
+            reservationRequired: false,
+            shortcutCommandsJson: """[ { "Name": "hub", "Targets": [ "hub2" ], "Privilege": "controlserver" } ]""");
+
+        // Atlas test players join privileged, so take the privilege away explicitly: this is
+        // about whether the handler honours the CURRENT config value, not about VS's roles.
+        World.Api.Permissions.DenyPrivilege(gina.Player.PlayerUID, "controlserver");
+        Assert.False(gina.Player.HasPrivilege("controlserver"), "test setup: player should not be privileged here");
+
+        CommandResult after = await NimbusHarness.ExecuteAs(World, gina, "/hub");
+
+        Assert.False(after.Ok, "tightening a shortcut's privilege must take effect on reload");
+        Assert.Contains("permission", after.Message);
+    }
 }

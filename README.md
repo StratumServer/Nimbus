@@ -63,9 +63,21 @@ first target that is registered, healthy and not this server wins. `Privilege` d
 (everyone) and takes any Vintage Story privilege, so `/staff` can stay admin-only.
 
 Shortcuts never shadow an existing command, which is why there is no `/tp` shortcut: that is
-vanilla teleport. Adding or removing a shortcut needs a server restart, because Vintage Story
-registers chat commands at startup and cannot unregister one; retargeting an existing shortcut
-works with `/nimbus reload`.
+vanilla teleport.
+
+Vintage Story registers chat commands at startup and cannot unregister one, so what a
+`/nimbus reload` can change is limited, and deliberately limited in the safe direction:
+
+| Change | Takes effect |
+|---|---|
+| Retargeting an existing shortcut | on reload |
+| Tightening a privilege (opening it up less) | on reload |
+| Loosening a privilege, adding or removing a shortcut | needs a restart |
+
+Tightening applies immediately because the handler re-checks the current privilege on every
+call. Loosening cannot, because the engine-level gate registered at boot rejects the caller
+before the handler runs. The asymmetry is intentional: a half-applied permission change fails
+closed, never open.
 
 ## Network bans
 

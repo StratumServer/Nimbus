@@ -437,6 +437,16 @@ public sealed class NimbusServerModSystem : ModSystem
         if (shortcut == null || !shortcut.IsUsable())
             return TextCommandResult.Error($"/{name} is no longer configured.");
 
+        // The engine-level RequiresPrivilege gate was baked in at registration and cannot be
+        // changed afterwards, so an operator tightening a shortcut from "chat" to
+        // "controlserver" and reloading would otherwise keep letting everyone through: a
+        // fail-open on exactly the edit made to lock something down. Re-check the current
+        // privilege here so tightening takes effect on reload. Loosening still needs a restart,
+        // because the boot-time gate rejects the caller before this handler runs; that asymmetry
+        // is deliberate, it fails closed.
+        if (!string.IsNullOrWhiteSpace(shortcut.Privilege) && !player.HasPrivilege(shortcut.Privilege))
+            return TextCommandResult.Error($"You do not have permission to use /{name}.");
+
         var resolved = ResolveShortcutTarget(shortcut, out string? whyNot);
         if (resolved == null)
             return TextCommandResult.Error(whyNot ?? $"No server available for /{name} right now.");
