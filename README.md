@@ -23,7 +23,7 @@ A [Velocity](https://papermc.io/software/velocity)-style proxy for [Vintage Stor
 
 ## Download
 
-Grab the [latest release](https://github.com/StratumServer/Nimbus/releases/latest). Built and tested against Vintage Story 1.22.5.
+Grab the [latest release](https://github.com/StratumServer/Nimbus/releases/latest). Built and tested against Vintage Story 1.22.6.
 
 | Asset | Contents |
 | --- | --- |

@@ -79,7 +79,7 @@ eggs = {
             variables=[
                 var("Vintage Story version",
                     "Game version to install, from the stable CDN (must be 1.19 or newer for Nimbus).",
-                    "VS_VERSION", "1.22.5", "required|string|max:20"),
+                    "VS_VERSION", "1.22.6", "required|string|max:20"),
                 var("Nimbus release URL",
                     "Download URL of the Nimbus release zip; the Nimbus.ServerMod folder inside it is installed as a mod.",
                     "NIMBUS_DOWNLOAD_URL", RELEASE_URL),
