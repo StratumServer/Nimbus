@@ -42,7 +42,7 @@ internal sealed class ClientSessionRunner
 
             IReadOnlyList<BackendEndpoint> ordered = Array.Empty<BackendEndpoint>();
             string? selectReason = null;
-            if (TryConsumeStickyRoute(firstFrame, out var stickyTarget, out var stickyReason))
+            if (TryConsumeStickyRoute(session, firstFrame, out var stickyTarget))
             {
                 ordered = new[] { stickyTarget };
             }
@@ -90,15 +90,35 @@ internal sealed class ClientSessionRunner
         }
     }
 
-    private bool TryConsumeStickyRoute(ReadOnlySpan<byte> firstFrame, out BackendEndpoint target, out string reason)
+    // Resolve the backend a redirect transfer staged for this reconnect, before any upstream is
+    // opened. Routing has to be decided here: the mp token the client is about to present is
+    // single use, so the backend that answers its token query is the only one that can validate
+    // it, and moving the session afterwards costs the player a kick.
+    //
+    // A client that sends Identification first is matched on its UID. A stock client is not: its
+    // first frame is LoginTokenQuery, which carries no identity, and a client slow enough to say
+    // nothing inside the first-frame window gives us no frame at all. Both fall back to the
+    // client address the redirect path staged alongside the UID.
+    private bool TryConsumeStickyRoute(ProxySession session, ReadOnlySpan<byte> firstFrame, out BackendEndpoint target)
     {
         target = default!;
-        reason = "";
-        if (firstFrame.Length == 0)
-            return false;
 
-        return IdentificationParser.TryExtract(firstFrame, out var uid, out _) &&
-               stickies.TryConsume(uid, out target, out reason);
+        if (firstFrame.Length > 0 && IdentificationParser.TryExtract(firstFrame, out var uid, out _))
+        {
+            if (!stickies.TryConsume(uid, out var known)) return false;
+            target = known.Target;
+            Log.Trace($"[s{session.Id}] sticky route by uid {uid} -> {known.Target} ({known.Reason})");
+            return true;
+        }
+
+        string ip = session.ClientRemote;
+        if (!stickies.TryConsumeByClientIp(ip, out var route)) return false;
+        target = route.Target;
+        // The player behind this route is a guess until Identification turns up. The session
+        // checks it then and puts the route back if we handed it to the wrong person.
+        session.NoteRoutedByStickyIp(route);
+        Log.Info($"[s{session.Id}] sticky route by client ip {ip} -> {route.Target} ({route.Reason}), expecting uid {route.Uid}");
+        return true;
     }
 
     private static async Task TryForgeDisconnectAsync(TcpClient client, string message)

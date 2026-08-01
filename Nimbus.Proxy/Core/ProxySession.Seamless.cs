@@ -50,6 +50,17 @@ internal sealed partial class ProxySession
             target = pre.Target.ToEndpoint();
         }
 
+        // The splice below writes the captured Identification bytes at `target`. That is only
+        // ever safe when `target` is the backend that already has them.
+        var replayFail = CheckIdentificationReplay(target, operatorOptedIn: cfg.Transfers.EnableUnsafeSeamlessSplice);
+        if (replayFail != null)
+        {
+            Log.Warn($"[s{Id}] seamless rejected: {replayFail}");
+            swapping = false;
+            ProxyMetrics.SeamlessFailed();
+            return replayFail;
+        }
+
         var mintFail = await MintReservationIfPossibleAsync(target, registry, swapReason ?? "proxy seamless", failOnRegistryError, clientTransferId).ConfigureAwait(false);
         if (mintFail != null) { swapping = false; ProxyMetrics.SeamlessFailed(); return mintFail; }
 

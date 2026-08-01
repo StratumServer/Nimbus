@@ -10,7 +10,8 @@ namespace Nimbus.Proxy;
 //   - RunAsync opens the initial upstream and runs c->s and s->c byte pumps until either
 //     side closes or one of the transfer requests fires.
 //   - On redirect, the proxy forges a Packet_ServerRedirect and closes. The reconnect is
-//     routed by sticky UID before the new upstream is opened.
+//     routed by the staged sticky, matched on player UID or on client address, before the
+//     new upstream is opened.
 //   - On seamless, the normal path uses the same safe redirect underneath while Nimbus.Client
 //     hides the VS loading UI. Raw upstream splice lives behind an unsafe config flag.
 internal sealed partial class ProxySession : IPlayer
@@ -40,6 +41,19 @@ internal sealed partial class ProxySession : IPlayer
     private byte[]? capturedIdentification;
     private string? capturedPlayerUid;
     private string? capturedPlayerName;
+
+    // Set when ClientSessionRunner routed this session off a sticky it matched on the client
+    // address rather than on a player UID. Reconciled against the real UID once Identification
+    // arrives.
+    private StickyRoute? ipRoutedSticky;
+
+    // The backend the captured Identification bytes have been handed to. The mp token inside
+    // them is single use: the first backend to check it with the auth server consumes it, and a
+    // second backend asking about the same token is told 'missingaccount' and kicks the player
+    // (#57). Recorded once and never moved, because the first backend is the one that owns the
+    // token for the rest of this session.
+    private BackendEndpoint? identificationSentTo;
+    private volatile bool warnedIdentificationReplay;
     private volatile bool seamlessCapable;
     private readonly object swapLock = new();
     private volatile bool swapping;
@@ -221,13 +235,17 @@ internal sealed partial class ProxySession : IPlayer
         var frame = raw.ToArray();
         if (!IdentificationParser.TryExtract(frame, out var uid, out var pname))
         {
-            Log.Warn($"[s{Id}] captured Identification frame from {source} ({frame.Length} bytes) but could not parse PlayerUID, registry-backed transfers disabled for this session");
+            Log.Warn($"[s{Id}] Identification frame from {source} ({frame.Length} bytes) did not parse a PlayerUID; will retry on the next Identification frame from this client");
             return false;
         }
 
         capturedIdentification = frame;
         capturedPlayerUid = uid;
         capturedPlayerName = pname;
+
+        // The sniffer runs ahead of the forward on the c->s pump, so these bytes are on their
+        // way to the backend we are already connected to. That backend now owns the token.
+        if (currentBackend != null) NoteIdentificationDelivered(currentBackend);
 
         // Network ban gate. Synchronous against the warm cache: this runs on the byte pump, so
         // it must not wait on the registry. A network-wide ban ends the session here, before any
@@ -240,8 +258,35 @@ internal sealed partial class ProxySession : IPlayer
             return false;
         }
 
+        ReconcileIpRoutedSticky(uid);
         TryConsumeStickyRoute(uid);
         return true;
+    }
+
+    // Called by ClientSessionRunner when the reconnect was matched on the client address.
+    public void NoteRoutedByStickyIp(StickyRoute route) => ipRoutedSticky = route;
+
+    // Several players behind one NAT can transfer inside the same window, and an address-matched
+    // route hands out the oldest of them, so the player who shows up may not be the one the route
+    // was staged for. That is survivable: whoever took it runs a fresh token exchange with that
+    // backend and plays there perfectly well, connected rather than kicked. The route itself goes
+    // back under its owner's UID so their own reconnect still finds it, or so the late fallback
+    // below moves them once they identify. It is deliberately not re-indexed by address: putting
+    // it back there is how the two of them would swap places a second time.
+    //
+    // The interloper is left where they landed. They are on a working session and can move
+    // themselves, and chasing them would mean a third redirect for a problem that has already
+    // stopped costing anyone their connection.
+    private void ReconcileIpRoutedSticky(string uid)
+    {
+        var route = ipRoutedSticky;
+        if (route == null) return;
+        ipRoutedSticky = null;
+        if (string.Equals(route.Uid, uid, StringComparison.OrdinalIgnoreCase)) return;
+
+        Log.Warn($"[s{Id}] sticky route staged for uid {route.Uid} was matched on client ip {route.ClientIp} " +
+                 $"but this session identified as uid {uid}; re-staging the route under its own uid only");
+        stickies?.Stage(route.Uid, clientIp: null, route.Target, StickyRouteTable.UidTtl, route.Reason, route.Attempts);
     }
 
     // Forges a vanilla disconnect so the player sees the ban reason instead of a dropped socket,
@@ -274,28 +319,88 @@ internal sealed partial class ProxySession : IPlayer
         });
     }
 
+    // How many redirects one staged route may fire before we give up and leave the player where
+    // they landed. With address-matched routing in place the first redirect normally lands, and
+    // the NAT mix-up above needs at most one more. Anything past that is a loop, not a retry.
+    private const int MaxStickyRedirects = 3;
+
+    // Late fallback: the route was still staged when this session identified, so the routing
+    // decision at connect time missed it. Everything here has to assume the token is already
+    // spent, because it is: this session identified to the backend it landed on.
     private void TryConsumeStickyRoute(string uid)
     {
         if (stickies == null || string.IsNullOrEmpty(uid)) return;
-        if (!stickies.TryConsume(uid, out var stickyTarget, out var stickyReason)) return;
+        if (!stickies.TryConsume(uid, out var route)) return;
 
-        // Replaying Identification to the same backend trips its duplicate-login path.
+        // Already where the route wanted us. Nothing to do, and replaying Identification to the
+        // same backend would trip its duplicate-login path.
         if (currentBackend is BackendEndpoint cur &&
-            string.Equals(cur.Host, stickyTarget.Host, StringComparison.OrdinalIgnoreCase) &&
-            cur.Port == stickyTarget.Port)
+            string.Equals(cur.Host, route.Target.Host, StringComparison.OrdinalIgnoreCase) &&
+            cur.Port == route.Target.Port)
             return;
+
+        if (route.Attempts >= MaxStickyRedirects)
+        {
+            Log.Warn($"[s{Id}] sticky route to {route.Target} dropped after {route.Attempts} redirects; " +
+                     $"leaving {capturedPlayerName ?? uid} on {currentBackend?.ToString() ?? "?"}");
+            return;
+        }
 
         _ = Task.Run(async () =>
         {
             try
             {
-                var fail = await RequestSeamlessAsync(stickyTarget, registry,
-                    $"sticky reconnect: {stickyReason}", failOnRegistryError: false).ConfigureAwait(false);
+                // Redirect, never splice. This session has already identified to the backend it
+                // landed on, which spent the mp token doing it, so replaying those bytes at the
+                // target would have the target ask the auth server about a token that no longer
+                // exists and kick the player. A redirect makes the client reconnect and run a
+                // fresh token exchange with the target, which is the only auth-safe way to move
+                // a session that identified somewhere else.
+                var fail = await RequestRedirectAsync(route.Target, registry,
+                    $"sticky reconnect: {route.Reason}", failOnRegistryError: false,
+                    stickyAttempt: route.Attempts + 1).ConfigureAwait(false);
                 if (fail != null)
-                    Log.Warn($"[s{Id}] sticky reconnect transfer failed: {fail} (session will continue on default backend)");
+                    Log.Warn($"[s{Id}] sticky reconnect redirect failed: {fail} (session stays on {currentBackend?.ToString() ?? "?"})");
             }
-            catch (Exception ex) { Log.Warn($"[s{Id}] sticky reconnect transfer crashed: {ex.Message}"); }
+            catch (Exception ex) { Log.Warn($"[s{Id}] sticky reconnect redirect crashed: {ex.Message}"); }
         }, sessionStopToken);
+    }
+
+    // Records which backend received the captured Identification bytes. First writer wins: the
+    // backend that validated the mp token keeps owning it for the rest of the session.
+    private void NoteIdentificationDelivered(BackendEndpoint backend) => identificationSentTo ??= backend;
+
+    // Tripwire for the one thing that is never safe: writing the captured Identification to a
+    // backend other than the one that already has it. The mp token in those bytes is single use,
+    // the auth server answers 'missingaccount' the second time it is asked about it, and the
+    // player is kicked with "Bad game session, try relogging" (#57).
+    //
+    // The explicit unsafe splice flag is warned about rather than overridden. An operator who
+    // turned it on may be running backends with auth verification off, where the replay does
+    // work, and silently changing what an explicitly unsafe flag does would be worse than the
+    // warning. Every other caller is refused, because after the late fallback became a redirect
+    // nothing else in the proxy should be trying this at all.
+    private string? CheckIdentificationReplay(BackendEndpoint target, bool operatorOptedIn)
+    {
+        var sentTo = identificationSentTo;
+        if (sentTo == null) return null;
+        if (string.Equals(sentTo.Host, target.Host, StringComparison.OrdinalIgnoreCase) && sentTo.Port == target.Port)
+            return null;
+
+        if (!operatorOptedIn)
+        {
+            Log.Warn($"[s{Id}] refusing to replay Identification to {target}: it was already delivered to {sentTo} " +
+                     $"and its mp token is single use");
+            return $"Identification was already delivered to {sentTo}; replaying it at {target} would spend an already-consumed mp token";
+        }
+
+        if (!warnedIdentificationReplay)
+        {
+            warnedIdentificationReplay = true;
+            Log.Warn($"[s{Id}] unsafe splice replays Identification from {sentTo} to {target}; the mp token is single use " +
+                     $"and {target} will reject the player unless that backend skips auth verification");
+        }
+        return null;
     }
 
     public async Task RunAsync(IReadOnlyList<BackendEndpoint> tryOrder, ReadOnlyMemory<byte> firstClientFrame = default)
@@ -391,7 +496,15 @@ internal sealed partial class ProxySession : IPlayer
 
         if (!firstClientFrame.IsEmpty)
         {
-            CaptureIdentification(firstClientFrame.Span, source: "first frame");
+            // Classify before capturing. A stock client opens with LoginTokenQuery and only sends
+            // Identification once the backend has answered, so the first frame usually holds no
+            // identity at all and handing it to the capture path made every single session log a
+            // parse failure for a frame that never had a UID in it (#57).
+            string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
+            if (firstName == "Identification")
+                CaptureIdentification(firstClientFrame.Span, source: "first frame");
+            else
+                Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
             // A banned player must not cause an upstream connection at all.
             if (rejectedByBan)
                 return (false, true, "player is banned from the network");
@@ -437,6 +550,9 @@ internal sealed partial class ProxySession : IPlayer
         ProxyMetrics.BackendConnectSuccess();
         upstream = up;
         currentBackend = target;
+        // The first frame has just been written to this backend. If it was the Identification,
+        // this backend is the one that gets to spend the mp token.
+        if (capturedIdentification != null) NoteIdentificationDelivered(target);
         UpdateUdpOverride(target);
         StartPumps();
         Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} ({clientRemote}) → {target.ServerId ?? target.ToString()}");

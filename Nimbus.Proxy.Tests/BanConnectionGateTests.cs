@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using Nimbus.Shared.Models;
 using Xunit;
 
@@ -16,102 +15,6 @@ public class BanConnectionGateTests
 {
     private const string BannedUid = "banned-uid-1";
     private const int FirstFrameTimeoutMs = 200;
-
-    /// <summary>A stand-in backend that records everything it is sent.</summary>
-    private sealed class RecordingBackend : IDisposable
-    {
-        private readonly TcpListener listener;
-        private readonly CancellationTokenSource cts = new();
-        private readonly List<byte> received = new();
-        private readonly object gate = new();
-
-        public RecordingBackend()
-        {
-            listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            _ = Task.Run(AcceptLoopAsync);
-        }
-
-        public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
-
-        public int BytesReceived { get { lock (gate) return received.Count; } }
-
-        public bool Sent(string needle)
-        {
-            lock (gate) return Encoding.UTF8.GetString(received.ToArray()).Contains(needle);
-        }
-
-        private async Task AcceptLoopAsync()
-        {
-            try
-            {
-                while (!cts.IsCancellationRequested)
-                {
-                    var client = await listener.AcceptTcpClientAsync(cts.Token).ConfigureAwait(false);
-                    _ = Task.Run(() => ReadLoopAsync(client));
-                }
-            }
-            catch { }
-        }
-
-        private async Task ReadLoopAsync(TcpClient client)
-        {
-            var buf = new byte[4096];
-            try
-            {
-                while (!cts.IsCancellationRequested)
-                {
-                    int read = await client.GetStream().ReadAsync(buf, cts.Token).ConfigureAwait(false);
-                    if (read <= 0) return;
-                    lock (gate) received.AddRange(buf.AsSpan(0, read).ToArray());
-                }
-            }
-            catch { }
-        }
-
-        public void Dispose()
-        {
-            cts.Cancel();
-            try { listener.Stop(); } catch { }
-            cts.Dispose();
-        }
-    }
-
-    // Identification frame carrying a player uid, shaped the way IdentificationParser reads it:
-    // header, then Packet_Client field 2 wrapping the identification body (2 = name, 6 = uid).
-    private static byte[] IdentificationFrame(string uid, string name)
-    {
-        static void Varint(List<byte> to, ulong v)
-        {
-            while (v >= 0x80) { to.Add((byte)(v | 0x80)); v >>= 7; }
-            to.Add((byte)v);
-        }
-        static void StringField(List<byte> to, int field, string value)
-        {
-            var utf8 = Encoding.UTF8.GetBytes(value);
-            Varint(to, (ulong)((field << 3) | 2));
-            Varint(to, (ulong)utf8.Length);
-            to.AddRange(utf8);
-        }
-
-        var ident = new List<byte>();
-        StringField(ident, 2, name);
-        StringField(ident, 6, uid);
-
-        var envelope = new List<byte>();
-        Varint(envelope, (2 << 3) | 2);
-        Varint(envelope, (ulong)ident.Count);
-        envelope.AddRange(ident);
-
-        var frame = new byte[4 + envelope.Count];
-        int len = envelope.Count;
-        frame[0] = (byte)(len >> 24);
-        frame[1] = (byte)(len >> 16);
-        frame[2] = (byte)(len >> 8);
-        frame[3] = (byte)len;
-        envelope.CopyTo(frame, 4);
-        return frame;
-    }
 
     [Fact]
     public async Task DelayedIdentification_FromABannedPlayer_NeverReachesTheBackend()
@@ -161,7 +64,7 @@ public class BanConnectionGateTests
 
         // Stay silent past the first-frame window, then identify as the banned player.
         await Task.Delay(FirstFrameTimeoutMs * 3, cts.Token);
-        await player.GetStream().WriteAsync(IdentificationFrame(BannedUid, "griefer"), cts.Token);
+        await player.GetStream().WriteAsync(ClientFrames.Identification(BannedUid, "griefer"), cts.Token);
         await player.GetStream().FlushAsync(cts.Token);
 
         // Give the pump time to forward, if it were going to.

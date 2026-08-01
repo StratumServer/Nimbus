@@ -9,8 +9,13 @@ namespace Nimbus.Proxy;
 // vanilla ExitAndSwitchServer crash.
 internal sealed partial class ProxySession
 {
+    // `stickyAttempt` is how many redirects this staged route will have consumed once this one
+    // fires. A transfer asked for by an operator or a plugin starts over at 1; the late sticky
+    // fallback in ProxySession passes the running count so a route that keeps missing gives up
+    // instead of bouncing the player between backends.
     public async Task<string?> RequestRedirectAsync(BackendEndpoint target, IRegistryClient? registry = null,
-        string? reason = null, bool failOnRegistryError = true, string? clientTransferId = null)
+        string? reason = null, bool failOnRegistryError = true, string? clientTransferId = null,
+        int stickyAttempt = 1)
     {
         ProxyMetrics.RedirectRequested();
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -27,12 +32,14 @@ internal sealed partial class ProxySession
         var mintFail = await MintReservationIfPossibleAsync(target, registry, reason ?? "proxy redirect", failOnRegistryError, clientTransferId).ConfigureAwait(false);
         if (mintFail != null) { ProxyMetrics.RedirectFailed(); return mintFail; }
 
-        // RedirectFix reconnects through the cached proxy address. The next session consumes
-        // this UID route before choosing a backend.
+        // RedirectFix reconnects through the cached proxy address. The next session consumes this
+        // route before choosing a backend. Stage it under the client address as well as the UID:
+        // this is the only point where both are known, and the reconnect will arrive with a
+        // LoginTokenQuery that carries no identity to match the UID against (#57).
         if (stickies != null && !string.IsNullOrEmpty(capturedPlayerUid))
         {
-            var stickyTtl = TimeSpan.FromMinutes(5);
-            stickies.Stage(capturedPlayerUid!, target, stickyTtl, reason ?? "proxy redirect");
+            stickies.Stage(capturedPlayerUid!, ClientEndpoint.ip, target, StickyRouteTable.UidTtl,
+                reason ?? "proxy redirect", stickyAttempt);
         }
         else
         {
