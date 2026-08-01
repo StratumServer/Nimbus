@@ -42,7 +42,7 @@
             "name": "Nimbus release URL",
             "description": "Download URL of the Nimbus release zip; the Nimbus.ServerMod folder inside it is installed as a mod.",
             "env_variable": "NIMBUS_DOWNLOAD_URL",
-            "default_value": "https://github.com/StratumServer/Nimbus/releases/download/v0.2.0/Nimbus-v0.2.0.zip",
+            "default_value": "https://github.com/StratumServer/Nimbus/releases/download/v0.3.0/Nimbus-v0.3.0.zip",
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string",
