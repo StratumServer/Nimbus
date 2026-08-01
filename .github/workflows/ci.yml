@@ -7,7 +7,7 @@ on:
     branches: [main, indev]
 
 env:
-  VS_VERSION: "1.22.5"
+  VS_VERSION: "1.22.6"
 
 jobs:
   build-and-test:
