@@ -39,6 +39,9 @@ internal static class Program
                 "route"   => new { cmd = "route" },
                 "drain"   => BuildDrain(rest, "drain"),
                 "undrain" => BuildDrain(rest, "undrain"),
+                "ban"     => BuildBan(rest),
+                "unban"   => BuildUnban(rest),
+                "bans"    => new { cmd = "bans" },
                 "raw"     => BuildRaw(rest),
                 _ => throw new ArgumentException($"unknown command: {cmd}"),
             };
@@ -93,6 +96,44 @@ internal static class Program
         if (!string.IsNullOrEmpty(reason))   d["reason"] = reason;
         if (seamless) d["mode"] = "seamless";
         if (redirect) d["mode"] = "redirect";
+        return d;
+    }
+
+    // The admin socket has had ban, unban and bans since network bans landed, but nimctl
+    // never grew the verbs, so the documented invocations only worked through `nimctl raw`.
+    private static object BuildBan(List<string> args)
+    {
+        string? uid = GetOpt(args, "--uid");
+        string? player = GetOpt(args, "--player") ?? GetOpt(args, "--name");
+        if (string.IsNullOrEmpty(uid) && string.IsNullOrEmpty(player))
+            throw new ArgumentException("ban requires --uid <uid> or --player <name>");
+
+        string? serverId = GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
+        string? reason = GetOpt(args, "--reason");
+        string? durationStr = GetOpt(args, "--duration");
+
+        var d = new Dictionary<string, object?> { ["cmd"] = "ban" };
+        if (!string.IsNullOrEmpty(uid))      d["uid"] = uid;
+        if (!string.IsNullOrEmpty(player))   d["player"] = player;
+        if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
+        if (!string.IsNullOrEmpty(reason))   d["reason"] = reason;
+        if (!string.IsNullOrEmpty(durationStr))
+        {
+            if (!int.TryParse(durationStr, out int duration))
+                throw new ArgumentException("--duration takes a number of seconds");
+            d["duration"] = duration;
+        }
+        return d;
+    }
+
+    private static object BuildUnban(List<string> args)
+    {
+        string? uid = GetOpt(args, "--uid") ?? (args.Count >= 2 && !args[1].StartsWith("-") ? args[1] : null);
+        if (string.IsNullOrEmpty(uid)) throw new ArgumentException("unban requires --uid <uid>");
+
+        string? serverId = GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
+        var d = new Dictionary<string, object?> { ["cmd"] = "unban", ["uid"] = uid };
+        if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
         return d;
     }
 
@@ -254,6 +295,10 @@ internal static class Program
         Console.WriteLine("  route                                   show backend pool + health + drain state");
         Console.WriteLine("  drain <serverId>                        stop routing new sessions to <serverId>");
         Console.WriteLine("  undrain <serverId>                      resume routing new sessions to <serverId>");
+        Console.WriteLine("  ban (--uid <uid> | --player <name>) [--server <id>] [--duration <s>] [--reason \"...\"]");
+        Console.WriteLine("      no --server bans across the whole network; --duration 0 or omitted is permanent.");
+        Console.WriteLine("  unban <uid> [--server <id>]             lift a ban");
+        Console.WriteLine("  bans                                    list active bans");
         Console.WriteLine("  raw '<json>'                            send a raw JSON line (for new commands)");
         Console.WriteLine();
         Console.WriteLine("Defaults: host=127.0.0.1 port=42499.");
