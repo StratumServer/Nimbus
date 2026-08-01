@@ -13,20 +13,24 @@ internal sealed class InProcRegistryClient : IRegistryClient
     private readonly BackendRegistry backends;
     private readonly ReservationStore reservations;
     private readonly TransferIntentStore intents;
+    private readonly BanStore bans;
     private readonly RegistryConfig cfg;
+    private readonly TimeProvider clock;
 
     public InProcRegistryClient(BackendRegistry backends, ReservationStore reservations,
-        TransferIntentStore intents, RegistryConfig cfg)
+        TransferIntentStore intents, BanStore bans, RegistryConfig cfg, TimeProvider? clock = null)
     {
         this.backends = backends;
         this.reservations = reservations;
         this.intents = intents;
+        this.bans = bans;
         this.cfg = cfg;
+        this.clock = clock ?? TimeProvider.System;
     }
 
     public Task<TransferReservation?> MintReservationAsync(
         string playerUid, string playerName, string targetServerId, string? reason, CancellationToken ct,
-        string? realRemoteIp = null, int realRemotePort = 0)
+        string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null)
     {
         if (string.IsNullOrEmpty(playerUid) || string.IsNullOrEmpty(targetServerId))
             return Task.FromResult<TransferReservation?>(null);
@@ -55,6 +59,7 @@ internal sealed class InProcRegistryClient : IRegistryClient
             Reason = reason,
             RealRemoteIp = realRemoteIp ?? "",
             RealRemotePort = realRemotePort,
+            ClientTransferId = clientTransferId ?? "",
         };
         reservations.Add(r);
         return Task.FromResult<TransferReservation?>(r);
@@ -75,6 +80,32 @@ internal sealed class InProcRegistryClient : IRegistryClient
 
     public Task<List<TransferIntent>> DrainTransferIntentsAsync(CancellationToken ct)
         => Task.FromResult(intents.Drain());
+
+    public Task<List<NetworkBan>?> GetBansAsync(CancellationToken ct)
+        => Task.FromResult<List<NetworkBan>?>(bans.Active());
+
+    // Mirrors POST /api/bans so embedded and remote modes stamp identical bans.
+    public Task<NetworkBan?> AddBanAsync(BanRequest request, CancellationToken ct)
+    {
+        if (request == null || string.IsNullOrEmpty(request.PlayerUid))
+            return Task.FromResult<NetworkBan?>(null);
+
+        long now = clock.GetUtcNow().ToUnixTimeSeconds();
+        var ban = bans.Add(new NetworkBan
+        {
+            PlayerUid = request.PlayerUid,
+            PlayerName = request.PlayerName ?? "",
+            ServerId = request.ServerId ?? "",
+            Reason = request.Reason ?? "",
+            BannedBy = request.BannedBy ?? "",
+            CreatedAtUnix = now,
+            ExpiresAtUnix = request.DurationSeconds > 0 ? now + request.DurationSeconds : 0,
+        });
+        return Task.FromResult<NetworkBan?>(ban);
+    }
+
+    public Task<bool> LiftBanAsync(string playerUid, string? serverId, CancellationToken ct)
+        => Task.FromResult(bans.Lift(playerUid, serverId));
 
     private static string NewId()
     {

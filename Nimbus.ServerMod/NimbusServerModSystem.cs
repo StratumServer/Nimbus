@@ -29,6 +29,11 @@ public sealed class NimbusServerModSystem : ModSystem
     public DateTime LastSnapshotUtc { get; private set; }
     public string LastStatus { get; private set; } = "not started";
 
+    // Last seamless handshake this backend completed as the transfer TARGET, shown by
+    // /nimbus status. Seamless failures are otherwise invisible from the receiving side,
+    // which is where an operator looks when a player reports a stuck transfer screen.
+    public string LastSeamlessCommit { get; private set; } = "";
+
     public override bool ShouldLoad(EnumAppSide side)
         => side == EnumAppSide.Server;
 
@@ -304,6 +309,22 @@ public sealed class NimbusServerModSystem : ModSystem
                 forwarding[playerUid] = reservation;
                 var realIp = string.IsNullOrEmpty(reservation.RealRemoteIp) ? "?" : reservation.RealRemoteIp;
                 api?.Logger.Notification($"[Nimbus] {playerName} forwarded from {realIp}");
+
+                // Commit half of the seamless handshake (#19): the source backend sent
+                // NimbusSeamlessPrepare with this transferId and can no longer reach the
+                // client, so the target closes the loop once the join consumed the
+                // reservation. Sent from the game thread; SendPacket is not thread-safe.
+                // Clients without the Nimbus channel never registered it and see nothing.
+                if (!string.IsNullOrEmpty(reservation.ClientTransferId))
+                {
+                    var transferId = reservation.ClientTransferId;
+                    api?.Event.EnqueueMainThreadTask(() =>
+                    {
+                        TrySendSeamlessCommit(player, transferId);
+                        LastSeamlessCommit = $"{playerName} ({transferId})";
+                        api?.Logger.Notification($"[Nimbus] seamless commit sent to {playerName} ({transferId})");
+                    }, "nimbus-seamless-commit");
+                }
             }
             else if (config.ReservationRequired)
             {
@@ -385,6 +406,102 @@ public sealed class NimbusServerModSystem : ModSystem
             .RequiresPlayer()
             .WithArgs(parsers.Word("serverId"))
             .HandleWith(SelfServerCommand);
+
+        RegisterShortcutCommands(api);
+    }
+
+    // Config-driven shortcuts (/hub, /creative, ...). Registered once at startup: Vintage Story
+    // has no way to unregister a chat command, so a /nimbus reload picks up target and privilege
+    // changes for shortcuts that already exist, but adding or removing one needs a restart.
+    private void RegisterShortcutCommands(ICoreServerAPI api)
+    {
+        var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "server", "join", "nimbus" };
+
+        foreach (var shortcut in config.ShortcutCommands)
+        {
+            if (!shortcut.IsUsable())
+            {
+                api.Logger.Warning($"[Nimbus] ignoring shortcut command with no name or no targets");
+                continue;
+            }
+            if (!taken.Add(shortcut.Name))
+            {
+                api.Logger.Warning($"[Nimbus] ignoring duplicate shortcut command '/{shortcut.Name}'");
+                continue;
+            }
+            if (api.ChatCommands.Get(shortcut.Name) != null)
+            {
+                // Never shadow an existing command: /tp for instance is vanilla teleport, and
+                // hijacking it would break coordinate teleports.
+                api.Logger.Warning($"[Nimbus] shortcut '/{shortcut.Name}' already exists as another command, skipping");
+                continue;
+            }
+
+            string name = shortcut.Name;
+            api.ChatCommands.GetOrCreate(name)
+                .WithDescription(shortcut.Description)
+                .RequiresPrivilege(shortcut.Privilege)
+                .RequiresPlayer()
+                .HandleWith(args => ShortcutCommandHandler(name, args));
+
+            api.Logger.Notification($"[Nimbus] shortcut /{name} -> {string.Join(" then ", shortcut.Targets)}");
+        }
+    }
+
+    private TextCommandResult ShortcutCommandHandler(string name, TextCommandCallingArgs args)
+    {
+        if (!config.AllowPlayerServerCommand) return TextCommandResult.Error("Player server switching is disabled.");
+        if (args.Caller.Player is not IServerPlayer player) return TextCommandResult.Error("Run this command in-game.");
+
+        // Re-read from config on every call so /nimbus reload can retarget a shortcut.
+        var shortcut = config.ShortcutCommands.FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (shortcut == null || !shortcut.IsUsable())
+            return TextCommandResult.Error($"/{name} is no longer configured.");
+
+        // The engine-level RequiresPrivilege gate was baked in at registration and cannot be
+        // changed afterwards, so an operator tightening a shortcut from "chat" to
+        // "controlserver" and reloading would otherwise keep letting everyone through: a
+        // fail-open on exactly the edit made to lock something down. Re-check the current
+        // privilege here so tightening takes effect on reload. Loosening still needs a restart,
+        // because the boot-time gate rejects the caller before this handler runs; that asymmetry
+        // is deliberate, it fails closed.
+        if (!string.IsNullOrWhiteSpace(shortcut.Privilege) && !player.HasPrivilege(shortcut.Privilege))
+            return TextCommandResult.Error($"You do not have permission to use /{name}.");
+
+        var resolved = ResolveShortcutTarget(shortcut, out string? whyNot);
+        if (resolved == null)
+            return TextCommandResult.Error(whyNot ?? $"No server available for /{name} right now.");
+
+        return BeginTransfer(player, resolved.ServerId, $"shortcut /{name}", "player:" + player.PlayerUID);
+    }
+
+    // First target that is registered, healthy, and not this server. Returns null with a reason
+    // when the whole chain is unusable, so the player gets told why instead of nothing happening.
+    private BackendSnapshot? ResolveShortcutTarget(ShortcutCommand shortcut, out string? whyNot)
+    {
+        whyNot = null;
+        bool alreadyHere = false;
+
+        foreach (var targetId in shortcut.Targets)
+        {
+            if (string.Equals(targetId, config.ServerId, StringComparison.OrdinalIgnoreCase))
+            {
+                // Being on the first choice already is the common case for /lobby: remember it,
+                // but keep looking in case a later target is a valid elsewhere.
+                alreadyHere = true;
+                continue;
+            }
+
+            var candidate = LastSnapshot.Backends.FirstOrDefault(b =>
+                string.Equals(b.ServerId, targetId, StringComparison.OrdinalIgnoreCase));
+            if (candidate == null || candidate.Stale || candidate.Maintenance) continue;
+            return candidate;
+        }
+
+        whyNot = alreadyHere
+            ? "You are already there."
+            : $"No server available for /{shortcut.Name} right now.";
+        return null;
     }
 
     private TextCommandResult StatusCommand()
@@ -398,6 +515,8 @@ public sealed class NimbusServerModSystem : ModSystem
             var age = (int)(DateTime.UtcNow - LastSnapshotUtc).TotalSeconds;
             sb.AppendLine($"Snapshot: {LastSnapshot.Backends.Count} backends, {LastSnapshot.TotalPlayers}/{LastSnapshot.TotalCapacity} players, {age}s old");
         }
+        if (LastSeamlessCommit.Length > 0)
+            sb.AppendLine("Last seamless commit: " + LastSeamlessCommit);
         return TextCommandResult.Success(sb.ToString());
     }
 

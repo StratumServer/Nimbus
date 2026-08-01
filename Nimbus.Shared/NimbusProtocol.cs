@@ -4,7 +4,7 @@ namespace Nimbus.Shared;
 public static class NimbusProtocol
 {
     public const int ProtocolVersion = 1;
-    public const string NimbusVersion = "0.2.0";
+    public const string NimbusVersion = "0.3.0";
 
     public const string SignatureHeader = "X-Nimbus-Signature";
     public const string TimestampHeader = "X-Nimbus-Timestamp";

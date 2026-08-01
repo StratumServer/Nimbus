@@ -33,9 +33,15 @@ public sealed class NimbusServerConfig
     public string TransferMode { get; set; } = "redirect";
     public int SeamlessPrepareAckTimeoutSeconds { get; set; } = 8;
 
+    // Named shortcuts for /server, so players type /hub instead of /server hub. Empty by
+    // default: a network defines the ones its layout actually has.
+    public List<ShortcutCommand> ShortcutCommands { get; set; } = new();
+
     public void Normalize()
     {
         Tags ??= new List<string>();
+        ShortcutCommands ??= new List<ShortcutCommand>();
+        foreach (var shortcut in ShortcutCommands) shortcut.Normalize();
         if (PublicPort <= 0 || PublicPort > 65535) PublicPort = 42420;
         if (HeartbeatIntervalSeconds < 1) HeartbeatIntervalSeconds = 5;
         if (RegistryHttpTimeoutSeconds < 1) RegistryHttpTimeoutSeconds = 5;
@@ -49,4 +55,37 @@ public sealed class NimbusServerConfig
         if (!Enabled) return "disabled";
         return $"enabled id={ServerId} public={PublicHost}:{PublicPort} transferMode={TransferMode} registry={(string.IsNullOrWhiteSpace(RegistryUrl) ? "<unset>" : RegistryUrl)}";
     }
+}
+
+// One shortcut command, for example /hub or /creative.
+//
+// Targets is a fallback chain, tried in order, which is what makes a "/lobby" that means
+// "this gamemode's lobby, or the hub if it has none" expressible: ["survival-lobby", "hub"].
+// The first target that is registered, healthy and not this server wins, so a shortcut also
+// degrades gracefully when part of the network is down.
+public sealed class ShortcutCommand
+{
+    // Command word without the slash.
+    public string Name { get; set; } = "";
+
+    public List<string> Targets { get; set; } = new();
+
+    // Vintage Story privilege required to run it, for example "chat" for everyone or
+    // "controlserver" to keep /staff to admins.
+    public string Privilege { get; set; } = "chat";
+
+    // Shown in the in-game command list. Generated from the targets when empty.
+    public string Description { get; set; } = "";
+
+    public void Normalize()
+    {
+        Name = (Name ?? "").Trim().TrimStart('/');
+        Targets ??= new List<string>();
+        Targets.RemoveAll(string.IsNullOrWhiteSpace);
+        if (string.IsNullOrWhiteSpace(Privilege)) Privilege = "chat";
+        if (string.IsNullOrWhiteSpace(Description))
+            Description = Targets.Count > 0 ? $"Move yourself to {Targets[0]}" : "Move yourself to another server";
+    }
+
+    public bool IsUsable() => !string.IsNullOrWhiteSpace(Name) && Targets.Count > 0;
 }

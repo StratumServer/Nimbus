@@ -161,6 +161,14 @@ internal sealed class TransfersConfig
     // prove it can handle the optional Nimbus path.
     public bool FallbackToRedirectWhenSeamlessUnavailable { get; set; } = true;
 
+    // "host" or "host:port" stamped into redirect packets instead of the target backend's
+    // PublicHost. Set it to the proxy's own player-facing address (usually the same one as
+    // `bind` reaches). RedirectFix clients ignore the stamped host either way, but a vanilla
+    // client with the redirect crash fixed will dial it literally: stamping the proxy keeps
+    // such clients on the proxy, stamping the backend would let them bypass it (#18).
+    // Empty keeps the legacy backend stamping.
+    public string RedirectAddress { get; set; } = "";
+
     // Re-enables the old live TCP splice experiment. Leave this off for normal servers.
     public bool EnableUnsafeSeamlessSplice { get; set; } = false;
 }

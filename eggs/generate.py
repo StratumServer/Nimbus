@@ -8,7 +8,7 @@ import json
 
 AUTHOR = "77785313+Pixnop@users.noreply.github.com"
 RUNTIME_IMAGE = {".NET 10": "ghcr.io/parkervcp/yolks:dotnet_10"}
-RELEASE_URL = "https://github.com/StratumServer/Nimbus/releases/download/v0.2.0/Nimbus-v0.2.0.zip"
+RELEASE_URL = "https://github.com/StratumServer/Nimbus/releases/download/v0.3.0/Nimbus-v0.3.0.zip"
 
 def var(name, description, env, default, rules="required|string", field_type="text"):
     return {
@@ -79,7 +79,7 @@ eggs = {
             variables=[
                 var("Vintage Story version",
                     "Game version to install, from the stable CDN (must be 1.19 or newer for Nimbus).",
-                    "VS_VERSION", "1.22.5", "required|string|max:20"),
+                    "VS_VERSION", "1.22.6", "required|string|max:20"),
                 var("Nimbus release URL",
                     "Download URL of the Nimbus release zip; the Nimbus.ServerMod folder inside it is installed as a mod.",
                     "NIMBUS_DOWNLOAD_URL", RELEASE_URL),

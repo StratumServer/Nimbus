@@ -17,6 +17,12 @@ public sealed class TransferReservation
     // proxies, direct backend connections, etc).
     public string RealRemoteIp { get; set; } = "";
     public int RealRemotePort { get; set; }
+
+    // Correlates this reservation with the seamless handshake the SOURCE backend opened with
+    // the client (NimbusSeamlessPrepare.TransferId). The TARGET backend consumes the
+    // reservation on join and, when this is set, sends NimbusSeamlessCommit so the client can
+    // end its transfer overlay. Empty for plain transfers (#19).
+    public string ClientTransferId { get; set; } = "";
 }
 
 public sealed class ReservationRequest
@@ -30,6 +36,9 @@ public sealed class ReservationRequest
 
     public string RealRemoteIp { get; set; } = "";
     public int RealRemotePort { get; set; }
+
+    // See TransferReservation.ClientTransferId.
+    public string ClientTransferId { get; set; } = "";
 }
 
 public sealed class ReservationResponse

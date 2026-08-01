@@ -129,6 +129,20 @@ internal static class PacketDispatch
         return -1;
     }
 
+    /// <summary>
+    /// Same as <see cref="Describe"/> but for a whole framed packet: the 4-byte VS header
+    /// followed by the payload. Callers that hold a raw frame (the first client frame, a
+    /// captured Identification) use this to find out what they are actually looking at.
+    /// </summary>
+    public static string DescribeFrame(bool clientToServer, ReadOnlySpan<byte> rawFrame)
+    {
+        if (!VsWire.TryParseHeader(rawFrame, out bool compressed, out int payloadLen)) return "<truncated>";
+        if (payloadLen == 0) return "<empty>";
+        if (compressed) return "<zlib>";
+        if (4 + payloadLen > rawFrame.Length) return "<truncated>";
+        return Describe(clientToServer, rawFrame.Slice(4, payloadLen));
+    }
+
     public static string Describe(bool clientToServer, ReadOnlySpan<byte> payload)
     {
         if (payload.Length == 0) return "<empty>";

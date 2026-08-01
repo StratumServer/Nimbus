@@ -23,7 +23,7 @@ A [Velocity](https://papermc.io/software/velocity)-style proxy for [Vintage Stor
 
 ## Download
 
-Grab the [latest release](https://github.com/StratumServer/Nimbus/releases/latest). Built and tested against Vintage Story 1.22.5.
+Grab the [latest release](https://github.com/StratumServer/Nimbus/releases/latest). Built and tested against Vintage Story 1.22.6.
 
 | Asset | Contents |
 | --- | --- |
@@ -44,6 +44,69 @@ The short version:
 3. Install `Nimbus.ServerMod` on each backend, fill in `nimbus-server.json`.
 4. Distribute [RedirectFix](https://github.com/StratumServer/redirectfix) to your players.
 
+## Shortcut commands
+
+Players would rather type `/hub` than `/server hub`. Each backend's `nimbus-server.json` can
+declare its own shortcuts:
+
+```json
+"ShortcutCommands": [
+  { "Name": "hub", "Targets": [ "hub" ] },
+  { "Name": "lobby", "Targets": [ "survival-lobby", "hub" ], "Description": "Back to your lobby" },
+  { "Name": "staff", "Targets": [ "staff" ], "Privilege": "controlserver" }
+]
+```
+
+`Targets` is a fallback chain tried in order, so `/lobby` can mean "this gamemode's lobby, or the
+hub if it has none", and a shortcut degrades gracefully when part of the network is down: the
+first target that is registered, healthy and not this server wins. `Privilege` defaults to `chat`
+(everyone) and takes any Vintage Story privilege, so `/staff` can stay admin-only.
+
+Shortcuts never shadow an existing command, which is why there is no `/tp` shortcut: that is
+vanilla teleport.
+
+Vintage Story registers chat commands at startup and cannot unregister one, so what a
+`/nimbus reload` can change is limited, and deliberately limited in the safe direction:
+
+| Change | Takes effect |
+|---|---|
+| Retargeting an existing shortcut | on reload |
+| Tightening a privilege (opening it up less) | on reload |
+| Loosening a privilege, adding or removing a shortcut | needs a restart |
+
+Tightening applies immediately because the handler re-checks the current privilege on every
+call. Loosening cannot, because the engine-level gate registered at boot rejects the caller
+before the handler runs. The asymmetry is intentional: a half-applied permission change fails
+closed, never open.
+
+## Checking a backend from the inside
+
+`/nimbus status` on a backend reports its own view: config summary, last registry
+exchange, snapshot age, and the last seamless handshake it completed as a transfer target.
+That last line is worth knowing about, because a seamless transfer that fails is otherwise
+invisible from the receiving side, which is where you look when a player reports a stuck
+transfer screen.
+
+## Network bans
+
+A ban held by the registry covers the whole network, so a griefer does not have to be banned
+once per backend:
+
+```shell
+nimctl ban --player Griefer --reason "griefing" --duration 86400
+nimctl ban --uid <uid> --server creative     # one backend only
+nimctl bans
+nimctl unban --uid <uid>
+```
+
+Network-wide bans are enforced at the proxy door: the player is dropped while identifying, with
+the ban reason, and their login never reaches a backend. (A client that stalls long enough for the
+proxy to open an upstream first will have opened a TCP connection to the backend, but not a game
+session: the pump drops its traffic the moment the ban is recognised.) The proxy keeps a warm copy of the list
+so the check costs nothing per join, and a registry outage leaves the last known bans in force.
+Per-backend bans leave the rest of the network reachable. Vanilla per-server `/ban` keeps working
+and stays local to that savegame.
+
 ## Addresses: who connects where
 
 Three different addresses exist in a Nimbus network, and mixing them up is the most
@@ -55,12 +118,14 @@ common misconfiguration:
 | `PublicHost` / `PublicPort` | `nimbus-server.json` (each backend) | The address **the network** reaches that backend on: the proxy dials it for seamless transfers, admin `swap` uses it, and it is stamped into redirect packets. It must be reachable from the proxy; it does not need to be reachable by players. |
 | `identity.public_host` / `public_port` | registry config | The **proxy's** public address, advertised to the VS master server when `advertise_on_master_server` is on. |
 
-Note on redirects: the redirect packet carries the backend's `PublicHost`, but
-[RedirectFix](https://github.com/StratumServer/redirectfix) clients reconnect to the
-proxy's cached address and a staged sticky route sends them to the right backend, so the
-stamped host is not what the client actually dials today. Keep backends unreachable from
-the internet and force everything through the proxy with `ReservationRequired`; the
-client-mod-free path (#18) will revisit what the redirect packet should carry.
+Note on redirects: [RedirectFix](https://github.com/StratumServer/redirectfix) clients
+reconnect to the proxy's cached address and a staged sticky route sends them to the right
+backend, so the host stamped into the redirect packet is not what the client actually
+dials today. By default that stamped host is the backend's `PublicHost`, which a future
+vanilla client with the redirect crash fixed would follow literally, bypassing the proxy.
+Set `transfers.redirect_address` in `nimbus.proxy.toml` to the proxy's player-facing
+address to stamp the proxy instead (#18), keep backends unreachable from the internet,
+and force everything through the proxy with `ReservationRequired`.
 
 ## Wiki
 

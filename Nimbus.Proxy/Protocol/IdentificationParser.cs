@@ -25,31 +25,10 @@ internal static class IdentificationParser
         // Preferred path: outer envelope field 2 contains Packet_ClientIdentification.
         // Some forks/dev builds flatten this once, so fall back to parsing the payload
         // directly as an Identification body.
-        if (FindNestedField2(payload, out var ident) && ParseIdentBody(ident, out playerUid, out playerName))
+        if (VsWire.TryFindNestedField(payload, fieldNumber: 2, out var ident) && ParseIdentBody(ident, out playerUid, out playerName))
             return true;
 
         return ParseIdentBody(payload, out playerUid, out playerName);
-    }
-
-    private static bool FindNestedField2(ReadOnlySpan<byte> body, out ReadOnlySpan<byte> nested)
-    {
-        nested = default;
-        int pos = 0;
-        while (pos < body.Length)
-        {
-            if (!TryReadVarint(body, ref pos, out ulong key)) return false;
-            int fieldNum = (int)(key >> 3);
-            int wireType = (int)(key & 0x7);
-            if (fieldNum == 2 && wireType == 2)
-            {
-                if (!TryReadVarint(body, ref pos, out ulong len)) return false;
-                if (pos + (int)len > body.Length) return false;
-                nested = body.Slice(pos, (int)len);
-                return true;
-            }
-            if (!SkipField(body, ref pos, wireType)) return false;
-        }
-        return false;
     }
 
     private static bool ParseIdentBody(ReadOnlySpan<byte> body, out string playerUid, out string playerName)
@@ -59,12 +38,12 @@ internal static class IdentificationParser
         int pos = 0;
         while (pos < body.Length)
         {
-            if (!TryReadVarint(body, ref pos, out ulong key)) return false;
+            if (!VsWire.TryReadVarint(body, ref pos, out ulong key)) return false;
             int fieldNum = (int)(key >> 3);
             int wireType = (int)(key & 0x7);
             if (wireType == 2 && (fieldNum == 2 || fieldNum == 6))
             {
-                if (!TryReadVarint(body, ref pos, out ulong len)) return false;
+                if (!VsWire.TryReadVarint(body, ref pos, out ulong len)) return false;
                 if (pos + (int)len > body.Length) return false;
                 string val = Encoding.UTF8.GetString(body.Slice(pos, (int)len));
                 pos += (int)len;
@@ -74,48 +53,10 @@ internal static class IdentificationParser
             }
             else
             {
-                if (!SkipField(body, ref pos, wireType)) return false;
+                if (!VsWire.SkipField(body, ref pos, wireType)) return false;
             }
         }
         return playerUid.Length > 0; // PlayerUID is required, name is best-effort.
     }
 
-    private static bool SkipField(ReadOnlySpan<byte> buf, ref int pos, int wireType)
-    {
-        switch (wireType)
-        {
-            case 0: // varint
-                return TryReadVarint(buf, ref pos, out _);
-            case 1: // 64-bit
-                if (pos + 8 > buf.Length) return false;
-                pos += 8;
-                return true;
-            case 2: // length-delim
-                if (!TryReadVarint(buf, ref pos, out ulong len)) return false;
-                if (pos + (int)len > buf.Length) return false;
-                pos += (int)len;
-                return true;
-            case 5: // 32-bit
-                if (pos + 4 > buf.Length) return false;
-                pos += 4;
-                return true;
-            default:
-                return false; // groups (3,4) and unknown wire types
-        }
-    }
-
-    private static bool TryReadVarint(ReadOnlySpan<byte> buf, ref int pos, out ulong value)
-    {
-        value = 0;
-        int shift = 0;
-        while (pos < buf.Length)
-        {
-            byte b = buf[pos++];
-            value |= (ulong)(b & 0x7F) << shift;
-            if ((b & 0x80) == 0) return true;
-            shift += 7;
-            if (shift > 63) return false;
-        }
-        return false;
-    }
 }

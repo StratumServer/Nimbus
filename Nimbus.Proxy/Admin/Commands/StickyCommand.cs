@@ -15,11 +15,13 @@ internal sealed class StickyCommand : IAdminCommand
             .Select(e => new
             {
                 uid = e.Uid,
+                clientIp = e.ClientIp,
                 host = e.Target.Host,
                 port = e.Target.Port,
                 serverId = e.Target.ServerId,
                 ttlSeconds = (int)Math.Max(0, (e.ExpiresAtUtc - now).TotalSeconds),
                 reason = e.Reason,
+                attempts = e.Attempts,
             })
             .ToArray();
         return Task.FromResult<object>(new { ok = true, entries });

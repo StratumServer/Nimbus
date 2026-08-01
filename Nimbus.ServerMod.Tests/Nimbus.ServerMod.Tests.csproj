@@ -28,6 +28,12 @@
     <ProjectReference Include="..\Nimbus.ServerMod\Nimbus.ServerMod.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
+  <!-- Config files seeded into the embedded server before boot, for settings the mod reads
+       during startup (see [AtlasDataFiles] on ShortcutCommandScenarios). -->
+  <ItemGroup>
+    <Content Include="data\**\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!-- Stage the mod under test next to the test assembly, where [assembly: AtlasMods]
        expects it (mod/Nimbus.ServerMod.dll + its Nimbus.Shared dependency). -->
   <Target Name="StageModUnderTest" AfterTargets="Build">

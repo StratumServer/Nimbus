@@ -6,7 +6,7 @@ set -euo pipefail
 
 apt-get update -qq && apt-get install -y -qq curl unzip > /dev/null
 
-VS_VERSION="${VS_VERSION:-1.22.5}"
+VS_VERSION="${VS_VERSION:-1.22.6}"
 NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.2.0/Nimbus-v0.2.0.zip}"
 
 cd /mnt/server
