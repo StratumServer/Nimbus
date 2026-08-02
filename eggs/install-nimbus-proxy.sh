@@ -10,7 +10,8 @@ NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nim
 # Every download goes through here: https only, redirects included, so a panel
 # variable pointing at plain http fails the install rather than fetching over it.
 fetch() {
-  curl -sSL --proto '=https' --proto-redir '=https' --fail -o "$1" "$2"
+  local dest="$1" url="$2"
+  curl -sSL --proto '=https' --proto-redir '=https' --fail -o "$dest" "$url"
 }
 
 cd /mnt/server
