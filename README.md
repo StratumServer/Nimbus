@@ -2,6 +2,8 @@
 
 [![Release](https://img.shields.io/github/v/release/StratumServer/Nimbus?logo=github)](https://github.com/StratumServer/Nimbus/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/StratumServer/Nimbus/ci.yml?branch=main&logo=github&label=ci)](https://github.com/StratumServer/Nimbus/actions/workflows/ci.yml)
+[![Quality gate](https://sonarcloud.io/api/project_badges/measure?project=StratumServer_Nimbus&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=StratumServer_Nimbus)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=StratumServer_Nimbus&metric=coverage)](https://sonarcloud.io/summary/new_code?id=StratumServer_Nimbus)
 [![Mod DB](https://img.shields.io/badge/mod%20db-nimbusproxy-90c95b)](https://mods.vintagestory.at/nimbusproxy)
 [![Stars](https://img.shields.io/github/stars/StratumServer/Nimbus?style=flat&logo=github)](https://github.com/StratumServer/Nimbus/stargazers)
 [![Issues](https://img.shields.io/github/issues/StratumServer/Nimbus?logo=github)](https://github.com/StratumServer/Nimbus/issues)

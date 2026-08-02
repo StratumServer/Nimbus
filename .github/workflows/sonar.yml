@@ -1,0 +1,127 @@
+name: sonar
+
+# Static analysis published to SonarCloud (project StratumServer_Nimbus).
+#
+# Kept out of ci.yml on purpose: this job pulls a JDK and a scanner tool on top of the
+# normal build, and its verdict is informational, so it has no business slowing down or
+# failing the checks that gate a merge.
+#
+# The quality gate is deliberately non-blocking: no /d:sonar.qualitygate.wait, and this
+# workflow is not in the repository's required checks. It decorates pull requests and
+# publishes measures, nothing more. The gate becomes blocking later, once the initial
+# backlog of findings has been triaged.
+#
+# Automatic Analysis is disabled on the SonarCloud side: C# has to be analysed while it
+# compiles, which is what the begin/build/end sequence below does.
+
+on:
+  push:
+    branches: [main, indev]
+  pull_request:
+
+env:
+  VS_VERSION: "1.22.6"
+
+jobs:
+  sonar:
+    name: SonarCloud analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      # Full history, not a shallow clone: Sonar reads git blame to attribute issues to
+      # authors and to work out which lines count as new code. Shallow clones also break
+      # pull request decoration.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The scanner is a Java program; the dotnet tool is a wrapper around it.
+      - name: Setup Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache Vintage Story server
+        id: cache-vs
+        uses: actions/cache@v6
+        with:
+          path: ~/vs
+          key: vs-server-linux-x64-${{ env.VS_VERSION }}
+
+      - name: Download Vintage Story server
+        if: steps.cache-vs.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          curl -sSL --proto '=https' --proto-redir '=https' -o vs_server.tar.gz "https://cdn.vintagestory.at/gamefiles/stable/vs_server_linux-x64_${VS_VERSION}.tar.gz"
+          mkdir -p "$HOME/vs"
+          tar -xzf vs_server.tar.gz -C "$HOME/vs"
+
+      - name: Export VINTAGE_STORY
+        run: |
+          set -e
+          DLL_DIR="$(dirname "$(find "$HOME/vs" -name VintagestoryAPI.dll | head -1)")"
+          echo "VINTAGE_STORY=$DLL_DIR" >> "$GITHUB_ENV"
+          echo "Resolved VINTAGE_STORY=$DLL_DIR"
+
+      # Same layout mirroring as ci.yml: the csproj files resolve the game dlls relative
+      # to the repo's parent directory, and VintagestoryAPI.pdb has to sit next to the
+      # dll or the engine's logger crashes at boot.
+      - name: Mirror the expected dll layout
+        run: |
+          set -e
+          PARENT="$(dirname "$GITHUB_WORKSPACE")"
+          mkdir -p "$PARENT/bin/Release/net10.0" "$PARENT/.vanilla/Lib"
+          cp "$VINTAGE_STORY/VintagestoryAPI.dll" "$VINTAGE_STORY/VintagestoryAPI.pdb" "$PARENT/bin/Release/net10.0/"
+          cp "$VINTAGE_STORY/Lib/protobuf-net.dll" "$PARENT/.vanilla/Lib/"
+
+      - name: Install the Sonar scanner
+        run: |
+          set -e
+          dotnet tool install --global dotnet-sonarscanner
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      # begin and end have to wrap the build: the C# rules run as Roslyn analyzers during
+      # compilation, so anything compiled outside this pair is invisible to Sonar.
+      # sonar.sources and sonar.tests are left unset on purpose (the MSBuild flavour of
+      # the scanner rejects them): test projects are recognised from their
+      # Microsoft.NET.Test.Sdk reference and classified automatically.
+      - name: Sonar begin
+        env:
+          # Through the environment rather than an inline ${{ }} expansion: a secret
+          # interpolated straight into a run block ends up in the generated script.
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          dotnet sonarscanner begin \
+            /k:"StratumServer_Nimbus" \
+            /o:"stratumserver" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.exclusions="**/bin/**,**/obj/**" \
+            /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
+
+      - name: Build
+        run: dotnet build Nimbus.slnx -c Release
+
+      # Has to run after the build and before the end step, so the reports exist by the
+      # time the scanner uploads them. The opencover format comes from coverlet.collector,
+      # referenced by the three test projects.
+      - name: Tests with coverage
+        run: |
+          set -e
+          for p in Nimbus.Registry.Core.Tests Nimbus.Proxy.Tests Nimbus.ServerMod.Tests; do
+            dotnet test "$p/$p.csproj" -c Release --no-build \
+              --collect:"XPlat Code Coverage;Format=opencover" \
+              --results-directory TestResults
+          done
+
+      - name: Sonar end
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
