@@ -104,8 +104,19 @@ the ban reason, and their login never reaches a backend. (A client that stalls l
 proxy to open an upstream first will have opened a TCP connection to the backend, but not a game
 session: the pump drops its traffic the moment the ban is recognised.) The proxy keeps a warm copy of the list
 so the check costs nothing per join, and a registry outage leaves the last known bans in force.
-Per-backend bans leave the rest of the network reachable. Vanilla per-server `/ban` keeps working
-and stays local to that savegame.
+
+Per-backend bans are enforced too, just against that one backend. A player who lands on a backend
+they are banned from is dropped at the door, with a message naming that server rather than the
+network. A transfer to it is refused, whether it came from `swap`, a shortcut command, a plugin or
+a backend asking for the move. A staged reconnect route pointing at it is discarded and the player
+is routed normally instead. The rest of the network stays reachable throughout.
+
+None of that can happen before identification: the proxy picks a backend while the client has
+still said nothing that names the player, so the ban list can only be consulted once the UID is in
+hand. The registry refuses to mint a reservation for a banned pair as well, which is what catches
+a proxy whose copy of the ban list is a few seconds out of date.
+
+Vanilla per-server `/ban` keeps working and stays local to that savegame.
 
 ## Addresses: who connects where
 

@@ -356,6 +356,35 @@ public class RegistryEndpointsTests
     }
 
     [Fact]
+    public async Task Reservation_ForABannedPair_IsRefused_ButOtherBackendsStillMint()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/heartbeat", body: Heartbeat()));
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/heartbeat", body: Heartbeat("backend-2")));
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-1", ServerId = "backend-1", Reason = "grief" }));
+
+        var refused = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/reservations",
+            body: new { PlayerUid = "uid-1", TargetServerId = "backend-1" }));
+        Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+        var body = await refused.Content.ReadFromJsonAsync<ReservationResponse>();
+        Assert.False(body!.Ok);
+        Assert.Null(body.Reservation);
+
+        // The ban covers one backend, so the rest of the network still mints for this player.
+        var allowed = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/reservations",
+            body: new { PlayerUid = "uid-1", TargetServerId = "backend-2" }));
+        Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
+
+        // And a network-wide ban closes every backend to them.
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-1", Reason = "grief" }));
+        var everywhere = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/reservations",
+            body: new { PlayerUid = "uid-1", TargetServerId = "backend-2" }));
+        Assert.Equal(HttpStatusCode.Forbidden, everywhere.StatusCode);
+    }
+
+    [Fact]
     public async Task Reservation_TtlIsClampedToTheConfiguredMaximum()
     {
         var cfg = new RegistryConfig { SharedSecret = Secret, MaxReservationTtlSeconds = 120 };

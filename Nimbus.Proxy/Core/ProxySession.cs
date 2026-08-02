@@ -228,7 +228,10 @@ internal sealed partial class ProxySession : IPlayer
         });
     }
 
-    private bool CaptureIdentification(ReadOnlySpan<byte> raw, string source)
+    // `landingOn` is the backend this session is about to be connected to, passed by the connect
+    // path because `currentBackend` is only assigned once the socket is up. On the pump path the
+    // backend is already current and the argument is left null.
+    private bool CaptureIdentification(ReadOnlySpan<byte> raw, string source, BackendEndpoint? landingOn = null)
     {
         if (capturedIdentification != null) return true;
 
@@ -247,10 +250,14 @@ internal sealed partial class ProxySession : IPlayer
         // way to the backend we are already connected to. That backend now owns the token.
         if (currentBackend != null) NoteIdentificationDelivered(currentBackend);
 
-        // Network ban gate. Synchronous against the warm cache: this runs on the byte pump, so
-        // it must not wait on the registry. A network-wide ban ends the session here, before any
-        // backend sees the player.
-        var ban = bans?.FindBlocking(uid);
+        // Ban gate. Synchronous against the warm cache: this runs on the byte pump, so it must
+        // not wait on the registry. A network-wide ban ends the session here, before any backend
+        // sees the player, and so does a ban scoped to the backend this session is landing on.
+        // The scope cannot be checked any earlier: the backend is picked before the client has
+        // sent an identity (#57). A backend configured as host:port has no ServerId, so no scoped
+        // ban can match it.
+        var landing = landingOn ?? currentBackend;
+        var ban = bans?.FindBlocking(uid, landing?.ServerId);
         if (ban != null)
         {
             rejectedByBan = true;
@@ -296,11 +303,14 @@ internal sealed partial class ProxySession : IPlayer
         string until = ban.ExpiresAtUnix > 0
             ? $" (until {DateTimeOffset.FromUnixTimeSeconds(ban.ExpiresAtUnix):u})"
             : "";
+        // A scoped ban leaves the rest of the network reachable, so the player must not be told
+        // the whole network is closed to them.
+        string scope = ban.IsNetworkWide ? "this network" : "this server";
         string reason = string.IsNullOrWhiteSpace(ban.Reason)
-            ? $"You are banned from this network{until}."
-            : $"You are banned from this network{until}: {ban.Reason}";
+            ? $"You are banned from {scope}{until}."
+            : $"You are banned from {scope}{until}: {ban.Reason}";
 
-        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} rejected: network ban" +
+        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} rejected: {(ban.IsNetworkWide ? "network ban" : $"ban scoped to {ban.ServerId}")}" +
                  (string.IsNullOrWhiteSpace(ban.Reason) ? "" : $" ({ban.Reason})"));
         ProxyMetrics.BannedJoinRejected();
 
@@ -317,6 +327,22 @@ internal sealed partial class ProxySession : IPlayer
             catch { }
             finally { Close(); }
         });
+    }
+
+    // The reason a transfer to `target` is refused because of a ban, or null when it is allowed.
+    // Both the UID and the destination are needed, so this is checked on the transfer methods
+    // rather than at route selection, which runs before the client has sent any identity (#57).
+    // A target with no ServerId carries no scope a ban could be matched against.
+    private string? CheckTargetBan(BackendEndpoint target)
+    {
+        if (bans == null || string.IsNullOrEmpty(capturedPlayerUid) || string.IsNullOrEmpty(target.ServerId))
+            return null;
+
+        var ban = bans.FindBlocking(capturedPlayerUid, target.ServerId);
+        if (ban == null) return null;
+        return ban.IsNetworkWide
+            ? "player is banned from the network"
+            : $"player is banned from {target.ServerId}";
     }
 
     // How many redirects one staged route may fire before we give up and leave the player where
@@ -338,6 +364,16 @@ internal sealed partial class ProxySession : IPlayer
             string.Equals(cur.Host, route.Target.Host, StringComparison.OrdinalIgnoreCase) &&
             cur.Port == route.Target.Port)
             return;
+
+        // A ban placed while the route sat staged. The redirect below would refuse it anyway;
+        // dropping the route here leaves the player on the working session they already have.
+        var banFail = CheckTargetBan(route.Target);
+        if (banFail != null)
+        {
+            Log.Warn($"[s{Id}] sticky route to {route.Target} dropped: {banFail}; " +
+                     $"leaving {capturedPlayerName ?? uid} on {currentBackend?.ToString() ?? "?"}");
+            return;
+        }
 
         if (route.Attempts >= MaxStickyRedirects)
         {
@@ -502,12 +538,13 @@ internal sealed partial class ProxySession : IPlayer
             // parse failure for a frame that never had a UID in it (#57).
             string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
             if (firstName == "Identification")
-                CaptureIdentification(firstClientFrame.Span, source: "first frame");
+                CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
             else
                 Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
-            // A banned player must not cause an upstream connection at all.
+            // A banned player must not cause an upstream connection at all. The chain stops here
+            // rather than failing over: the gate has already told the client why it is going.
             if (rejectedByBan)
-                return (false, true, "player is banned from the network");
+                return (false, true, "player is banned");
             // If the first frame already contained Identification, prime the reservation
             // before replaying bytes upstream. Missing UID here is non-fatal; the c->s pump
             // retries as soon as it captures Identification from later frames.

@@ -43,6 +43,14 @@ internal sealed class InProcRegistryClient : IRegistryClient
             return Task.FromResult<TransferReservation?>(null);
         }
 
+        // Mirrors the ban check on /api/reservations so embedded and remote modes refuse the
+        // same mints.
+        if (bans.FindBlocking(playerUid, targetServerId) != null)
+        {
+            Log.Warn($"in-proc registry: refusing reservation, uid={playerUid} is banned from '{targetServerId}'");
+            return Task.FromResult<TransferReservation?>(null);
+        }
+
         int ttl = cfg.ReservationTtlSeconds;
         if (ttl <= 0) ttl = 60;
         if (ttl > cfg.MaxReservationTtlSeconds) ttl = cfg.MaxReservationTtlSeconds;

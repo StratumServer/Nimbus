@@ -43,7 +43,7 @@ public static class Endpoints
         app.MapGet("/api/servers", (BackendRegistry reg) => Results.Ok(reg.Snapshot()));
 
         // Reservations.
-        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationStore store, BackendRegistry reg, RegistryConfig cfg, TimeProvider clock) =>
+        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationStore store, BackendRegistry reg, BanStore bans, RegistryConfig cfg, TimeProvider clock) =>
         {
             ReservationRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<ReservationRequest>(); }
@@ -60,6 +60,13 @@ public static class Endpoints
             var target = reg.Get(req.TargetServerId);
             if (target is null)
                 return Results.NotFound(new ReservationResponse { Ok = false, Error = "target server not registered" });
+
+            // Bans are enforced at the proxy, which knows the player and the destination at the
+            // same time. This is the multi-proxy backstop: a proxy running on a ban list that is
+            // seconds out of date still cannot mint the reservation that would seat the player.
+            if (bans.FindBlocking(req.PlayerUid, req.TargetServerId) is not null)
+                return Results.Json(new ReservationResponse { Ok = false, Error = "player is banned from the target server" },
+                    statusCode: StatusCodes.Status403Forbidden);
 
             var r = new TransferReservation
             {
