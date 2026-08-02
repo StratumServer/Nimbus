@@ -27,6 +27,10 @@ namespace Nimbus.Proxy;
 //
 //   [registry]
 //   mode = "embedded"          # "embedded" | "remote" | "disabled"
+//
+//   [whitelist]
+//   network = false            # true closes the whole network to unlisted players
+//   servers = []               # backend ids closed to unlisted players even when network = false
 internal sealed class ProxyConfig
 {
     public string Bind { get; set; } = "0.0.0.0:42420";
@@ -53,6 +57,7 @@ internal sealed class ProxyConfig
     public TransfersConfig Transfers { get; set; } = new();
     public AdminConfig Admin { get; set; } = new();
     public RegistryConfig Registry { get; set; } = new();
+    public WhitelistConfig Whitelist { get; set; } = new();
     public LoggingConfig Logging { get; set; } = new();
     public MetricsConfig Metrics { get; set; } = new();
     public StatusConfig Status { get; set; } = new();
@@ -89,6 +94,7 @@ internal sealed class ProxyConfig
         Try = fresh.Try;
         ProxyProtocolServers = fresh.ProxyProtocolServers;
         Transfers = fresh.Transfers;
+        Whitelist = fresh.Whitelist;
         Logging = fresh.Logging;
         Status = fresh.Status;
         Plugins = fresh.Plugins;
@@ -228,6 +234,40 @@ internal sealed class RegistryConfig
     public int NonceWindowSeconds { get; set; } = 90;
     public int MaxReservationTtlSeconds { get; set; } = 300;
     public bool AdvertiseOnMasterServer { get; set; } = false;
+}
+
+// Whitelist enforcement. The list itself lives in the registry; these switches decide where it
+// is a requirement. Nothing is inferred from the list: an empty whitelist with `network = true`
+// means nobody gets in, which is the only reading that does not turn "the last entry was just
+// removed" into "the door is now open to everyone".
+internal sealed class WhitelistConfig
+{
+    // True closes the whole network: only listed players get past the proxy door.
+    public bool Network { get; set; } = false;
+
+    // Backend ids that require coverage even when the network as a whole is open. The staff or
+    // build server sitting inside a public network.
+    public List<string> Servers { get; set; } = new();
+
+    // Cold start only. The proxy has never managed to read the list, so it cannot tell an empty
+    // whitelist from an unread one, and by default it keeps the door shut. Set this true to let
+    // players in until the first successful fetch instead: an availability choice that trades
+    // the closed network for the risk of a wide-open one while the registry is unreachable.
+    public bool FailOpenUntilFirstSync { get; set; } = false;
+
+    public bool Enabled => Network || Servers.Count > 0;
+
+    // True when joining (or being moved to) this backend requires a whitelist entry. A backend
+    // with no ServerId, configured as host:port, can only be gated network-wide: there is no id
+    // for `servers` to name it by.
+    public bool RequiresCoverage(string? serverId)
+    {
+        if (Network) return true;
+        if (string.IsNullOrEmpty(serverId)) return false;
+        foreach (var s in Servers)
+            if (string.Equals(s, serverId, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
 }
 
 internal sealed class LoggingConfig

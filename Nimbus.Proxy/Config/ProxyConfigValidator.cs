@@ -26,6 +26,7 @@ internal static class ProxyConfigValidator
         ValidateTransfers(cfg, result);
         ValidateAdmin(cfg, result);
         ValidateRegistry(cfg, result);
+        ValidateWhitelist(cfg, result);
         ValidateMetrics(cfg, result);
         ValidateStatus(cfg, result);
         ValidatePlugins(cfg, result);
@@ -168,6 +169,28 @@ internal static class ProxyConfigValidator
                 result.Error("registry.embedded_bind is not loopback, so registry.embedded_shared_secret must be changed from the default");
             }
         }
+    }
+
+    private static void ValidateWhitelist(ProxyConfig cfg, ProxyConfigValidation result)
+    {
+        foreach (var serverId in cfg.Whitelist.Servers)
+        {
+            if (string.IsNullOrWhiteSpace(serverId))
+            {
+                result.Warn("whitelist.servers contains an empty server id");
+                continue;
+            }
+            if (!HasServer(cfg, serverId))
+                result.Warn($"whitelist.servers references unknown server '{serverId}'");
+        }
+
+        if (!cfg.Whitelist.Enabled) return;
+
+        var mode = (cfg.Registry.Mode ?? "").Trim().ToLowerInvariant();
+        if (mode is "" or "disabled")
+            result.Error("whitelist enforcement needs a registry to read the list from, but registry.mode is 'disabled'");
+        if (cfg.Whitelist.FailOpenUntilFirstSync)
+            result.Warn("whitelist.fail_open_until_first_sync = true lets everyone in until the registry answers once");
     }
 
     private static void ValidateAdvanced(ProxyConfig cfg, ProxyConfigValidation result)

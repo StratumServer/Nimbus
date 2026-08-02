@@ -22,6 +22,7 @@ internal static class ProxyMetrics
     private static long registryIntentPollFailures;
     private static long drainedServers;
     private static long bannedJoinsRejected;
+    private static long unwhitelistedJoinsRejected;
 
     // Live session count, for the /status report.
     public static long ActiveSessionCount => Interlocked.Read(ref activeSessions);
@@ -83,6 +84,9 @@ internal static class ProxyMetrics
     public static void BannedJoinRejected()
         => Interlocked.Increment(ref bannedJoinsRejected);
 
+    public static void UnwhitelistedJoinRejected()
+        => Interlocked.Increment(ref unwhitelistedJoinsRejected);
+
     public static string RenderPrometheus()
     {
         var sb = new StringBuilder();
@@ -104,6 +108,7 @@ internal static class ProxyMetrics
         Metric(sb, "nimbus_proxy_registry_intent_poll_failures_total", "counter", "Transfer intent poll failures.", Read(registryIntentPollFailures));
         Metric(sb, "nimbus_proxy_drained_servers", "gauge", "Servers currently marked drained.", Read(drainedServers));
         Metric(sb, "nimbus_proxy_banned_joins_rejected_total", "counter", "Joins rejected by a network ban.", Read(bannedJoinsRejected));
+        Metric(sb, "nimbus_proxy_unwhitelisted_joins_rejected_total", "counter", "Joins rejected for missing a whitelist entry.", Read(unwhitelistedJoinsRejected));
         return sb.ToString();
     }
 

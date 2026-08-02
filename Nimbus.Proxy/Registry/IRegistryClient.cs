@@ -29,4 +29,12 @@ internal interface IRegistryClient
     Task<NetworkBan?> AddBanAsync(BanRequest request, CancellationToken ct);
 
     Task<bool> LiftBanAsync(string playerUid, string? serverId, CancellationToken ct);
+
+    // Network whitelist. Cached proxy-side (WhitelistCache) for the same reason bans are: the
+    // connection gate runs on the byte pump and cannot wait on the registry.
+    Task<List<WhitelistEntry>?> GetWhitelistAsync(CancellationToken ct);
+
+    Task<WhitelistEntry?> AddWhitelistAsync(WhitelistRequest request, CancellationToken ct);
+
+    Task<bool> RemoveWhitelistAsync(string playerUid, string? serverId, CancellationToken ct);
 }

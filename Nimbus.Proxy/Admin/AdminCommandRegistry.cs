@@ -46,6 +46,9 @@ internal sealed class AdminCommandRegistry
         new BanCommand(),
         new UnbanCommand(),
         new BansCommand(),
+        new WhitelistAddCommand(),
+        new WhitelistRemoveCommand(),
+        new WhitelistListCommand(),
         new ReloadCommand(),
     });
 }
