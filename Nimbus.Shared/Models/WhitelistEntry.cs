@@ -1,0 +1,65 @@
+namespace Nimbus.Shared.Models;
+
+// A whitelist entry held by the registry, the inverse gate of NetworkBan: a ban says who may
+// not come in, an entry here says who may. Same shape on purpose, keyed on PlayerUid because
+// names change and uids do not.
+//
+// The list on its own decides nothing. Enforcement is a proxy-side switch ([whitelist] in
+// nimbus.proxy.toml), so an entry sitting in the registry while enforcement is off costs
+// nobody anything.
+public sealed class WhitelistEntry
+{
+    public string PlayerUid { get; set; } = "";
+
+    // Last known name, for readable listings. Never used for matching.
+    public string PlayerName { get; set; } = "";
+
+    // Empty means network-wide: the entry covers every backend. Otherwise it covers that one
+    // backend and no other.
+    public string ServerId { get; set; } = "";
+
+    public string Note { get; set; } = "";
+    public string AddedBy { get; set; } = "";
+    public long CreatedAtUnix { get; set; }
+
+    // 0 means permanent.
+    public long ExpiresAtUnix { get; set; }
+
+    public bool IsNetworkWide => string.IsNullOrEmpty(ServerId);
+
+    public bool IsActiveAt(long nowUnix)
+        => ExpiresAtUnix <= 0 || nowUnix < ExpiresAtUnix;
+
+    // True when this entry covers the given backend. A network-wide entry covers every backend;
+    // a scoped one only its own. An empty serverId asks "is the network itself covered", which
+    // is all a backend with no ServerId can be asked about.
+    public bool Covers(string? serverId)
+        => IsNetworkWide || string.Equals(ServerId, serverId, StringComparison.OrdinalIgnoreCase);
+}
+
+public sealed class WhitelistRequest
+{
+    public string PlayerUid { get; set; } = "";
+    public string PlayerName { get; set; } = "";
+
+    // Empty for a network-wide entry.
+    public string ServerId { get; set; } = "";
+    public string Note { get; set; } = "";
+    public string AddedBy { get; set; } = "";
+
+    // 0 or less means permanent.
+    public int DurationSeconds { get; set; }
+}
+
+public sealed class WhitelistResponse
+{
+    public bool Ok { get; set; }
+    public WhitelistEntry? Entry { get; set; }
+    public string? Error { get; set; }
+}
+
+public sealed class WhitelistListResponse
+{
+    public bool Ok { get; set; }
+    public List<WhitelistEntry> Entries { get; set; } = new();
+}

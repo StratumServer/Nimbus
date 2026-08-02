@@ -14,16 +14,19 @@ internal sealed class InProcRegistryClient : IRegistryClient
     private readonly ReservationStore reservations;
     private readonly TransferIntentStore intents;
     private readonly BanStore bans;
+    private readonly WhitelistStore whitelist;
     private readonly RegistryConfig cfg;
     private readonly TimeProvider clock;
 
     public InProcRegistryClient(BackendRegistry backends, ReservationStore reservations,
-        TransferIntentStore intents, BanStore bans, RegistryConfig cfg, TimeProvider? clock = null)
+        TransferIntentStore intents, BanStore bans, WhitelistStore whitelist, RegistryConfig cfg,
+        TimeProvider? clock = null)
     {
         this.backends = backends;
         this.reservations = reservations;
         this.intents = intents;
         this.bans = bans;
+        this.whitelist = whitelist;
         this.cfg = cfg;
         this.clock = clock ?? TimeProvider.System;
     }
@@ -50,6 +53,9 @@ internal sealed class InProcRegistryClient : IRegistryClient
             Log.Warn($"in-proc registry: refusing reservation, uid={playerUid} is banned from '{targetServerId}'");
             return Task.FromResult<TransferReservation?>(null);
         }
+
+        // No matching whitelist check here, on purpose: whether coverage is required at all is a
+        // proxy-side switch ([whitelist] in nimbus.proxy.toml) the registry never sees.
 
         int ttl = cfg.ReservationTtlSeconds;
         if (ttl <= 0) ttl = 60;
@@ -114,6 +120,32 @@ internal sealed class InProcRegistryClient : IRegistryClient
 
     public Task<bool> LiftBanAsync(string playerUid, string? serverId, CancellationToken ct)
         => Task.FromResult(bans.Lift(playerUid, serverId));
+
+    public Task<List<WhitelistEntry>?> GetWhitelistAsync(CancellationToken ct)
+        => Task.FromResult<List<WhitelistEntry>?>(whitelist.Active());
+
+    // Mirrors POST /api/whitelist so embedded and remote modes stamp identical entries.
+    public Task<WhitelistEntry?> AddWhitelistAsync(WhitelistRequest request, CancellationToken ct)
+    {
+        if (request == null || string.IsNullOrEmpty(request.PlayerUid))
+            return Task.FromResult<WhitelistEntry?>(null);
+
+        long now = clock.GetUtcNow().ToUnixTimeSeconds();
+        var entry = whitelist.Add(new WhitelistEntry
+        {
+            PlayerUid = request.PlayerUid,
+            PlayerName = request.PlayerName ?? "",
+            ServerId = request.ServerId ?? "",
+            Note = request.Note ?? "",
+            AddedBy = request.AddedBy ?? "",
+            CreatedAtUnix = now,
+            ExpiresAtUnix = request.DurationSeconds > 0 ? now + request.DurationSeconds : 0,
+        });
+        return Task.FromResult<WhitelistEntry?>(entry);
+    }
+
+    public Task<bool> RemoveWhitelistAsync(string playerUid, string? serverId, CancellationToken ct)
+        => Task.FromResult(whitelist.Remove(playerUid, serverId));
 
     private static string NewId()
     {

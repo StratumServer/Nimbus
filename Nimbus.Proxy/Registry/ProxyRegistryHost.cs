@@ -102,14 +102,16 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
             var reservations = app.Services.GetRequiredService<ReservationStore>();
             var intents = app.Services.GetRequiredService<TransferIntentStore>();
             var bans = app.Services.GetRequiredService<BanStore>();
-            return new ProxyRegistryHost(new InProcRegistryClient(backends, reservations, intents, bans, cfg.Registry), app);
+            var whitelist = app.Services.GetRequiredService<WhitelistStore>();
+            return new ProxyRegistryHost(new InProcRegistryClient(backends, reservations, intents, bans, whitelist, cfg.Registry), app);
         }
 
         var backendsSvc = new BackendRegistry(coreCfg);
         var reservationsSvc = new ReservationStore();
         var intentsSvc = new TransferIntentStore();
         var bansSvc = new BanStore();
+        var whitelistSvc = new WhitelistStore();
         Log.Info($"registry: embedded (no http listener) proxy_id={cfg.Registry.ProxyId}");
-        return new ProxyRegistryHost(new InProcRegistryClient(backendsSvc, reservationsSvc, intentsSvc, bansSvc, cfg.Registry), null);
+        return new ProxyRegistryHost(new InProcRegistryClient(backendsSvc, reservationsSvc, intentsSvc, bansSvc, whitelistSvc, cfg.Registry), null);
     }
 }
