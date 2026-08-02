@@ -141,15 +141,26 @@ public static class Endpoints
             return Results.Ok(new BanResponse { Ok = true, Ban = ban });
         });
 
-        // Lift a ban. Omit ?server= to lift the network-wide one; a scoped ban must be lifted
+        // Lift a ban. Omit ServerId to lift the network-wide one; a scoped ban must be lifted
         // with the same serverId it was created with.
-        app.MapPost("/api/bans/lift", (HttpContext ctx, BanStore bans) =>
+        app.MapPost("/api/bans/lift", async (HttpContext ctx, BanStore bans) =>
         {
-            string uid = ctx.Request.Query["uid"].ToString();
-            if (string.IsNullOrEmpty(uid))
-                return Results.BadRequest(new { error = "?uid= required" });
+            BanLiftRequest? req;
+            try { req = await ReadOptionalBodyAsync<BanLiftRequest>(ctx); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
 
-            string serverId = ctx.Request.Query["server"].ToString();
+            // The signature covers the body and not the query, so a body naming a player settles
+            // both arguments and the query is never consulted. Deprecated: ?uid=/?server= answer
+            // only when the body names nobody, which keeps a proxy older than this endpoint
+            // working. Drop the fallback when NimbusProtocol.ProtocolVersion moves past 1, since
+            // that is the point at which a mismatched proxy is refused by HmacAuthMiddleware
+            // anyway.
+            bool fromBody = !string.IsNullOrEmpty(req?.PlayerUid);
+            string uid = fromBody ? req!.PlayerUid : ctx.Request.Query["uid"].ToString();
+            if (string.IsNullOrEmpty(uid))
+                return Results.BadRequest(new { error = "PlayerUid required" });
+
+            string serverId = fromBody ? req!.ServerId : ctx.Request.Query["server"].ToString();
             bool lifted = bans.Lift(uid, serverId);
             if (!lifted)
                 return Results.NotFound(new BanResponse { Ok = false, Error = "no matching ban" });
@@ -184,15 +195,21 @@ public static class Endpoints
             return Results.Ok(new WhitelistResponse { Ok = true, Entry = entry });
         });
 
-        // Drop an entry. Omit ?server= to drop the network-wide one; a scoped entry must be
-        // removed with the same serverId it was created with.
-        app.MapPost("/api/whitelist/remove", (HttpContext ctx, WhitelistStore whitelist) =>
+        // Drop an entry. Omit ServerId to drop the network-wide one; a scoped entry must be
+        // removed with the same serverId it was created with. Same body-over-query rule as
+        // /api/bans/lift, for the same reason.
+        app.MapPost("/api/whitelist/remove", async (HttpContext ctx, WhitelistStore whitelist) =>
         {
-            string uid = ctx.Request.Query["uid"].ToString();
-            if (string.IsNullOrEmpty(uid))
-                return Results.BadRequest(new { error = "?uid= required" });
+            WhitelistRemoveRequest? req;
+            try { req = await ReadOptionalBodyAsync<WhitelistRemoveRequest>(ctx); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
 
-            string serverId = ctx.Request.Query["server"].ToString();
+            bool fromBody = !string.IsNullOrEmpty(req?.PlayerUid);
+            string uid = fromBody ? req!.PlayerUid : ctx.Request.Query["uid"].ToString();
+            if (string.IsNullOrEmpty(uid))
+                return Results.BadRequest(new { error = "PlayerUid required" });
+
+            string serverId = fromBody ? req!.ServerId : ctx.Request.Query["server"].ToString();
             if (!whitelist.Remove(uid, serverId))
                 return Results.NotFound(new WhitelistResponse { Ok = false, Error = "no matching entry" });
             return Results.Ok(new WhitelistResponse { Ok = true });
@@ -226,6 +243,15 @@ public static class Endpoints
             var taken = store.Drain();
             return Results.Ok(new TransferIntentDrainResponse { Ok = true, Intents = taken });
         });
+    }
+
+    // Reads a body that a caller is allowed to leave out entirely. An absent body is not an
+    // error here, unlike the endpoints that require one: it means the caller is old enough to
+    // still be passing its arguments in the query.
+    private static async Task<T?> ReadOptionalBodyAsync<T>(HttpContext ctx) where T : class
+    {
+        if (ctx.Request.ContentLength is null or 0) return null;
+        return await ctx.Request.ReadFromJsonAsync<T>();
     }
 
     private static string NewReservationId()

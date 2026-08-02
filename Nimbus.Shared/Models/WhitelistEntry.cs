@@ -51,6 +51,17 @@ public sealed class WhitelistRequest
     public int DurationSeconds { get; set; }
 }
 
+// Body of POST /api/whitelist/remove. The arguments live here rather than in the query because
+// the HMAC covers method, path, body, timestamp and nonce, and never the query string.
+public sealed class WhitelistRemoveRequest
+{
+    public string PlayerUid { get; set; } = "";
+
+    // Empty removes the network-wide entry. A scoped entry must be removed with the serverId it
+    // was created with.
+    public string ServerId { get; set; } = "";
+}
+
 public sealed class WhitelistResponse
 {
     public bool Ok { get; set; }

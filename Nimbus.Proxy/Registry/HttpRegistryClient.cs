@@ -211,13 +211,11 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
     {
         try
         {
-            byte[] body = Array.Empty<byte>();
-            string query = $"?uid={Uri.EscapeDataString(playerUid)}";
-            if (!string.IsNullOrEmpty(serverId)) query += $"&server={Uri.EscapeDataString(serverId)}";
+            byte[] body = JsonSerializer.SerializeToUtf8Bytes(
+                new BanLiftRequest { PlayerUid = playerUid, ServerId = serverId ?? "" });
             const string path = "api/bans/lift";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path + query) { Content = new ByteArrayContent(body) };
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            // Signed over the path only; Sign strips the query, matching the other signed calls.
             Sign(msg, "POST", "/" + path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
@@ -284,13 +282,11 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
     {
         try
         {
-            byte[] body = Array.Empty<byte>();
-            string query = $"?uid={Uri.EscapeDataString(playerUid)}";
-            if (!string.IsNullOrEmpty(serverId)) query += $"&server={Uri.EscapeDataString(serverId)}";
+            byte[] body = JsonSerializer.SerializeToUtf8Bytes(
+                new WhitelistRemoveRequest { PlayerUid = playerUid, ServerId = serverId ?? "" });
             const string path = "api/whitelist/remove";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path + query) { Content = new ByteArrayContent(body) };
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            // Signed over the path only; Sign strips the query, matching the other signed calls.
             Sign(msg, "POST", "/" + path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);

@@ -45,6 +45,17 @@ public sealed class BanRequest
     public int DurationSeconds { get; set; }
 }
 
+// Body of POST /api/bans/lift. The arguments live here rather than in the query because the
+// HMAC covers method, path, body, timestamp and nonce, and never the query string.
+public sealed class BanLiftRequest
+{
+    public string PlayerUid { get; set; } = "";
+
+    // Empty lifts the network-wide ban. A scoped ban must be lifted with the serverId it was
+    // created with.
+    public string ServerId { get; set; } = "";
+}
+
 public sealed class BanResponse
 {
     public bool Ok { get; set; }
