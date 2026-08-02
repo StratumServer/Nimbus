@@ -69,7 +69,7 @@ public sealed class HmacAuthMiddleware
         // Buffer body to hash it and re-read it downstream.
         ctx.Request.EnableBuffering();
         using var ms = new MemoryStream();
-        await ctx.Request.Body.CopyToAsync(ms);
+        await ctx.Request.Body.CopyToAsync(ms, ctx.RequestAborted);
         byte[] body = ms.ToArray();
         ctx.Request.Body.Position = 0;
 
@@ -99,6 +99,8 @@ public sealed class HmacAuthMiddleware
         _log.LogWarning("Nimbus auth reject {Path} from {Ip}: {Reason}",
             ctx.Request.Path, ctx.Connection.RemoteIpAddress, reason);
         ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        await ctx.Response.WriteAsync($"unauthorized: {reason}");
+        // No token: the reason string is the only feedback a rejected caller gets, and a
+        // client that hangs up mid-write must not surface here as a cancellation.
+        await ctx.Response.WriteAsync($"unauthorized: {reason}", CancellationToken.None);
     }
 }

@@ -10,7 +10,7 @@ NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nim
 cd /mnt/server
 
 echo "Downloading the Nimbus release..."
-curl -sSL --fail -o /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
+curl -sSL --proto '=https' --proto-redir '=https' --fail -o /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
 rm -rf /tmp/nimbus && mkdir -p /tmp/nimbus
 unzip -qo /tmp/nimbus.zip -d /tmp/nimbus
 PROXY_DIR=$(find /tmp/nimbus -type d -name "Nimbus" | head -1)

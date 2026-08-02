@@ -8,6 +8,9 @@ import json
 
 AUTHOR = "77785313+Pixnop@users.noreply.github.com"
 RUNTIME_IMAGE = {".NET 10": "ghcr.io/parkervcp/yolks:dotnet_10"}
+# Install container for all three eggs: the panels' stock Debian image, which already
+# carries the apt tooling the install-*.sh sources expect.
+INSTALL_IMAGE = "ghcr.io/parkervcp/installers:debian"
 RELEASE_URL = "https://github.com/StratumServer/Nimbus/releases/download/v0.3.0/Nimbus-v0.3.0.zip"
 
 def var(name, description, env, default, rules="required|string", field_type="text"):
@@ -60,7 +63,7 @@ eggs = {
             startup="dotnet VintagestoryServer.dll --dataPath /home/container/data --port {{SERVER_PORT}}",
             done="Dedicated Server now running",
             install_script="install-vs-nimbus.sh",
-            install_container="ghcr.io/parkervcp/installers:debian",
+            install_container=INSTALL_IMAGE,
             stop="/stop",
             config_files={
                 "data/ModConfig/nimbus-server.json": {
@@ -105,7 +108,7 @@ eggs = {
         startup="dotnet Nimbus.Proxy.dll",
         done="listening on",
         install_script="install-nimbus-proxy.sh",
-        install_container="ghcr.io/parkervcp/installers:debian",
+        install_container=INSTALL_IMAGE,
         variables=[
             var("Nimbus release URL",
                 "Download URL of the Nimbus release zip; the proxy bundle inside it is installed.",
@@ -115,7 +118,9 @@ eggs = {
                 "NIMBUS_DEFAULT_BACKEND", "127.0.0.1:42421", "required|string|max:255"),
             var("Embedded registry bind",
                 "HTTP URL the embedded registry listens on for backend heartbeats. Keep it reachable from your backend containers.",
-                "NIMBUS_EMBEDDED_REGISTRY_BIND", "http://0.0.0.0:8765"),
+                # Plain HTTP on purpose: the embedded registry has no TLS listener, and
+                # heartbeats are authenticated by the HMAC middleware, not by transport.
+                "NIMBUS_EMBEDDED_REGISTRY_BIND", "http://0.0.0.0:8765"),  # NOSONAR
             shared_secret_var("The proxy refuses to start on a non-loopback registry bind until this is changed."),
         ],
     ),
@@ -125,7 +130,7 @@ eggs = {
         startup="dotnet Nimbus.Registry.dll",
         done="registry listening on",
         install_script="install-nimbus-registry.sh",
-        install_container="ghcr.io/parkervcp/installers:debian",
+        install_container=INSTALL_IMAGE,
         variables=[
             var("Nimbus release URL",
                 "Download URL of the Nimbus release zip (v0.2.0 or newer); the registry bundle inside it is installed.",
