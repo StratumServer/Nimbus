@@ -73,6 +73,11 @@ internal sealed partial class ProxySession : IPlayer
     // from dialing a backend anyway and from forging a second, misleading disconnect.
     private volatile bool rejectedByBan;
 
+    // The in-flight forged disconnect the gate started. Awaited before the sockets are torn down,
+    // because the write races the teardown otherwise and the player sees a dropped connection
+    // instead of the reason they were sent away.
+    private volatile Task? gateDisconnect;
+
     public ProxySession(long id, ProxyConfig cfg, TcpClient client, CancellationToken stopToken,
         StickyRouteTable? stickies = null, IRegistryClient? registry = null, UdpRouteOverrides? udpOverrides = null,
         EventBus? events = null, BanCache? bans = null)
@@ -296,8 +301,7 @@ internal sealed partial class ProxySession : IPlayer
         stickies?.Stage(route.Uid, clientIp: null, route.Target, StickyRouteTable.UidTtl, route.Reason, route.Attempts);
     }
 
-    // Forges a vanilla disconnect so the player sees the ban reason instead of a dropped socket,
-    // then tears the session down. Fire-and-forget because the caller is on the pump.
+    // Tells the player which ban closed the door, then tears the session down.
     private void RejectBannedPlayer(NetworkBan ban)
     {
         string until = ban.ExpiresAtUnix > 0
@@ -313,8 +317,14 @@ internal sealed partial class ProxySession : IPlayer
         Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} rejected: {(ban.IsNetworkWide ? "network ban" : $"ban scoped to {ban.ServerId}")}" +
                  (string.IsNullOrWhiteSpace(ban.Reason) ? "" : $" ({ban.Reason})"));
         ProxyMetrics.BannedJoinRejected();
+        ForgeDisconnectAndClose(reason);
+    }
 
-        _ = Task.Run(async () =>
+    // Forges a vanilla disconnect so the player sees the ban reason instead of a dropped socket,
+    // then tears the session down. Fire-and-forget because the caller is on the pump.
+    private void ForgeDisconnectAndClose(string reason)
+    {
+        gateDisconnect = Task.Run(async () =>
         {
             try
             {
@@ -488,6 +498,11 @@ internal sealed partial class ProxySession : IPlayer
         finally
         {
             closed = true;
+            // A ban rejection forges its disconnect off the pump, so it can still be in flight
+            // here. Closing the client socket underneath it would replace the reason the player
+            // was given with a dropped connection. The write carries its own 2s cap.
+            var pendingDisconnect = gateDisconnect;
+            if (pendingDisconnect != null) await SafeAwait(pendingDisconnect).ConfigureAwait(false);
             try { upstream?.Close(); } catch { }
             try { client.Close(); } catch { }
             // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts fresh.
