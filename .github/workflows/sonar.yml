@@ -93,11 +93,15 @@ jobs:
       # the scanner rejects them): test projects are recognised from their
       # Microsoft.NET.Test.Sdk reference and classified automatically.
       - name: Sonar begin
+        env:
+          # Through the environment rather than an inline ${{ }} expansion: a secret
+          # interpolated straight into a run block ends up in the generated script.
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           dotnet sonarscanner begin \
             /k:"StratumServer_Nimbus" \
             /o:"stratumserver" \
-            /d:sonar.token="${{ secrets.SONAR_TOKEN }}" \
+            /d:sonar.token="$SONAR_TOKEN" \
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.exclusions="**/bin/**,**/obj/**" \
             /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
@@ -118,4 +122,6 @@ jobs:
           done
 
       - name: Sonar end
-        run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
