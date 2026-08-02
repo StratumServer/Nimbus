@@ -9,14 +9,16 @@ apt-get update -qq && apt-get install -y -qq curl unzip > /dev/null
 
 NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.3.0/Nimbus-v0.3.0.zip}"
 
-# Downloads are https-only, redirects included: a panel variable pointing at plain
-# http must fail the install rather than fetch over it.
-HTTPS_ONLY=(--proto '=https' --proto-redir '=https')
+# Every download goes through here: https only, redirects included, so a panel
+# variable pointing at plain http fails the install rather than fetching over it.
+fetch() {
+  curl -sSL --proto '=https' --proto-redir '=https' --fail -o "$1" "$2"
+}
 
 cd /mnt/server
 
 echo "Downloading the Nimbus release..."
-curl -sSL "${HTTPS_ONLY[@]}" --fail -o /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
+fetch /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
 rm -rf /tmp/nimbus && mkdir -p /tmp/nimbus
 unzip -qo /tmp/nimbus.zip -d /tmp/nimbus
 REGISTRY_DIR=$(find /tmp/nimbus -type d -name "Nimbus.Registry" | head -1)
