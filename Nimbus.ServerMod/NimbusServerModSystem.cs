@@ -79,7 +79,8 @@ public sealed class NimbusServerModSystem : ModSystem
         try { stop?.Cancel(); } catch { }
         // No token on the drain: stop is already cancelled above, and the 2s deadline is
         // the only bound this wait may have. Cancelling it would skip the loop's teardown.
-        try { heartbeatTask?.Wait(TimeSpan.FromSeconds(2), CancellationToken.None); } catch { }
+        try { heartbeatTask?.Wait(TimeSpan.FromSeconds(2), CancellationToken.None); }
+        catch { /* the loop faulted or timed out; Dispose has nothing left to do about it */ }
         registry?.Dispose();
         stop?.Dispose();
     }
