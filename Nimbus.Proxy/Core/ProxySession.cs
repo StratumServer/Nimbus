@@ -228,12 +228,13 @@ internal sealed partial class ProxySession : IPlayer
         var server = currentBackend?.ToServerInfo();
         var evt = new PlayerChatEvent(this, server, message, groupId);
         // Off the pump: a slow handler must not stall the player's own traffic. Chat is observed,
-        // never gated, so nothing downstream waits on this.
+        // never gated, so nothing downstream waits on this. The token keeps a proxy that is
+        // already stopping from waking handlers for a line nobody can act on any more.
         _ = Task.Run(async () =>
         {
             try { await events.FireAsync(evt).ConfigureAwait(false); }
             catch { }
-        });
+        }, sessionStopToken);
     }
 
     // `landingOn` is the backend this session is about to be connected to, passed by the connect
@@ -401,14 +402,18 @@ internal sealed partial class ProxySession : IPlayer
             try
             {
                 var frame = DisconnectBuilder.BuildDisconnectFrame(reason);
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                // Two seconds to get the reason across, and never longer than the proxy itself
+                // lives: a shutdown must not sit out the full courtesy write for a player whose
+                // socket is going away regardless. RunAsync's finally closes what this skips.
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
+                cts.CancelAfter(TimeSpan.FromSeconds(2));
                 await clientStream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
                 await clientStream.FlushAsync(cts.Token).ConfigureAwait(false);
                 try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { }
             }
             catch { }
             finally { Close(); }
-        });
+        }, sessionStopToken);
     }
 
     // The reason a transfer to `target` is refused because of a ban, or null when it is allowed.

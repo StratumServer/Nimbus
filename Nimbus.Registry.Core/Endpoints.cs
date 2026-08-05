@@ -251,7 +251,10 @@ public static class Endpoints
     private static async Task<T?> ReadOptionalBodyAsync<T>(HttpContext ctx) where T : class
     {
         if (ctx.Request.ContentLength is null or 0) return null;
-        return await ctx.Request.ReadFromJsonAsync<T>();
+        // RequestAborted, not None: finishing the read for a caller that has already hung up
+        // buys nothing, and the handler above turns the cancellation into the same 400 a
+        // truncated body gets.
+        return await ctx.Request.ReadFromJsonAsync<T>(ctx.RequestAborted);
     }
 
     private static string NewReservationId()
