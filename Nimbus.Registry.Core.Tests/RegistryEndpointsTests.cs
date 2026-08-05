@@ -248,12 +248,12 @@ public class RegistryEndpointsTests
         Assert.Single(list!.Bans);
         Assert.Equal("griefer", list.Bans[0].PlayerName);
 
-        var lifted = await host.Client.SendAsync(
-            Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift?uid=uid-b1"));
+        var lifted = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift",
+            body: new { PlayerUid = "uid-b1" }));
         Assert.Equal(HttpStatusCode.OK, lifted.StatusCode);
 
-        var again = await host.Client.SendAsync(
-            Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift?uid=uid-b1"));
+        var again = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift",
+            body: new { PlayerUid = "uid-b1" }));
         Assert.Equal(HttpStatusCode.NotFound, again.StatusCode);
 
         var empty = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/bans"));
@@ -280,13 +280,48 @@ public class RegistryEndpointsTests
             body: new { PlayerUid = "uid-b3", ServerId = "creative" }));
 
         // Lifting without a scope targets the network-wide entry, which does not exist here.
-        var wrongScope = await host.Client.SendAsync(
-            Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift?uid=uid-b3"));
+        var wrongScope = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift",
+            body: new { PlayerUid = "uid-b3" }));
         Assert.Equal(HttpStatusCode.NotFound, wrongScope.StatusCode);
 
-        var rightScope = await host.Client.SendAsync(
-            Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift?uid=uid-b3&server=creative"));
+        var rightScope = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift",
+            body: new { PlayerUid = "uid-b3", ServerId = "creative" }));
         Assert.Equal(HttpStatusCode.OK, rightScope.StatusCode);
+    }
+
+    // Deprecated path, kept covered on purpose: a proxy built before the arguments moved into
+    // the body sends no body at all, and must keep working against a newer registry.
+    [Fact]
+    public async Task BanLift_WithNoBody_FallsBackToTheQuery()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-b5", ServerId = "creative" }));
+
+        var lifted = await host.Client.SendAsync(
+            Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift?uid=uid-b5&server=creative"));
+
+        Assert.Equal(HttpStatusCode.OK, lifted.StatusCode);
+    }
+
+    // The query is outside the signed material, so an on-path attacker can rewrite it on a
+    // request already in flight. The body decides, and the rewritten query buys nothing.
+    [Fact]
+    public async Task BanLift_IgnoresAQueryThatContradictsTheBody()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-asked" }));
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-tampered" }));
+
+        var lifted = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl,
+            "/api/bans/lift?uid=uid-tampered", body: new { PlayerUid = "uid-asked" }));
+        Assert.Equal(HttpStatusCode.OK, lifted.StatusCode);
+
+        var listed = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/bans"));
+        var left = Assert.Single((await listed.Content.ReadFromJsonAsync<BanListResponse>())!.Bans);
+        Assert.Equal("uid-tampered", left.PlayerUid);
     }
 
     [Fact]
@@ -328,12 +363,12 @@ public class RegistryEndpointsTests
         Assert.Single(list!.Entries);
         Assert.Equal("builder", list.Entries[0].PlayerName);
 
-        var removed = await host.Client.SendAsync(
-            Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove?uid=uid-w1"));
+        var removed = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove",
+            body: new { PlayerUid = "uid-w1" }));
         Assert.Equal(HttpStatusCode.OK, removed.StatusCode);
 
-        var again = await host.Client.SendAsync(
-            Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove?uid=uid-w1"));
+        var again = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove",
+            body: new { PlayerUid = "uid-w1" }));
         Assert.Equal(HttpStatusCode.NotFound, again.StatusCode);
 
         var empty = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/whitelist"));
@@ -368,13 +403,48 @@ public class RegistryEndpointsTests
         Assert.False(scoped.Covers(""));
 
         // Removing without the scope targets the network-wide entry, which does not exist here.
-        var wrongScope = await host.Client.SendAsync(
-            Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove?uid=uid-w3"));
+        var wrongScope = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove",
+            body: new { PlayerUid = "uid-w3" }));
         Assert.Equal(HttpStatusCode.NotFound, wrongScope.StatusCode);
 
-        var rightScope = await host.Client.SendAsync(
-            Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove?uid=uid-w3&server=staff"));
+        var rightScope = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove",
+            body: new { PlayerUid = "uid-w3", ServerId = "staff" }));
         Assert.Equal(HttpStatusCode.OK, rightScope.StatusCode);
+    }
+
+    // Deprecated path, kept covered on purpose: see BanLift_WithNoBody_FallsBackToTheQuery.
+    [Fact]
+    public async Task WhitelistRemove_WithNoBody_FallsBackToTheQuery()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist",
+            body: new { PlayerUid = "uid-w5", ServerId = "staff" }));
+
+        var removed = await host.Client.SendAsync(
+            Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove?uid=uid-w5&server=staff"));
+
+        Assert.Equal(HttpStatusCode.OK, removed.StatusCode);
+    }
+
+    // Same tamper case as BanLift_IgnoresAQueryThatContradictsTheBody: the query is unsigned,
+    // so it never gets to choose the entry.
+    [Fact]
+    public async Task WhitelistRemove_IgnoresAQueryThatContradictsTheBody()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist",
+            body: new { PlayerUid = "uid-asked", ServerId = "staff" }));
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist",
+            body: new { PlayerUid = "uid-tampered", ServerId = "staff" }));
+
+        var removed = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl,
+            "/api/whitelist/remove?uid=uid-tampered&server=staff",
+            body: new { PlayerUid = "uid-asked", ServerId = "staff" }));
+        Assert.Equal(HttpStatusCode.OK, removed.StatusCode);
+
+        var listed = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/whitelist"));
+        var left = Assert.Single((await listed.Content.ReadFromJsonAsync<WhitelistListResponse>())!.Entries);
+        Assert.Equal("uid-tampered", left.PlayerUid);
     }
 
     [Fact]
