@@ -7,7 +7,7 @@ set -euo pipefail
 apt-get update -qq && apt-get install -y -qq curl unzip > /dev/null
 
 VS_VERSION="${VS_VERSION:-1.22.6}"
-NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.3.0/Nimbus-v0.3.0.zip}"
+NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.4.0/Nimbus-v0.4.0.zip}"
 
 # Every download goes through here: https only, redirects included, so a panel
 # variable pointing at plain http fails the install rather than fetching over it.
