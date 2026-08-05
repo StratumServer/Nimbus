@@ -88,7 +88,7 @@ public class ReservationGatingScenarios : AtlasScenarioBase
         using var registry = new FakeRegistry(Secret); // no reservation scripted
         await NimbusHarness.ConfigureAsync(World, registry.Url, Secret, reservationRequired: true);
 
-        ITestPlayer bob;
+        ITestPlayer? bob = null;
         try
         {
             bob = await World.JoinPlayer("bob");
@@ -97,10 +97,13 @@ public class ReservationGatingScenarios : AtlasScenarioBase
         {
             // The kick can land while the join handshake is still in flight; a failed
             // join IS the expected outcome then.
-            return;
         }
 
-        await World.Until(() => !bob.IsConnected, timeoutTicks: 300);
+        if (bob != null) await World.Until(() => !bob.IsConnected, timeoutTicks: 300);
+
+        // Both paths pin the same end state, so assert it rather than the path taken.
+        Assert.False(bob is { IsConnected: true },
+            "a player without a reservation must not stay connected when gating is required");
     }
 
     [AtlasScenario]
@@ -168,16 +171,21 @@ public class ReservationGatingScenarios : AtlasScenarioBase
         bool kicked = false;
         World.Api.Event.PlayerDisconnect += p => { if (p.PlayerName == "frank") kicked = true; };
 
+        bool kickedDuringHandshake = false;
         try
         {
             await World.JoinPlayer("frank");
         }
         catch (AtlasSetupException)
         {
-            return; // kick landed during the join handshake; that is the expected outcome
+            kickedDuringHandshake = true; // kick landed during the join handshake
         }
 
-        await World.Until(() => kicked, timeoutTicks: 300);
+        if (!kickedDuringHandshake) await World.Until(() => kicked, timeoutTicks: 300);
+
+        // A kick during the handshake and a kick right after it are the same verdict here.
+        Assert.True(kicked || kickedDuringHandshake,
+            "a fail-closed backend must disconnect a player it could not vouch for");
     }
 
     [AtlasScenario]
