@@ -364,8 +364,9 @@ public sealed class NimbusServerModSystem : ModSystem
     private void KickForReservation(IServerPlayer player)
     {
         const string reason = "Direct connections are not permitted. Please connect via the Nimbus proxy.";
-        // CheckForwardingAsync resumes on a thread-pool thread (Task.Run + ConfigureAwait(false));
-        // the server API is not safe to call off the game thread, so hand the kick back.
+        // CheckForwardingAsync resumes on a thread-pool thread, since it runs under Task.Run and
+        // awaits with ConfigureAwait false. The server API is not safe to call off the game
+        // thread, so hand the kick back.
         api?.Event.EnqueueMainThreadTask(() =>
         {
             // The player may have quit on their own between the check and this callback, in which

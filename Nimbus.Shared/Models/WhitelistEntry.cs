@@ -4,9 +4,9 @@ namespace Nimbus.Shared.Models;
 // not come in, an entry here says who may. Same shape on purpose, keyed on PlayerUid because
 // names change and uids do not.
 //
-// The list on its own decides nothing. Enforcement is a proxy-side switch ([whitelist] in
-// nimbus.proxy.toml), so an entry sitting in the registry while enforcement is off costs
-// nobody anything.
+// The list on its own decides nothing. Enforcement is a proxy-side toggle, the [whitelist]
+// section of nimbus.proxy.toml, so an entry sitting in the registry while enforcement is off
+// costs nobody anything.
 public sealed class WhitelistEntry
 {
     public string PlayerUid { get; set; } = "";
@@ -30,9 +30,9 @@ public sealed class WhitelistEntry
     public bool IsActiveAt(long nowUnix)
         => ExpiresAtUnix <= 0 || nowUnix < ExpiresAtUnix;
 
-    // True when this entry covers the given backend. A network-wide entry covers every backend;
-    // a scoped one only its own. An empty serverId asks "is the network itself covered", which
-    // is all a backend with no ServerId can be asked about.
+    // True when this entry covers the given backend. A network-wide entry covers every backend,
+    // a scoped one only its own. An empty serverId asks whether the network itself is covered,
+    // which is all a backend with no ServerId can be asked about.
     public bool Covers(string? serverId)
         => IsNetworkWide || string.Equals(ServerId, serverId, StringComparison.OrdinalIgnoreCase);
 }
