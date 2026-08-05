@@ -52,9 +52,12 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
     {
         if (embeddedHost != null)
         {
+            // The proxy is on its way out and the embedded registry dies with the process. Two
+            // seconds to drain in-flight heartbeats, then it goes down the hard way; neither step
+            // has a caller left to report to.
             using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            try { await embeddedHost.StopAsync(stopCts.Token).ConfigureAwait(false); } catch { }
-            try { await embeddedHost.DisposeAsync().ConfigureAwait(false); } catch { }
+            try { await embeddedHost.StopAsync(stopCts.Token).ConfigureAwait(false); } catch { /* drain timed out */ }
+            try { await embeddedHost.DisposeAsync().ConfigureAwait(false); } catch { /* half-stopped host */ }
         }
 
         if (Client is IDisposable disposable)

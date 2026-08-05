@@ -52,10 +52,10 @@ public sealed class RegistrySweeper : BackgroundService
         WhitelistStore whitelist, ILogger<RegistrySweeper> log)
     { _backends = b; _reservations = r; _intents = i; _nonces = n; _bans = bans; _whitelist = whitelist; _log = log; }
 
-    protected override async Task ExecuteAsync(CancellationToken stop)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var period = TimeSpan.FromSeconds(15);
-        while (!stop.IsCancellationRequested)
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
@@ -72,7 +72,9 @@ public sealed class RegistrySweeper : BackgroundService
             {
                 _log.LogError(ex, "sweep failed");
             }
-            try { await Task.Delay(period, stop); } catch (TaskCanceledException) { }
+            // Host shutdown cancels the wait, and the loop condition above reads the same token
+            // on the next pass, so this exits on its own without the cancellation going anywhere.
+            try { await Task.Delay(period, stoppingToken); } catch (TaskCanceledException) { /* shutting down */ }
         }
     }
 }

@@ -12,6 +12,9 @@ RUNTIME_IMAGE = {".NET 10": "ghcr.io/parkervcp/yolks:dotnet_10"}
 # carries the apt tooling the install-*.sh sources expect.
 INSTALL_IMAGE = "ghcr.io/parkervcp/installers:debian"
 RELEASE_URL = "https://github.com/StratumServer/Nimbus/releases/download/v0.4.0/Nimbus-v0.4.0.zip"
+# All three eggs expose the download URL under the same panel-variable name; the description
+# differs because each one installs a different folder out of the zip.
+RELEASE_URL_VAR = "Nimbus release URL"
 
 def var(name, description, env, default, rules="required|string", field_type="text"):
     return {
@@ -83,7 +86,7 @@ eggs = {
                 var("Vintage Story version",
                     "Game version to install, from the stable CDN (must be 1.19 or newer for Nimbus).",
                     "VS_VERSION", "1.22.6", "required|string|max:20"),
-                var("Nimbus release URL",
+                var(RELEASE_URL_VAR,
                     "Download URL of the Nimbus release zip; the Nimbus.ServerMod folder inside it is installed as a mod.",
                     "NIMBUS_DOWNLOAD_URL", RELEASE_URL),
                 var("Nimbus server id",
@@ -110,7 +113,7 @@ eggs = {
         install_script="install-nimbus-proxy.sh",
         install_container=INSTALL_IMAGE,
         variables=[
-            var("Nimbus release URL",
+            var(RELEASE_URL_VAR,
                 "Download URL of the Nimbus release zip; the proxy bundle inside it is installed.",
                 "NIMBUS_DOWNLOAD_URL", RELEASE_URL),
             var("Default backend",
@@ -132,7 +135,7 @@ eggs = {
         install_script="install-nimbus-registry.sh",
         install_container=INSTALL_IMAGE,
         variables=[
-            var("Nimbus release URL",
+            var(RELEASE_URL_VAR,
                 "Download URL of the Nimbus release zip (v0.2.0 or newer); the registry bundle inside it is installed.",
                 "NIMBUS_DOWNLOAD_URL", RELEASE_URL),
             shared_secret_var("Backends and proxies authenticate against this registry with it."),

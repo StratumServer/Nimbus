@@ -91,10 +91,15 @@ internal sealed class AdminListener
                 await writer.WriteLineAsync(response).ConfigureAwait(false);
             }
         }
-        catch (Exception ex) when (ex is IOException or OperationCanceledException) { }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException)
+        {
+            // An admin client that hangs up mid-command and a proxy that is shutting down both
+            // land here. Both are the normal end of this loop, not something to report; anything
+            // else is left to propagate to the accept loop, which logs it.
+        }
         finally
         {
-            try { client.Close(); } catch { }
+            try { client.Close(); } catch { /* the admin client usually closed it first */ }
             Log.Info($"admin client {remote} disconnected");
         }
     }

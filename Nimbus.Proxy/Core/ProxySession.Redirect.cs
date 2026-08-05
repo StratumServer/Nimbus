@@ -89,7 +89,7 @@ internal sealed partial class ProxySession
 
         // 250ms is enough for the client to process the in-flight packet and start its own
         // disconnect before we tear the sockets down.
-        try { await Task.Delay(250, sessionStopToken).ConfigureAwait(false); } catch { }
+        try { await Task.Delay(250, sessionStopToken).ConfigureAwait(false); } catch { /* proxy stopping: the client gets its packet or it does not */ }
         Close();
         ProxyMetrics.RedirectSucceeded();
         var fromId = currentBackend != null ? (currentBackend.ServerId ?? currentBackend.ToString()) : "?";
@@ -97,8 +97,10 @@ internal sealed partial class ProxySession
         if (events != null)
         {
             var from = currentBackend?.ToServerInfo();
+            // The redirect packet is already on the wire and the session is closed. This is a
+            // notification about something that happened, not a step that can still be undone.
             try { await events.FireAsync(new PlayerTransferredEvent(this, from, target.ToServerInfo(), "redirect")).ConfigureAwait(false); }
-            catch { }
+            catch { /* the transfer stands whatever the handler thinks of it */ }
         }
         return null;
     }

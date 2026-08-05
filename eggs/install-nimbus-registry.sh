@@ -23,7 +23,7 @@ fetch /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
 rm -rf /tmp/nimbus && mkdir -p /tmp/nimbus
 unzip -qo /tmp/nimbus.zip -d /tmp/nimbus
 REGISTRY_DIR=$(find /tmp/nimbus -type d -name "Nimbus.Registry" | head -1)
-if [ -z "${REGISTRY_DIR}" ]; then
+if [[ -z "${REGISTRY_DIR}" ]]; then
   echo "Nimbus.Registry folder not found in the release zip (needs v0.2.0 or newer)" >&2
   exit 1
 fi
@@ -33,7 +33,7 @@ rm -rf /tmp/nimbus /tmp/nimbus.zip
 # The registry reads nimbus.registry.toml next to the binary. Written once here from the
 # egg variables (Wings has no TOML parser, so panel-variable changes need a reinstall or
 # a manual edit of this file).
-if [ ! -f nimbus.registry.toml ]; then
+if [[ ! -f nimbus.registry.toml ]]; then
   cat > nimbus.registry.toml <<EOF
 bind_url = "http://0.0.0.0:${SERVER_PORT:-8765}"
 shared_secret = "${NIMBUS_SHARED_SECRET:-change-me-and-keep-secret}"

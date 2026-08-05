@@ -59,13 +59,17 @@ internal sealed class WhitelistCache
         return null;
     }
 
-    public async Task RefreshAsync()
+    // True when the registry answered and this list is now its answer. False means the list below
+    // is whatever it was before, which matters to callers that just changed the registry and are
+    // about to act on the result: see WhitelistRemoveCommand.
+    public async Task<bool> RefreshAsync()
     {
-        if (registry == null) return;
+        if (registry == null) return false;
         var fetched = await registry.GetWhitelistAsync(stopToken).ConfigureAwait(false);
-        if (fetched == null) return;  // registry error: keep the previous list
+        if (fetched == null) return false;  // registry error: keep the previous list
         entries = fetched.ToArray();
         synced = true;
+        return true;
     }
 
     public async Task RunAsync()

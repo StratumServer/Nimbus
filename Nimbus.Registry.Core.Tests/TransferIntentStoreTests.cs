@@ -18,7 +18,9 @@ public class TransferIntentStoreTests
         SourceServerId = "hub",
         TargetServerId = "backend-1",
         TtlSeconds = ttl,
-        ClientTransferId = clientTransferId,
+        // Both of these are non-nullable on the request; the optional parameters exist so a test
+        // can say "not set", which on the wire is the empty string, not null.
+        ClientTransferId = clientTransferId ?? "",
         Mode = mode ?? "",
     };
 

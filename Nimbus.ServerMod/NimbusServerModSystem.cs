@@ -76,7 +76,7 @@ public sealed class NimbusServerModSystem : ModSystem
 
     public override void Dispose()
     {
-        try { stop?.Cancel(); } catch { }
+        try { stop?.Cancel(); } catch { /* already disposed by an earlier Dispose */ }
         // No token on the drain: stop is already cancelled above, and the 2s deadline is
         // the only bound this wait may have. Cancelling it would skip the loop's teardown.
         try { heartbeatTask?.Wait(TimeSpan.FromSeconds(2), CancellationToken.None); }
@@ -364,12 +364,15 @@ public sealed class NimbusServerModSystem : ModSystem
     private void KickForReservation(IServerPlayer player)
     {
         const string reason = "Direct connections are not permitted. Please connect via the Nimbus proxy.";
-        // CheckForwardingAsync resumes on a thread-pool thread (Task.Run + ConfigureAwait(false));
-        // the server API is not safe to call off the game thread, so hand the kick back.
+        // CheckForwardingAsync resumes on a thread-pool thread, since it runs under Task.Run and
+        // awaits with ConfigureAwait false. The server API is not safe to call off the game
+        // thread, so hand the kick back.
         api?.Event.EnqueueMainThreadTask(() =>
         {
-            try { player.SendMessage(0, reason, EnumChatType.Notification); } catch { }
-            try { player.Disconnect(reason); } catch { }
+            // The player may have quit on their own between the check and this callback, in which
+            // case both calls throw on a half-cleaned player object and the kick is moot.
+            try { player.SendMessage(0, reason, EnumChatType.Notification); } catch { /* already gone */ }
+            try { player.Disconnect(reason); } catch { /* already gone */ }
         }, "nimbus-reservation-kick");
     }
 

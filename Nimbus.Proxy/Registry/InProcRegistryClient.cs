@@ -55,7 +55,8 @@ internal sealed class InProcRegistryClient : IRegistryClient
         }
 
         // No matching whitelist check here, on purpose: whether coverage is required at all is a
-        // proxy-side switch ([whitelist] in nimbus.proxy.toml) the registry never sees.
+        // proxy-side toggle, the [whitelist] section of nimbus.proxy.toml, which the registry
+        // never sees.
 
         int ttl = cfg.ReservationTtlSeconds;
         if (ttl <= 0) ttl = 60;

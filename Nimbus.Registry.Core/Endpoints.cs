@@ -171,7 +171,7 @@ public static class Endpoints
 
         // Network whitelist. Same storage shape as the bans above, read the other way round:
         // an entry says a player may come in. Whether that is required at all is a proxy-side
-        // switch ([whitelist] in nimbus.proxy.toml), so nothing here refuses anything.
+        // toggle, the [whitelist] section of nimbus.proxy.toml, so nothing here refuses anything.
         app.MapPost("/api/whitelist", async (HttpContext ctx, WhitelistStore whitelist, TimeProvider clock) =>
         {
             WhitelistRequest? req;
@@ -251,7 +251,10 @@ public static class Endpoints
     private static async Task<T?> ReadOptionalBodyAsync<T>(HttpContext ctx) where T : class
     {
         if (ctx.Request.ContentLength is null or 0) return null;
-        return await ctx.Request.ReadFromJsonAsync<T>();
+        // RequestAborted, not None: finishing the read for a caller that has already hung up
+        // buys nothing, and the handler above turns the cancellation into the same 400 a
+        // truncated body gets.
+        return await ctx.Request.ReadFromJsonAsync<T>(ctx.RequestAborted);
     }
 
     private static string NewReservationId()

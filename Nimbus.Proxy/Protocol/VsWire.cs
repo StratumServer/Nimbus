@@ -5,14 +5,14 @@ namespace Nimbus.Proxy;
 // Shared Vintage Story wire-format primitives. One home for the two things every
 // protocol class was hand-rolling separately:
 //
-//   * the VS TCP frame header: 4 big-endian bytes, bit 31 = zlib-compressed flag,
-//     bits 30..0 = payload length;
+//   * the VS TCP frame header, four big-endian bytes, where bit 31 carries the
+//     zlib-compressed flag and bits 30 down to 0 carry the payload length
 //   * minimal protobuf writing (varints, tags, length-delimited fields), enough to
-//     forge the handful of vanilla packets the proxy fabricates;
+//     forge the handful of vanilla packets the proxy fabricates
 //   * minimal protobuf reading (varints, field skipping, nested-field lookup), enough
-//     for the parsers that pull player identity and chat text out of sniffed frames.
+//     for the parsers that pull player identity and chat text out of sniffed frames
 //
-// Byte-for-byte identical to the previous per-class implementations; the wire tests
+// Byte-for-byte identical to the previous per-class implementations. The wire tests
 // in Nimbus.Proxy.Tests decode the produced frames with an independent reader.
 internal static class VsWire
 {

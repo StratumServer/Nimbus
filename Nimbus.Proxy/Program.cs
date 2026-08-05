@@ -66,7 +66,9 @@ internal static class Program
         if (!File.Exists(path) && File.Exists(jsonSibling))
         {
             try { File.Move(jsonSibling, jsonSibling + ".obsolete", overwrite: true); Log.Warn($"renamed legacy {jsonSibling} -> {jsonSibling}.obsolete"); }
-            catch { }
+            catch { /* a read-only install directory keeps the stale file, which is inert:
+                       LoadOrCreate only reads the .json sibling when the .toml is missing, and
+                       the next line writes one */ }
         }
         bool existed = File.Exists(path);
         var cfg = TomlConfig.LoadOrCreate<ProxyConfig>(path);
