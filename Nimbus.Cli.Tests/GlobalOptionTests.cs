@@ -60,34 +60,46 @@ public class GlobalOptionTests
     }
 
     [Fact]
-    public void TheGlobalHostAndPortFlags_AreConsumedWhereverTheyAppear()
+    public void TheGlobalFlagsStopAtTheVerb_LeavingWhatFollowsToTheCommand()
     {
-        // Including after the verb, which is where `swap` documents its own --host and --port.
-        // The two spellings collide: this command line points nimctl's own connection at the
-        // backend and then leaves swap with no target to send anyone to.
+        // Which is where `swap` documents its own --host and --port. Both spellings used to be the
+        // same one and the connection side won every time; parsing now stops at `swap`, so these
+        // two flags are the backend's and nimctl still talks to the proxy it was already using.
         var parsed = Parse("swap", "3", "--host", "10.0.0.5", "--port", "42421");
 
-        Assert.Equal("10.0.0.5", parsed.Host);
-        Assert.Equal(42421, parsed.Port);
-        Assert.Equal(new[] { "swap", "3" }, parsed.Command);
+        Assert.Equal("127.0.0.1", parsed.Host);
+        Assert.Equal(42499, parsed.Port);
+        Assert.Equal(new[] { "swap", "3", "--host", "10.0.0.5", "--port", "42421" }, parsed.Command);
     }
 
     [Fact]
-    public void TheDocumentedSwapToAHostAndPort_CannotBeTypedToday()
+    public void TheDocumentedSwapToAHostAndPort_ReachesTheBackendItNames()
     {
-        // `nimctl --help` line 2 of swap advertises `swap <id> --host <h> --port <p>`, but
-        // ParseGlobalOptions takes both flags before BuildPayload ever sees them. Walking the two
-        // steps in the order Main does is the only way to see what an operator actually gets.
+        // `nimctl --help` line 2 of swap advertises `swap <id> --host <h> --port <p>`. Walking the
+        // two steps in the order Main does is the only way to see what an operator actually gets,
+        // and what they get now is the frame the help promised.
         var parsed = Parse("swap", "3", "--host", "10.0.0.5", "--port", "42421");
-        var refused = Assert.Throws<ArgumentException>(() => Program.BuildPayload(parsed.Command));
 
-        Assert.Equal("swap requires either --server <id> or both --host and --port", refused.Message);
+        Assert.Equal("""{"cmd":"swap","id":3,"host":"10.0.0.5","port":42421}""",
+            Program.Serialize(Program.BuildPayload(parsed.Command)));
 
-        // Worse than the refusal is what it did on the way there: nimctl is now pointed at the
-        // backend the operator meant to send the player to. Pinned rather than fixed here because
-        // choosing which of the two spellings wins is a behaviour change, not a test.
-        Assert.Equal("10.0.0.5", parsed.Host);
-        Assert.Equal(42421, parsed.Port);
+        // And nothing on the way there moved nimctl's own admin connection onto the backend the
+        // player is being sent to, which is what used to happen before the refusal landed.
+        Assert.Equal("127.0.0.1", parsed.Host);
+        Assert.Equal(42499, parsed.Port);
+    }
+
+    [Fact]
+    public void AConnectionFlagBeforeTheVerb_StandsWhileSwapNamesADifferentBackend()
+    {
+        // The one command line where both meanings are typed at once. The proxy being administered
+        // and the backend the player lands on are different machines and have to stay that way.
+        var parsed = Parse("--host", "10.9.9.9", "--port", "42500", "swap", "3", "--host", "10.0.0.5", "--port", "42421");
+
+        Assert.Equal("10.9.9.9", parsed.Host);
+        Assert.Equal(42500, parsed.Port);
+        Assert.Equal("""{"cmd":"swap","id":3,"host":"10.0.0.5","port":42421}""",
+            Program.Serialize(Program.BuildPayload(parsed.Command)));
     }
 
     [Fact]
@@ -99,6 +111,93 @@ public class GlobalOptionTests
 
         Assert.Equal("127.0.0.1", parsed.Host);
         Assert.Equal(new[] { "ping", "--host" }, parsed.Command);
+    }
+
+    [Fact]
+    public void ANonNumericPortFlag_IsRefusedTheWayADurationIs()
+    {
+        // int.Parse used to throw FormatException out of a Main that had not entered its try yet,
+        // so the operator got a stack trace for a typo.
+        var refused = Assert.Throws<ArgumentException>(() => Parse("--port", "forty-two", "ping"));
+
+        Assert.Equal("--port takes a port number", refused.Message);
+    }
+
+    // ---- connection flags typed after the verb ----
+
+    [Fact]
+    public void ConnectionFlagsAfterAVerbThatHasNone_AreRefusedWithTheLineToTypeInstead()
+    {
+        // The invocation somebody has in their shell history. It used to work by accident; now it
+        // has to say so, because the silent reading of it would be a command sent to the wrong
+        // proxy, and `list` against the default host looks like a perfectly normal answer.
+        var refused = Assert.Throws<ArgumentException>(
+            () => Program.RejectMisplacedConnectionFlags(["list", "--host", "10.0.0.5", "--port", "42499"]));
+
+        Assert.Equal(
+            "connection flags go before the command, not after it: "
+            + "nimctl --host 10.0.0.5 --port 42499 list ...",
+            refused.Message);
+    }
+
+    [Fact]
+    public void TheCorrectionIsOfferedUnderTheAliasThatWasTyped()
+    {
+        // Retyping it is the whole point, so the line handed back is the operator's own.
+        var refused = Assert.Throws<ArgumentException>(
+            () => Program.RejectMisplacedConnectionFlags(["ls", "--host", "10.0.0.5"]));
+
+        Assert.Equal(
+            "connection flags go before the command, not after it: nimctl --host 10.0.0.5 ls ...",
+            refused.Message);
+    }
+
+    [Fact]
+    public void ASecretAfterTheVerb_IsRefusedWithoutRepeatingTheSecret()
+    {
+        // No verb takes a --secret, so this one is misplaced even on swap. The value is not echoed:
+        // the message goes to stderr and from there into scrollback and CI logs.
+        var refused = Assert.Throws<ArgumentException>(
+            () => Program.RejectMisplacedConnectionFlags(["swap", "3", "--server", "creative", "--secret", "hunter2"]));
+
+        Assert.Equal(
+            "connection flags go before the command, not after it: nimctl --secret <secret> swap ...",
+            refused.Message);
+        Assert.DoesNotContain("hunter2", refused.Message);
+    }
+
+    [Fact]
+    public void SwapKeepsItsOwnHostAndPort()
+    {
+        // Under every spelling of the verb, since the guard reads the normalised name.
+        Program.RejectMisplacedConnectionFlags(["swap", "3", "--host", "10.0.0.5", "--port", "42421"]);
+        Program.RejectMisplacedConnectionFlags(["transfer", "3", "--host", "10.0.0.5", "--port", "42421"]);
+        Program.RejectMisplacedConnectionFlags(["send", "3", "--host", "10.0.0.5", "--port", "42421"]);
+    }
+
+    [Theory]
+    [InlineData("ping")]
+    [InlineData("list")]
+    [InlineData("bans")]
+    [InlineData("whitelist", "list")]
+    [InlineData("ban", "--uid", "uid-1", "--reason", "griefing")]
+    [InlineData("drain", "creative")]
+    [InlineData("raw", """{"cmd":"ping"}""")]
+    public void ACommandWithNoConnectionFlagInIt_IsLeftAlone(params string[] args)
+    {
+        Program.RejectMisplacedConnectionFlags(args.ToList());
+    }
+
+    [Fact]
+    public void AGlobalFlagWithNoValueAtAll_StillReadsAsAnUnknownCommand()
+    {
+        // `nimctl --host` puts --host in the verb's slot, and the guard skips that slot rather than
+        // handing back a correction that repeats the nonsense back at the operator.
+        var parsed = Parse("--host");
+
+        Program.RejectMisplacedConnectionFlags(parsed.Command);
+        Assert.Equal("unknown command: --host",
+            Assert.Throws<ArgumentException>(() => Program.BuildPayload(parsed.Command)).Message);
     }
 
     [Fact]
