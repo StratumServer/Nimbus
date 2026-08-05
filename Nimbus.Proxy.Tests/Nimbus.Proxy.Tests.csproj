@@ -15,6 +15,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- HttpRegistryClientTests boots a real registry on a loopback port to talk to. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Nimbus.Proxy\Nimbus.Proxy.csproj" />
+    <ProjectReference Include="..\Nimbus.Registry.Core\Nimbus.Registry.Core.csproj" />
   </ItemGroup>
 </Project>
