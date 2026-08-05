@@ -8,4 +8,8 @@
     <AssemblyName>nimctl</AssemblyName>
     <Configurations>Debug;Release;PerfTest</Configurations>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Nimbus.Cli.Tests" />
+  </ItemGroup>
 </Project>

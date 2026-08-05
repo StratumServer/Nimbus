@@ -10,4 +10,5 @@
   <Project Path="Nimbus.Proxy/Nimbus.Proxy.csproj" />
   <Project Path="Nimbus.Proxy.Tests/Nimbus.Proxy.Tests.csproj" />
   <Project Path="Nimbus.Cli/Nimbus.Cli.csproj" />
+  <Project Path="Nimbus.Cli.Tests/Nimbus.Cli.Tests.csproj" />
 </Solution>
