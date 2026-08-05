@@ -60,7 +60,7 @@ internal sealed class ProxyListener
             _ = Task.Run(() => Bans.RunAsync(), stopToken);
         }
         var statusResponder = new ServerStatusResponder(cfg, Registry, () => Sessions.Count, stopToken);
-        var sessionRunner = new ClientSessionRunner(Router, Events, statusResponder, Stickies, cfg, stopToken);
+        var sessionRunner = new ClientSessionRunner(Router, Events, statusResponder, Stickies, cfg, stopToken, Bans);
 
         try
         {
