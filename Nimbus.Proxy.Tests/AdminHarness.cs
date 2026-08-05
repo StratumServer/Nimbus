@@ -148,7 +148,7 @@ internal sealed class AdminHarness : IAsyncDisposable
         Assert.Fail($"the admin socket never came up on 127.0.0.1:{Port}");
     }
 
-    private static async Task WaitFor(Func<bool> condition, string message, int millis = 8000)
+    internal static async Task WaitFor(Func<bool> condition, string message, int millis = 8000)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(millis);
         while (DateTime.UtcNow < deadline)

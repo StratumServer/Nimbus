@@ -40,15 +40,29 @@ internal sealed class FakeRegistryClient : IRegistryClient
     /// <summary>Backends ResolveByServerIdAsync knows about, keyed by serverId.</summary>
     public Dictionary<string, BackendSnapshot> Backends = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>How many times a target has been resolved. Zero after an intent was handled tells
+    /// a test the intent was dropped before the dispatcher went looking for a backend.</summary>
+    public int Resolves;
+
     public Task<NetworkSnapshot?> GetServersAsync(CancellationToken ct, bool forceRefresh = false)
         => Throw
             ? throw new InvalidOperationException("registry down")
             : Task.FromResult(Snapshot);
 
+    /// <summary>Every mint this client was asked for, oldest first. A transfer that reached the
+    /// registry left a record here, which is how the dispatcher tests tell a session that was
+    /// actually moved from one that was only looked at.</summary>
+    public readonly List<MintCall> Mints = new();
+
+    internal sealed record MintCall(string PlayerUid, string PlayerName, string TargetServerId,
+        string? Reason, string? ClientTransferId);
+
     public Task<TransferReservation?> MintReservationAsync(string playerUid, string playerName,
         string targetServerId, string? reason, CancellationToken ct,
         string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null)
-        => Task.FromResult<TransferReservation?>(new TransferReservation
+    {
+        lock (Mints) Mints.Add(new MintCall(playerUid, playerName, targetServerId, reason, clientTransferId));
+        return Task.FromResult<TransferReservation?>(new TransferReservation
         {
             Id = "fake-reservation",
             PlayerUid = playerUid,
@@ -56,9 +70,19 @@ internal sealed class FakeRegistryClient : IRegistryClient
             TargetServerId = targetServerId,
             ExpiresAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60,
         });
+    }
+
+    /// <summary>Snapshot of <see cref="Mints"/>, safe to read while the dispatcher is running.</summary>
+    public List<MintCall> MintsSoFar()
+    {
+        lock (Mints) return new List<MintCall>(Mints);
+    }
 
     public Task<BackendSnapshot?> ResolveByServerIdAsync(string serverId, CancellationToken ct)
-        => Task.FromResult(Backends.TryGetValue(serverId, out var b) ? b : null);
+    {
+        Interlocked.Increment(ref Resolves);
+        return Task.FromResult(Backends.TryGetValue(serverId, out var b) ? b : null);
+    }
 
     public Task<List<TransferIntent>> DrainTransferIntentsAsync(CancellationToken ct)
     {
