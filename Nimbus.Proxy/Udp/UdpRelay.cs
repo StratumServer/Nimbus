@@ -74,7 +74,7 @@ internal sealed class UdpRelay
         }
         finally
         {
-            try { inbound.Dispose(); } catch { }
+            try { inbound.Dispose(); } catch { /* the bind is being torn down anyway */ }
             foreach (var s in sessions.Values) s.Dispose();
             sessions.Clear();
             Log.Info("udp relay stopped");
@@ -118,7 +118,9 @@ internal sealed class UdpRelay
                     catch (Exception ex) { Log.Warn($"udp s->c send failed for {clientSrc}: {ex.Message}"); }
                 }
             }
-            catch { }
+            catch { /* the three socket exits above are the expected ones; anything else ends this
+                       one client's reply pump and nothing more, since the relay keeps serving the
+                       others and a new packet from this client rebuilds the session */ }
         }, stopToken);
 
         return sess;
@@ -158,6 +160,8 @@ internal sealed class UdpRelay
             LastActivityUtc = DateTime.UtcNow;
         }
 
-        public void Dispose() { try { Upstream.Dispose(); } catch { } }
+        // Called from the idle sweep, from a retarget, and from relay shutdown, so a session can
+        // be disposed more than once and the socket may already be gone.
+        public void Dispose() { try { Upstream.Dispose(); } catch { /* already disposed */ } }
     }
 }

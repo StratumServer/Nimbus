@@ -45,7 +45,9 @@ public static class TomlConfig
                     new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
                     ?? new T();
                 Save(tomlPath, value);
-                try { File.Move(jsonSibling, jsonSibling + ".migrated", overwrite: true); } catch { }
+                // The TOML is written and is what gets read from now on, so failing to rename the
+                // old JSON leaves a file nobody consults rather than a half-done migration.
+                try { File.Move(jsonSibling, jsonSibling + ".migrated", overwrite: true); } catch { /* stale but inert */ }
             }
             else
             {

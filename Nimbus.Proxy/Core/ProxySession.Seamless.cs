@@ -92,7 +92,9 @@ internal sealed partial class ProxySession
             catch (Exception ex)
             {
                 Log.Warn($"[s{Id}] seamless failed: could not reach {target}: {ex.Message}");
-                try { newUp.Close(); } catch { }
+                // The swap is abandoned and the player stays on the current upstream, which was
+                // never touched. All that is left is dropping the socket that failed to connect.
+                try { newUp.Close(); } catch { /* never connected, nothing to report */ }
                 swapping = false;
                 ProxyMetrics.SeamlessFailed();
                 return $"connect failed: {ex.Message}";
@@ -101,7 +103,7 @@ internal sealed partial class ProxySession
 
         if (!await TryWriteProxyProtocolAsync(newUp, target).ConfigureAwait(false))
         {
-            try { newUp.Close(); } catch { }
+            try { newUp.Close(); } catch { /* the header write already failed; the socket is done */ }
             swapping = false;
             ProxyMetrics.SeamlessFailed();
             return "proxy protocol header write failed";
@@ -114,15 +116,16 @@ internal sealed partial class ProxySession
         catch (Exception ex)
         {
             Log.Warn($"[s{Id}] seamless failed: write Identification: {ex.Message}");
-            try { newUp.Close(); } catch { }
+            try { newUp.Close(); } catch { /* the Identification write already failed; the socket is done */ }
             swapping = false;
             ProxyMetrics.SeamlessFailed();
             return $"write Identification failed: {ex.Message}";
         }
 
         // Wait for the old pumps to stop before the new backend writes to the client stream.
-        try { oldCts?.Cancel(); } catch { }
-        try { oldUpstream?.Close(); } catch { }
+        // Past this point the swap is committed, so the old side is torn down whatever it says.
+        try { oldCts?.Cancel(); } catch { /* the old pumps already stopped on their own */ }
+        try { oldUpstream?.Close(); } catch { /* the old backend already dropped the socket */ }
         try
         {
             var waitC2S = oldPumpC2S != null ? SafeAwait(oldPumpC2S) : Task.CompletedTask;
@@ -134,7 +137,7 @@ internal sealed partial class ProxySession
             if (completed != waitAll)
                 Log.Warn($"[s{Id}] seamless: old pumps did not exit within 5s; proceeding anyway (may cause stream corruption)");
         }
-        catch { }
+        catch { /* the wait itself failing is the same outcome as the timeout, already warned above */ }
 
         var previous = oldUpstream != null && currentBackend != null ? currentBackend.ToServerInfo() : null;
         upstream = newUp;
@@ -149,10 +152,12 @@ internal sealed partial class ProxySession
         Log.Info($"[s{Id}] {capturedPlayerName ?? "?"}: {prevId} → {target.ServerId ?? target.ToString()} (seamless, {sw.ElapsedMilliseconds}ms)");
         if (events != null)
         {
+            // The swap is done and the player is on the new backend. Both of these announce it;
+            // neither can refuse it, and one throwing must not cost the other its notification.
             try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
-            catch { }
+            catch { /* the player is on the new backend regardless */ }
             try { await events.FireAsync(new PlayerTransferredEvent(this, previous, target.ToServerInfo(), "seamless")).ConfigureAwait(false); }
-            catch { }
+            catch { /* same: the transfer already happened */ }
         }
         return null;
     }
