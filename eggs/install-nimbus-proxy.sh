@@ -21,7 +21,7 @@ fetch /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
 rm -rf /tmp/nimbus && mkdir -p /tmp/nimbus
 unzip -qo /tmp/nimbus.zip -d /tmp/nimbus
 PROXY_DIR=$(find /tmp/nimbus -type d -name "Nimbus" | head -1)
-if [ -z "${PROXY_DIR}" ]; then
+if [[ -z "${PROXY_DIR}" ]]; then
   echo "Nimbus proxy folder not found in the release zip" >&2
   exit 1
 fi
@@ -32,7 +32,7 @@ rm -rf /tmp/nimbus /tmp/nimbus.zip
 # variables (Wings has no TOML parser, so panel-variable changes need a reinstall or a
 # manual edit of this file). The backend pool below is a starter: real networks edit
 # [servers] and try directly.
-if [ ! -f nimbus.proxy.toml ]; then
+if [[ ! -f nimbus.proxy.toml ]]; then
   cat > nimbus.proxy.toml <<EOF
 bind = "0.0.0.0:${SERVER_PORT:-42420}"
 try = [ "default" ]

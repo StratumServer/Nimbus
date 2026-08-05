@@ -29,7 +29,7 @@ fetch /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
 rm -rf /tmp/nimbus && mkdir -p /tmp/nimbus
 unzip -qo /tmp/nimbus.zip -d /tmp/nimbus
 MOD_DIR=$(find /tmp/nimbus -type d -name "Nimbus.ServerMod" | head -1)
-if [ -z "${MOD_DIR}" ]; then
+if [[ -z "${MOD_DIR}" ]]; then
   echo "Nimbus.ServerMod folder not found in the release zip" >&2
   exit 1
 fi
@@ -39,7 +39,7 @@ rm -rf /tmp/nimbus /tmp/nimbus.zip
 
 # Initial mod config; the panel's file parser re-stamps these values on every boot,
 # so panel variables stay authoritative after the install.
-if [ ! -f data/ModConfig/nimbus-server.json ]; then
+if [[ ! -f data/ModConfig/nimbus-server.json ]]; then
   cat > data/ModConfig/nimbus-server.json <<EOF
 {
   "Enabled": true,
