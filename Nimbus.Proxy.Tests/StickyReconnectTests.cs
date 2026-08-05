@@ -78,7 +78,12 @@ public class StickyReconnectTests
         var second = new BackendEndpoint { Host = "127.0.0.1", Port = 2222, ServerId = "second" };
 
         stickies.Stage("uid-a", "203.0.113.7", first, StickyRouteTable.UidTtl, "a");
-        Thread.Sleep(5);
+        // The table stamps each entry from DateTime.UtcNow, so "oldest" only separates these two
+        // once the clock has moved between the stagings. Waiting for exactly that is precise; a
+        // fixed sleep would be a guess about the platform's timer resolution, long on the ones
+        // where it is fine and short on the ones where it is not.
+        var stagedFirstAt = DateTime.UtcNow;
+        SpinWait.SpinUntil(() => DateTime.UtcNow > stagedFirstAt);
         stickies.Stage("uid-b", "203.0.113.7", second, StickyRouteTable.UidTtl, "b");
 
         Assert.True(stickies.TryConsumeByClientIp("203.0.113.7", out var oldest));
