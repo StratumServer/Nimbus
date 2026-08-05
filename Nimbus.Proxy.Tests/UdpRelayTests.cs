@@ -113,7 +113,7 @@ public class UdpRelayTests
             return default;
         }
 
-        public Task ReplyAsync(IPEndPoint to, string payload)
+        public Task<int> ReplyAsync(IPEndPoint to, string payload)
             => socket.SendAsync(Encoding.ASCII.GetBytes(payload), payload.Length, to);
 
         public void Dispose() => socket.Dispose();
@@ -126,7 +126,7 @@ public class UdpRelayTests
         catch (OperationCanceledException) { return null; }
     }
 
-    private static Task SendAsync(UdpClient client, string payload)
+    private static Task<int> SendAsync(UdpClient client, string payload)
         => client.SendAsync(Encoding.ASCII.GetBytes(payload), payload.Length);
 
     private static int FreeUdpPort()
