@@ -124,7 +124,8 @@ internal sealed partial class ProxySession
 
         // Wait for the old pumps to stop before the new backend writes to the client stream.
         // Past this point the swap is committed, so the old side is torn down whatever it says.
-        try { oldCts?.Cancel(); } catch { /* the old pumps already stopped on their own */ }
+        try { if (oldCts != null) await oldCts.CancelAsync().ConfigureAwait(false); }
+        catch { /* the old pumps already stopped on their own */ }
         try { oldUpstream?.Close(); } catch { /* the old backend already dropped the socket */ }
         try
         {
