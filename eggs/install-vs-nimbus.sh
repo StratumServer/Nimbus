@@ -7,19 +7,25 @@ set -euo pipefail
 apt-get update -qq && apt-get install -y -qq curl unzip > /dev/null
 
 VS_VERSION="${VS_VERSION:-1.22.6}"
-NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.3.0/Nimbus-v0.3.0.zip}"
+NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.4.0/Nimbus-v0.4.0.zip}"
+
+# Every download goes through here: https only, redirects included, so a panel
+# variable pointing at plain http fails the install rather than fetching over it.
+fetch() {
+  local dest="$1" url="$2"
+  curl -sSL --proto '=https' --proto-redir '=https' --fail -o "$dest" "$url"
+}
 
 cd /mnt/server
 
 echo "Downloading Vintage Story dedicated server ${VS_VERSION}..."
-curl -sSL --fail -o vs_server.tar.gz \
-  "https://cdn.vintagestory.at/gamefiles/stable/vs_server_linux-x64_${VS_VERSION}.tar.gz"
+fetch vs_server.tar.gz "https://cdn.vintagestory.at/gamefiles/stable/vs_server_linux-x64_${VS_VERSION}.tar.gz"
 tar -xzf vs_server.tar.gz
 rm vs_server.tar.gz
 
 echo "Installing the Nimbus backend mod..."
 mkdir -p data/Mods data/ModConfig
-curl -sSL --fail -o /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
+fetch /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
 rm -rf /tmp/nimbus && mkdir -p /tmp/nimbus
 unzip -qo /tmp/nimbus.zip -d /tmp/nimbus
 MOD_DIR=$(find /tmp/nimbus -type d -name "Nimbus.ServerMod" | head -1)

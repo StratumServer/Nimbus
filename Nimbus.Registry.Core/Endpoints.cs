@@ -43,7 +43,7 @@ public static class Endpoints
         app.MapGet("/api/servers", (BackendRegistry reg) => Results.Ok(reg.Snapshot()));
 
         // Reservations.
-        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationStore store, BackendRegistry reg, RegistryConfig cfg, TimeProvider clock) =>
+        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationStore store, BackendRegistry reg, BanStore bans, RegistryConfig cfg, TimeProvider clock) =>
         {
             ReservationRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<ReservationRequest>(); }
@@ -60,6 +60,16 @@ public static class Endpoints
             var target = reg.Get(req.TargetServerId);
             if (target is null)
                 return Results.NotFound(new ReservationResponse { Ok = false, Error = "target server not registered" });
+
+            // Bans are enforced at the proxy, which knows the player and the destination at the
+            // same time. This is the multi-proxy backstop: a proxy running on a ban list that is
+            // seconds out of date still cannot mint the reservation that would seat the player.
+            if (bans.FindBlocking(req.PlayerUid, req.TargetServerId) is not null)
+                return Results.Json(new ReservationResponse { Ok = false, Error = "player is banned from the target server" },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            // Whitelists get no equivalent backstop: whether coverage is required at all lives in
+            // proxy config, and the registry has no way to know which mode a proxy is running.
 
             var r = new TransferReservation
             {
@@ -131,15 +141,26 @@ public static class Endpoints
             return Results.Ok(new BanResponse { Ok = true, Ban = ban });
         });
 
-        // Lift a ban. Omit ?server= to lift the network-wide one; a scoped ban must be lifted
+        // Lift a ban. Omit ServerId to lift the network-wide one; a scoped ban must be lifted
         // with the same serverId it was created with.
-        app.MapPost("/api/bans/lift", (HttpContext ctx, BanStore bans) =>
+        app.MapPost("/api/bans/lift", async (HttpContext ctx, BanStore bans) =>
         {
-            string uid = ctx.Request.Query["uid"].ToString();
-            if (string.IsNullOrEmpty(uid))
-                return Results.BadRequest(new { error = "?uid= required" });
+            BanLiftRequest? req;
+            try { req = await ReadOptionalBodyAsync<BanLiftRequest>(ctx); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
 
-            string serverId = ctx.Request.Query["server"].ToString();
+            // The signature covers the body and not the query, so a body naming a player settles
+            // both arguments and the query is never consulted. Deprecated: ?uid=/?server= answer
+            // only when the body names nobody, which keeps a proxy older than this endpoint
+            // working. Drop the fallback when NimbusProtocol.ProtocolVersion moves past 1, since
+            // that is the point at which a mismatched proxy is refused by HmacAuthMiddleware
+            // anyway.
+            bool fromBody = !string.IsNullOrEmpty(req?.PlayerUid);
+            string uid = fromBody ? req!.PlayerUid : ctx.Request.Query["uid"].ToString();
+            if (string.IsNullOrEmpty(uid))
+                return Results.BadRequest(new { error = "PlayerUid required" });
+
+            string serverId = fromBody ? req!.ServerId : ctx.Request.Query["server"].ToString();
             bool lifted = bans.Lift(uid, serverId);
             if (!lifted)
                 return Results.NotFound(new BanResponse { Ok = false, Error = "no matching ban" });
@@ -147,6 +168,55 @@ public static class Endpoints
         });
 
         app.MapGet("/api/bans", (BanStore bans) => Results.Ok(new BanListResponse { Ok = true, Bans = bans.Active() }));
+
+        // Network whitelist. Same storage shape as the bans above, read the other way round:
+        // an entry says a player may come in. Whether that is required at all is a proxy-side
+        // switch ([whitelist] in nimbus.proxy.toml), so nothing here refuses anything.
+        app.MapPost("/api/whitelist", async (HttpContext ctx, WhitelistStore whitelist, TimeProvider clock) =>
+        {
+            WhitelistRequest? req;
+            try { req = await ctx.Request.ReadFromJsonAsync<WhitelistRequest>(); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
+
+            if (req is null || string.IsNullOrEmpty(req.PlayerUid))
+                return Results.BadRequest(new WhitelistResponse { Ok = false, Error = "PlayerUid required" });
+
+            long now = clock.GetUtcNow().ToUnixTimeSeconds();
+            var entry = whitelist.Add(new WhitelistEntry
+            {
+                PlayerUid = req.PlayerUid,
+                PlayerName = req.PlayerName ?? "",
+                ServerId = req.ServerId ?? "",
+                Note = req.Note ?? "",
+                AddedBy = req.AddedBy ?? "",
+                CreatedAtUnix = now,
+                ExpiresAtUnix = req.DurationSeconds > 0 ? now + req.DurationSeconds : 0,
+            });
+            return Results.Ok(new WhitelistResponse { Ok = true, Entry = entry });
+        });
+
+        // Drop an entry. Omit ServerId to drop the network-wide one; a scoped entry must be
+        // removed with the same serverId it was created with. Same body-over-query rule as
+        // /api/bans/lift, for the same reason.
+        app.MapPost("/api/whitelist/remove", async (HttpContext ctx, WhitelistStore whitelist) =>
+        {
+            WhitelistRemoveRequest? req;
+            try { req = await ReadOptionalBodyAsync<WhitelistRemoveRequest>(ctx); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
+
+            bool fromBody = !string.IsNullOrEmpty(req?.PlayerUid);
+            string uid = fromBody ? req!.PlayerUid : ctx.Request.Query["uid"].ToString();
+            if (string.IsNullOrEmpty(uid))
+                return Results.BadRequest(new { error = "PlayerUid required" });
+
+            string serverId = fromBody ? req!.ServerId : ctx.Request.Query["server"].ToString();
+            if (!whitelist.Remove(uid, serverId))
+                return Results.NotFound(new WhitelistResponse { Ok = false, Error = "no matching entry" });
+            return Results.Ok(new WhitelistResponse { Ok = true });
+        });
+
+        app.MapGet("/api/whitelist", (WhitelistStore whitelist)
+            => Results.Ok(new WhitelistListResponse { Ok = true, Entries = whitelist.Active() }));
 
         // Backends post here when someone asks the proxy to move a player.
         // The proxy drains the queue and runs its normal swap path.
@@ -173,6 +243,15 @@ public static class Endpoints
             var taken = store.Drain();
             return Results.Ok(new TransferIntentDrainResponse { Ok = true, Intents = taken });
         });
+    }
+
+    // Reads a body that a caller is allowed to leave out entirely. An absent body is not an
+    // error here, unlike the endpoints that require one: it means the caller is old enough to
+    // still be passing its arguments in the query.
+    private static async Task<T?> ReadOptionalBodyAsync<T>(HttpContext ctx) where T : class
+    {
+        if (ctx.Request.ContentLength is null or 0) return null;
+        return await ctx.Request.ReadFromJsonAsync<T>();
     }
 
     private static string NewReservationId()

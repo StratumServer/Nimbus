@@ -32,8 +32,9 @@ internal sealed class BanCache
 
     public int Count => bans.Length;
 
-    // The ban blocking this player from `serverId`, or null. Pass no serverId to ask only about
-    // network-wide bans, which is what the connection gate needs.
+    // The ban blocking this player from `serverId`, or null. A network-wide ban matches whatever
+    // is asked; a scoped one only its own backend. Pass no serverId to ask about the network
+    // alone, which is all a backend configured as host:port can be asked about.
     public NetworkBan? FindBlocking(string? playerUid, string? serverId = null)
     {
         if (string.IsNullOrEmpty(playerUid)) return null;

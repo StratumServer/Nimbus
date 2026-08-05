@@ -34,8 +34,8 @@ public sealed class NimbusServerModSystem : ModSystem
     // which is where an operator looks when a player reports a stuck transfer screen.
     public string LastSeamlessCommit { get; private set; } = "";
 
-    public override bool ShouldLoad(EnumAppSide side)
-        => side == EnumAppSide.Server;
+    public override bool ShouldLoad(EnumAppSide forSide)
+        => forSide == EnumAppSide.Server;
 
     public override void StartServerSide(ICoreServerAPI api)
     {
@@ -68,7 +68,8 @@ public sealed class NimbusServerModSystem : ModSystem
         registry = new NimbusRegistryClient(config);
         stop = new CancellationTokenSource();
         startUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        heartbeatTask = Task.Run(() => HeartbeatLoopAsync(stop.Token));
+        var stopToken = stop.Token;
+        heartbeatTask = Task.Run(() => HeartbeatLoopAsync(stopToken), stopToken);
         LastStatus = "starting";
         api.Logger.Notification($"Nimbus server mod started as {config.ServerId}");
     }
@@ -76,7 +77,10 @@ public sealed class NimbusServerModSystem : ModSystem
     public override void Dispose()
     {
         try { stop?.Cancel(); } catch { }
-        try { heartbeatTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
+        // No token on the drain: stop is already cancelled above, and the 2s deadline is
+        // the only bound this wait may have. Cancelling it would skip the loop's teardown.
+        try { heartbeatTask?.Wait(TimeSpan.FromSeconds(2), CancellationToken.None); }
+        catch { /* the loop faulted or timed out; Dispose has nothing left to do about it */ }
         registry?.Dispose();
         stop?.Dispose();
     }
@@ -272,7 +276,8 @@ public sealed class NimbusServerModSystem : ModSystem
                 stop?.Dispose();
                 stop = new CancellationTokenSource();
                 if (startUnix == 0) startUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                heartbeatTask = Task.Run(() => HeartbeatLoopAsync(stop.Token));
+                var stopToken = stop.Token;
+                heartbeatTask = Task.Run(() => HeartbeatLoopAsync(stopToken), stopToken);
             }
             LastStatus = "starting";
         }
@@ -288,7 +293,9 @@ public sealed class NimbusServerModSystem : ModSystem
     {
         // Always run when registry is wired — stores forwarding data even when gating is off.
         if (registry == null) return;
-        _ = Task.Run(() => CheckForwardingAsync(player));
+        // No token: the gating check must be scheduled even if the mod is stopping, since a
+        // check that never runs admits a player who should have been kicked.
+        _ = Task.Run(() => CheckForwardingAsync(player), CancellationToken.None);
     }
 
     private async Task CheckForwardingAsync(IServerPlayer player)
@@ -570,7 +577,9 @@ public sealed class NimbusServerModSystem : ModSystem
         if (target.Stale) return TextCommandResult.Error($"Target '{targetServerId}' is stale.");
         if (target.Maintenance) return TextCommandResult.Error($"Target '{targetServerId}' is in maintenance.");
 
-        _ = Task.Run(() => RunTransferAsync(player, target, reason, requestedBy));
+        // No token: the command below already told the player the transfer is under way, so
+        // the handshake has to be scheduled rather than dropped by a concurrent stop.
+        _ = Task.Run(() => RunTransferAsync(player, target, reason, requestedBy), CancellationToken.None);
         return TextCommandResult.Success($"Transferring {player.PlayerName} to {target.DisplayName}...");
     }
 

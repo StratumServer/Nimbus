@@ -29,6 +29,22 @@ internal sealed partial class ProxySession
         if (string.IsNullOrEmpty(target.Host)) { ProxyMetrics.RedirectFailed(); return "redirect target has empty host"; }
         if (target.Port <= 0 || target.Port > 65535) { ProxyMetrics.RedirectFailed(); return $"redirect target has invalid port {target.Port}"; }
 
+        var banFail = CheckTargetBan(target);
+        if (banFail != null)
+        {
+            Log.Warn($"[s{Id}] redirect rejected: {banFail}");
+            ProxyMetrics.RedirectFailed();
+            return banFail;
+        }
+
+        var whitelistFail = CheckTargetWhitelist(target);
+        if (whitelistFail != null)
+        {
+            Log.Warn($"[s{Id}] redirect rejected: {whitelistFail}");
+            ProxyMetrics.RedirectFailed();
+            return whitelistFail;
+        }
+
         var mintFail = await MintReservationIfPossibleAsync(target, registry, reason ?? "proxy redirect", failOnRegistryError, clientTransferId).ConfigureAwait(false);
         if (mintFail != null) { ProxyMetrics.RedirectFailed(); return mintFail; }
 

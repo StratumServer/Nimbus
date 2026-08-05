@@ -25,6 +25,7 @@ public static class RegistryHosting
         builder.Services.AddSingleton<TransferIntentStore>();
         builder.Services.AddSingleton<NonceCache>();
         builder.Services.AddSingleton<BanStore>();
+        builder.Services.AddSingleton<WhitelistStore>();
         builder.Services.AddHostedService<RegistrySweeper>();
         if (withMasterServer) builder.Services.AddHostedService<MasterServerBroadcaster>();
     }
@@ -44,10 +45,12 @@ public sealed class RegistrySweeper : BackgroundService
     private readonly TransferIntentStore _intents;
     private readonly NonceCache _nonces;
     private readonly BanStore _bans;
+    private readonly WhitelistStore _whitelist;
     private readonly ILogger<RegistrySweeper> _log;
 
-    public RegistrySweeper(BackendRegistry b, ReservationStore r, TransferIntentStore i, NonceCache n, BanStore bans, ILogger<RegistrySweeper> log)
-    { _backends = b; _reservations = r; _intents = i; _nonces = n; _bans = bans; _log = log; }
+    public RegistrySweeper(BackendRegistry b, ReservationStore r, TransferIntentStore i, NonceCache n, BanStore bans,
+        WhitelistStore whitelist, ILogger<RegistrySweeper> log)
+    { _backends = b; _reservations = r; _intents = i; _nonces = n; _bans = bans; _whitelist = whitelist; _log = log; }
 
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
@@ -61,8 +64,9 @@ public sealed class RegistrySweeper : BackgroundService
                 int i = _intents.Prune();
                 int n = _nonces.Prune();
                 int x = _bans.Prune();
-                if (b + r + i + n + x > 0)
-                    _log.LogDebug("sweep: dropped backends={B} reservations={R} intents={I} nonces={N} bans={X}", b, r, i, n, x);
+                int w = _whitelist.Prune();
+                if (b + r + i + n + x + w > 0)
+                    _log.LogDebug("sweep: dropped backends={B} reservations={R} intents={I} nonces={N} bans={X} whitelist={W}", b, r, i, n, x, w);
             }
             catch (Exception ex)
             {

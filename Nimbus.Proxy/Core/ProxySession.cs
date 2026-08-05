@@ -68,14 +68,21 @@ internal sealed partial class ProxySession : IPlayer
     private int initialReservationState;
 
     private readonly BanCache? bans;
+    private readonly WhitelistCache? whitelist;
 
-    // Set once the ban gate has told the client why it is being dropped. Stops the connect path
-    // from dialing a backend anyway and from forging a second, misleading disconnect.
-    private volatile bool rejectedByBan;
+    // Set once the ban or whitelist gate has told the client why it is being dropped. Stops the
+    // connect path from dialing a backend anyway and from forging a second, misleading disconnect.
+    private volatile bool rejectedAtGate;
+    private volatile string? gateRejectionReason;
+
+    // The in-flight forged disconnect the gate started. Awaited before the sockets are torn down,
+    // because the write races the teardown otherwise and the player sees a dropped connection
+    // instead of the reason they were sent away.
+    private volatile Task? gateDisconnect;
 
     public ProxySession(long id, ProxyConfig cfg, TcpClient client, CancellationToken stopToken,
         StickyRouteTable? stickies = null, IRegistryClient? registry = null, UdpRouteOverrides? udpOverrides = null,
-        EventBus? events = null, BanCache? bans = null)
+        EventBus? events = null, BanCache? bans = null, WhitelistCache? whitelist = null)
     {
         Id = id;
         this.cfg = cfg;
@@ -91,6 +98,7 @@ internal sealed partial class ProxySession : IPlayer
         this.udpOverrides = udpOverrides;
         this.events = events;
         this.bans = bans;
+        this.whitelist = whitelist;
 
         // Sniffers always run on the client stream so registry-backed joins and transfers have
         // the player UID even when SniffFrames is disabled.
@@ -228,7 +236,10 @@ internal sealed partial class ProxySession : IPlayer
         });
     }
 
-    private bool CaptureIdentification(ReadOnlySpan<byte> raw, string source)
+    // `landingOn` is the backend this session is about to be connected to, passed by the connect
+    // path because `currentBackend` is only assigned once the socket is up. On the pump path the
+    // backend is already current and the argument is left null.
+    private bool CaptureIdentification(ReadOnlySpan<byte> raw, string source, BackendEndpoint? landingOn = null)
     {
         if (capturedIdentification != null) return true;
 
@@ -247,14 +258,31 @@ internal sealed partial class ProxySession : IPlayer
         // way to the backend we are already connected to. That backend now owns the token.
         if (currentBackend != null) NoteIdentificationDelivered(currentBackend);
 
-        // Network ban gate. Synchronous against the warm cache: this runs on the byte pump, so
-        // it must not wait on the registry. A network-wide ban ends the session here, before any
-        // backend sees the player.
-        var ban = bans?.FindBlocking(uid);
+        // Ban gate. Synchronous against the warm cache: this runs on the byte pump, so it must
+        // not wait on the registry. A network-wide ban ends the session here, before any backend
+        // sees the player, and so does a ban scoped to the backend this session is landing on.
+        // The scope cannot be checked any earlier: the backend is picked before the client has
+        // sent an identity (#57). A backend configured as host:port has no ServerId, so no scoped
+        // ban can match it.
+        var landing = landingOn ?? currentBackend;
+        var ban = bans?.FindBlocking(uid, landing?.ServerId);
         if (ban != null)
         {
-            rejectedByBan = true;
+            rejectedAtGate = true;
+            gateRejectionReason = "player is banned";
             RejectBannedPlayer(ban);
+            return false;
+        }
+
+        // Whitelist gate, checked after the ban gate because a ban wins over an entry. Same warm
+        // cache, same landing backend: a backend with no ServerId can only be gated network-wide,
+        // and then only a network-wide entry covers it.
+        var missing = CheckLandingWhitelist(landing);
+        if (missing != null)
+        {
+            rejectedAtGate = true;
+            gateRejectionReason = "player is not whitelisted";
+            RejectUnwhitelistedPlayer(missing.Value);
             return false;
         }
 
@@ -289,22 +317,86 @@ internal sealed partial class ProxySession : IPlayer
         stickies?.Stage(route.Uid, clientIp: null, route.Target, StickyRouteTable.UidTtl, route.Reason, route.Attempts);
     }
 
-    // Forges a vanilla disconnect so the player sees the ban reason instead of a dropped socket,
-    // then tears the session down. Fire-and-forget because the caller is on the pump.
+    // Tells the player which ban closed the door, then tears the session down.
     private void RejectBannedPlayer(NetworkBan ban)
     {
         string until = ban.ExpiresAtUnix > 0
             ? $" (until {DateTimeOffset.FromUnixTimeSeconds(ban.ExpiresAtUnix):u})"
             : "";
+        // A scoped ban leaves the rest of the network reachable, so the player must not be told
+        // the whole network is closed to them.
+        string scope = ban.IsNetworkWide ? "this network" : "this server";
         string reason = string.IsNullOrWhiteSpace(ban.Reason)
-            ? $"You are banned from this network{until}."
-            : $"You are banned from this network{until}: {ban.Reason}";
+            ? $"You are banned from {scope}{until}."
+            : $"You are banned from {scope}{until}: {ban.Reason}";
 
-        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} rejected: network ban" +
+        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} rejected: {(ban.IsNetworkWide ? "network ban" : $"ban scoped to {ban.ServerId}")}" +
                  (string.IsNullOrWhiteSpace(ban.Reason) ? "" : $" ({ban.Reason})"));
         ProxyMetrics.BannedJoinRejected();
+        ForgeDisconnectAndClose(reason);
+    }
 
-        _ = Task.Run(async () =>
+    // Which whitelist switch shut the door on a player. Only used to pick the wording: telling
+    // someone the network is closed when a single backend is would send them away for good.
+    private enum WhitelistScope { Network, Server }
+
+    // The scope refusing this landing, or null when the player may come in. Bans are checked
+    // before this on purpose: a ban wins over an entry, so a listed player who is also banned
+    // never reaches here.
+    private WhitelistScope? CheckLandingWhitelist(BackendEndpoint? landing)
+    {
+        string? serverId = landing?.ServerId;
+        if (!cfg.Whitelist.RequiresCoverage(serverId)) return null;
+
+        // The network switch closes the whole door, so it owns the wording even when the landing
+        // backend is also named in whitelist.servers.
+        var scope = cfg.Whitelist.Network ? WhitelistScope.Network : WhitelistScope.Server;
+
+        // Cold start. Nothing has ever been read from the registry, so an empty list here is not
+        // an answer and must not be read as one. Closed is the default: the alternative leaves a
+        // private network open to everyone for as long as the registry stays unreachable.
+        if (whitelist == null || !whitelist.HasSynced)
+        {
+            WarnColdStartOnce(failOpen: cfg.Whitelist.FailOpenUntilFirstSync);
+            return cfg.Whitelist.FailOpenUntilFirstSync ? null : scope;
+        }
+
+        return whitelist.FindCovering(capturedPlayerUid, serverId) != null ? null : scope;
+    }
+
+    // Once per process, not once per connection: a network locked out by an unreachable registry
+    // would otherwise write a line per join attempt, which is the moment logs are least readable.
+    private static int coldStartWarned;
+
+    private static void WarnColdStartOnce(bool failOpen)
+    {
+        if (Interlocked.Exchange(ref coldStartWarned, 1) != 0) return;
+        if (failOpen)
+            Log.Warn("whitelist enforcement is on but the list has never been fetched; " +
+                     "fail_open_until_first_sync = true, so players are being let in unchecked until the registry answers");
+        else
+            Log.Warn("whitelist enforcement is on but the list has never been fetched; refusing every join until the " +
+                     "registry answers once. Set whitelist.fail_open_until_first_sync = true to let players in instead");
+    }
+
+    // Same shape as RejectBannedPlayer, for the gate the other way round.
+    private void RejectUnwhitelistedPlayer(WhitelistScope scope)
+    {
+        string reason = scope == WhitelistScope.Network
+            ? "This network is whitelisted."
+            : "This server is whitelisted.";
+
+        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} rejected: no whitelist entry covering " +
+                 $"{(scope == WhitelistScope.Network ? "this network" : currentBackend?.ServerId ?? "this server")}");
+        ProxyMetrics.UnwhitelistedJoinRejected();
+        ForgeDisconnectAndClose(reason);
+    }
+
+    // Forges a vanilla disconnect so the player sees a reason instead of a dropped socket, then
+    // tears the session down. Fire-and-forget because both gates call it from the pump.
+    private void ForgeDisconnectAndClose(string reason)
+    {
+        gateDisconnect = Task.Run(async () =>
         {
             try
             {
@@ -318,6 +410,45 @@ internal sealed partial class ProxySession : IPlayer
             finally { Close(); }
         });
     }
+
+    // The reason a transfer to `target` is refused because of a ban, or null when it is allowed.
+    // Both the UID and the destination are needed, so this is checked on the transfer methods
+    // rather than at route selection, which runs before the client has sent any identity (#57).
+    // A target with no ServerId carries no scope a ban could be matched against.
+    private string? CheckTargetBan(BackendEndpoint target)
+    {
+        if (bans == null || string.IsNullOrEmpty(capturedPlayerUid) || string.IsNullOrEmpty(target.ServerId))
+            return null;
+
+        var ban = bans.FindBlocking(capturedPlayerUid, target.ServerId);
+        if (ban == null) return null;
+        return ban.IsNetworkWide
+            ? "player is banned from the network"
+            : $"player is banned from {target.ServerId}";
+    }
+
+    // The reason a transfer to `target` is refused for want of a whitelist entry, or null when it
+    // is allowed. Always checked after CheckTargetBan: a ban wins over an entry.
+    private string? CheckTargetWhitelist(BackendEndpoint target)
+    {
+        if (!cfg.Whitelist.RequiresCoverage(target.ServerId)) return null;
+
+        // Cold start, same reading as the connection gate: an unread list is not an empty one.
+        if (whitelist == null || !whitelist.HasSynced)
+        {
+            WarnColdStartOnce(failOpen: cfg.Whitelist.FailOpenUntilFirstSync);
+            if (cfg.Whitelist.FailOpenUntilFirstSync) return null;
+            return $"whitelist for {DescribeTarget(target)} has never been fetched from the registry";
+        }
+
+        if (whitelist.FindCovering(capturedPlayerUid, target.ServerId) != null) return null;
+        return $"player is not whitelisted on {DescribeTarget(target)}";
+    }
+
+    // A backend configured as host:port has no id to name in a refusal, and can only have been
+    // gated by whitelist.network in the first place.
+    private static string DescribeTarget(BackendEndpoint target)
+        => string.IsNullOrEmpty(target.ServerId) ? "the network" : target.ServerId;
 
     // How many redirects one staged route may fire before we give up and leave the player where
     // they landed. With address-matched routing in place the first redirect normally lands, and
@@ -338,6 +469,26 @@ internal sealed partial class ProxySession : IPlayer
             string.Equals(cur.Host, route.Target.Host, StringComparison.OrdinalIgnoreCase) &&
             cur.Port == route.Target.Port)
             return;
+
+        // A ban placed while the route sat staged. The redirect below would refuse it anyway;
+        // dropping the route here leaves the player on the working session they already have.
+        var banFail = CheckTargetBan(route.Target);
+        if (banFail != null)
+        {
+            Log.Warn($"[s{Id}] sticky route to {route.Target} dropped: {banFail}; " +
+                     $"leaving {capturedPlayerName ?? uid} on {currentBackend?.ToString() ?? "?"}");
+            return;
+        }
+
+        // Same for a target that has since started requiring a whitelist entry this player does
+        // not hold. Checked after the ban for the same reason the gate does.
+        var whitelistFail = CheckTargetWhitelist(route.Target);
+        if (whitelistFail != null)
+        {
+            Log.Warn($"[s{Id}] sticky route to {route.Target} dropped: {whitelistFail}; " +
+                     $"leaving {capturedPlayerName ?? uid} on {currentBackend?.ToString() ?? "?"}");
+            return;
+        }
 
         if (route.Attempts >= MaxStickyRedirects)
         {
@@ -422,8 +573,8 @@ internal sealed partial class ProxySession : IPlayer
             }
             if (!connected)
             {
-                // The ban gate already sent the real reason; do not paper over it.
-                if (rejectedByBan) return;
+                // The gate already sent the real reason; do not paper over it.
+                if (rejectedAtGate) return;
 
                 Log.Warn($"[s{Id}] no candidate connected: {lastFailReason ?? "unknown"}; sending forged disconnect");
                 try
@@ -452,6 +603,11 @@ internal sealed partial class ProxySession : IPlayer
         finally
         {
             closed = true;
+            // A gate rejection forges its disconnect off the pump, so it can still be in flight
+            // here. Closing the client socket underneath it would replace the reason the player
+            // was given with a dropped connection. The write carries its own 2s cap.
+            var pendingDisconnect = gateDisconnect;
+            if (pendingDisconnect != null) await SafeAwait(pendingDisconnect).ConfigureAwait(false);
             try { upstream?.Close(); } catch { }
             try { client.Close(); } catch { }
             // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts fresh.
@@ -502,12 +658,14 @@ internal sealed partial class ProxySession : IPlayer
             // parse failure for a frame that never had a UID in it (#57).
             string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
             if (firstName == "Identification")
-                CaptureIdentification(firstClientFrame.Span, source: "first frame");
+                CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
             else
                 Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
-            // A banned player must not cause an upstream connection at all.
-            if (rejectedByBan)
-                return (false, true, "player is banned from the network");
+            // A player the gate refused must not cause an upstream connection at all. The chain
+            // stops here rather than failing over: the gate has already told the client why it is
+            // going.
+            if (rejectedAtGate)
+                return (false, true, gateRejectionReason ?? "player refused at the gate");
             // If the first frame already contained Identification, prime the reservation
             // before replaying bytes upstream. Missing UID here is non-fatal; the c->s pump
             // retries as soon as it captures Identification from later frames.
@@ -646,15 +804,15 @@ internal sealed partial class ProxySession : IPlayer
                 {
                     sniffer?.OnBytes(new ReadOnlySpan<byte>(buf, 0, read));
 
-                    // The ban gate normally fires before we dial a backend, but a client that
-                    // stays quiet past the first-frame read window (status.query_timeout_ms) gets
-                    // here with the pumps already running and its Identification in this very
-                    // buffer. Forwarding it would let a banned player's login reach the backend
-                    // in the ~150ms before the forged disconnect closes us down, so the pump has
-                    // to drop the chunk itself rather than trust the pre-connect check.
-                    if (rejectedByBan)
+                    // The gates normally fire before we dial a backend, but a client that stays
+                    // quiet past the first-frame read window (status.query_timeout_ms) gets here
+                    // with the pumps already running and its Identification in this very buffer.
+                    // Forwarding it would let a refused player's login reach the backend in the
+                    // ~150ms before the forged disconnect closes us down, so the pump has to drop
+                    // the chunk itself rather than trust the pre-connect check.
+                    if (rejectedAtGate)
                     {
-                        Log.Trace($"[s{Id}] dropping c->s chunk after ban rejection");
+                        Log.Trace($"[s{Id}] dropping c->s chunk after gate rejection");
                         break;
                     }
 

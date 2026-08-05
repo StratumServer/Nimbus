@@ -7,12 +7,19 @@ set -euo pipefail
 
 apt-get update -qq && apt-get install -y -qq curl unzip > /dev/null
 
-NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.3.0/Nimbus-v0.3.0.zip}"
+NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.4.0/Nimbus-v0.4.0.zip}"
+
+# Every download goes through here: https only, redirects included, so a panel
+# variable pointing at plain http fails the install rather than fetching over it.
+fetch() {
+  local dest="$1" url="$2"
+  curl -sSL --proto '=https' --proto-redir '=https' --fail -o "$dest" "$url"
+}
 
 cd /mnt/server
 
 echo "Downloading the Nimbus release..."
-curl -sSL --fail -o /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
+fetch /tmp/nimbus.zip "${NIMBUS_DOWNLOAD_URL}"
 rm -rf /tmp/nimbus && mkdir -p /tmp/nimbus
 unzip -qo /tmp/nimbus.zip -d /tmp/nimbus
 REGISTRY_DIR=$(find /tmp/nimbus -type d -name "Nimbus.Registry" | head -1)

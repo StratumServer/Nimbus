@@ -50,6 +50,26 @@ internal sealed partial class ProxySession
             target = pre.Target.ToEndpoint();
         }
 
+        // Checked after ServerPreConnect, because a handler is allowed to swap the target and it
+        // is the final destination that has to be clear of bans.
+        var banFail = CheckTargetBan(target);
+        if (banFail != null)
+        {
+            Log.Warn($"[s{Id}] seamless rejected: {banFail}");
+            swapping = false;
+            ProxyMetrics.SeamlessFailed();
+            return banFail;
+        }
+
+        var whitelistFail = CheckTargetWhitelist(target);
+        if (whitelistFail != null)
+        {
+            Log.Warn($"[s{Id}] seamless rejected: {whitelistFail}");
+            swapping = false;
+            ProxyMetrics.SeamlessFailed();
+            return whitelistFail;
+        }
+
         // The splice below writes the captured Identification bytes at `target`. That is only
         // ever safe when `target` is the backend that already has them.
         var replayFail = CheckIdentificationReplay(target, operatorOptedIn: cfg.Transfers.EnableUnsafeSeamlessSplice);

@@ -61,15 +61,24 @@ internal sealed class BanCommand : IAdminCommand
         // reconnect attempt see the ban.
         try { await ctx.Proxy.Bans.RefreshAsync().ConfigureAwait(false); } catch { }
 
-        // A network-wide ban should not leave the player sitting on a backend.
-        bool kicked = false;
-        if (ban.IsNetworkWide && online != null)
+        // A ban should not leave the player sitting on a backend it covers. A network-wide ban
+        // takes every session they hold; a scoped one only the sessions on that backend, which
+        // is why this walks the session table instead of using the single lookup above.
+        string kickScope = ban.IsNetworkWide ? "this network" : "this server";
+        string kickReason = string.IsNullOrWhiteSpace(reason)
+            ? $"You are banned from {kickScope}."
+            : $"You are banned from {kickScope}: {reason}";
+
+        int kicked = 0;
+        foreach (var kv in ctx.Proxy.Sessions)
         {
-            string kickReason = string.IsNullOrWhiteSpace(reason)
-                ? "You are banned from this network."
-                : $"You are banned from this network: {reason}";
-            ((IPlayer)online).Disconnect(kickReason);
-            kicked = true;
+            var session = kv.Value;
+            if (!string.Equals(session.PlayerUid, uid, StringComparison.OrdinalIgnoreCase)) continue;
+            // A session with no backend yet reports a null serverId, which only a network-wide
+            // ban blocks.
+            if (!ban.Blocks(((IPlayer)session).CurrentServer?.ServerId)) continue;
+            ((IPlayer)session).Disconnect(kickReason);
+            kicked++;
         }
 
         return new

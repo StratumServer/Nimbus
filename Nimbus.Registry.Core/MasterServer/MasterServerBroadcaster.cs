@@ -24,7 +24,7 @@ internal sealed class MasterServerBroadcaster : BackgroundService
         _log = log;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stop)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var id = _cfg.Identity;
         if (!id.AdvertiseOnMasterServer)
@@ -44,34 +44,34 @@ internal sealed class MasterServerBroadcaster : BackgroundService
         // Wait up to 30s for at least one backend to heartbeat so the first register
         // packet carries a real maxPlayers and mod list.
         var waitUntil = DateTime.UtcNow.AddSeconds(30);
-        while (!stop.IsCancellationRequested && DateTime.UtcNow < waitUntil)
+        while (!stoppingToken.IsCancellationRequested && DateTime.UtcNow < waitUntil)
         {
             var snap = _backends.Snapshot();
             if (snap.Backends.Any(b => !b.Stale) && (id.MaxPlayersOverride > 0 || snap.TotalCapacity > 0))
                 break;
-            try { await Task.Delay(TimeSpan.FromSeconds(2), stop); } catch (TaskCanceledException) { return; }
+            try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken); } catch (TaskCanceledException) { return; }
         }
 
         var heartbeatInterval = TimeSpan.FromSeconds(Math.Max(60, id.HeartbeatIntervalSeconds));
 
-        while (!stop.IsCancellationRequested)
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 if (string.IsNullOrEmpty(_token))
                 {
-                    await TryRegister(stop);
+                    await TryRegister(stoppingToken);
                 }
                 else if (CapacityChanged())
                 {
                     // Heartbeat cannot update maxPlayers. Force a re-register.
                     _log.LogInformation("backend capacity changed, re-registering");
                     _token = null;
-                    await TryRegister(stop);
+                    await TryRegister(stoppingToken);
                 }
                 else
                 {
-                    await TryHeartbeat(stop);
+                    await TryHeartbeat(stoppingToken);
                 }
             }
             catch (OperationCanceledException) { break; }
@@ -80,7 +80,7 @@ internal sealed class MasterServerBroadcaster : BackgroundService
                 _log.LogWarning(ex, "master server tick failed");
             }
 
-            try { await Task.Delay(heartbeatInterval, stop); }
+            try { await Task.Delay(heartbeatInterval, stoppingToken); }
             catch (TaskCanceledException) { break; }
         }
 

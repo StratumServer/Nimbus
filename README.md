@@ -106,8 +106,64 @@ the ban reason, and their login never reaches a backend. (A client that stalls l
 proxy to open an upstream first will have opened a TCP connection to the backend, but not a game
 session: the pump drops its traffic the moment the ban is recognised.) The proxy keeps a warm copy of the list
 so the check costs nothing per join, and a registry outage leaves the last known bans in force.
-Per-backend bans leave the rest of the network reachable. Vanilla per-server `/ban` keeps working
-and stays local to that savegame.
+
+Per-backend bans are enforced too, just against that one backend. A player who lands on a backend
+they are banned from is dropped at the door, with a message naming that server rather than the
+network. A transfer to it is refused, whether it came from `swap`, a shortcut command, a plugin or
+a backend asking for the move. A staged reconnect route pointing at it is discarded and the player
+is routed normally instead. The rest of the network stays reachable throughout.
+
+None of that can happen before identification: the proxy picks a backend while the client has
+still said nothing that names the player, so the ban list can only be consulted once the UID is in
+hand. The registry refuses to mint a reservation for a banned pair as well, which is what catches
+a proxy whose copy of the ban list is a few seconds out of date.
+
+Vanilla per-server `/ban` keeps working and stays local to that savegame.
+
+## Whitelists
+
+The same list read the other way round: who may come in, rather than who may not.
+
+```shell
+nimctl whitelist add --player Builder --note "closed beta"
+nimctl whitelist add --uid <uid> --server staff     # one backend only
+nimctl whitelist list
+nimctl whitelist remove <uid>
+```
+
+Two scopes, matching bans. A network-wide entry covers every backend, which is the private
+server or closed beta case. An entry scoped to one backend covers that backend and nothing else,
+which is the staff or build server sitting inside a public network: a player who is not listed
+there is refused that backend and keeps the rest of the network.
+
+Enforcement is a proxy switch, not a property of the list:
+
+```toml
+[whitelist]
+network = false                    # true closes the whole network to unlisted players
+servers = [ "staff" ]              # backends closed to unlisted players regardless
+fail_open_until_first_sync = false
+```
+
+Adding entries changes nothing until one of those is on, and an empty list with enforcement on
+means nobody, never everybody. Reading it the other way would turn "the last entry was just
+removed" into "the door is now open", which is not a mistake anyone should be able to make by
+deleting a row. Bans win over whitelists: a listed player who is also banned stays out, and gets
+the ban message.
+
+Enforcement is checked in the four places a scoped ban is, all of them after the ban check: the
+connection gate, both transfer methods, and a staged reconnect route (which is discarded in
+favour of normal routing rather than carrying the player somewhere they cannot go).
+
+The dangerous case is a cold start. If the proxy has never managed to read the list, an empty
+cache is not an answer, and the default is to refuse every join until the registry replies once,
+with a single log line rather than one per attempt. Set `fail_open_until_first_sync = true` to
+let players in during that window instead, trading a closed network for the chance of a wide-open
+one. After the first successful fetch this behaves like bans do: a later outage leaves the last
+known list in force.
+
+Vanilla per-server whitelisting still exists and stays local to that savegame, the same way
+per-server bans do.
 
 ## Addresses: who connects where
 
