@@ -44,7 +44,7 @@ The short version:
 1. Run `Nimbus.Proxy`: a config file is written on first run.
 2. Add your VS servers to `[servers]` in `nimbus.proxy.toml`.
 3. Install `Nimbus.ServerMod` on each backend, fill in `nimbus-server.json`.
-4. Distribute [RedirectFix](https://github.com/StratumServer/redirectfix) to your players.
+4. Distribute [RedirectFix](https://mods.vintagestory.at/show/mod/52239) to your players.
 
 ## Shortcut commands
 
@@ -176,7 +176,7 @@ common misconfiguration:
 | `PublicHost` / `PublicPort` | `nimbus-server.json` (each backend) | The address **the network** reaches that backend on: the proxy dials it for seamless transfers, admin `swap` uses it, and it is stamped into redirect packets. It must be reachable from the proxy; it does not need to be reachable by players. |
 | `identity.public_host` / `public_port` | registry config | The **proxy's** public address, advertised to the VS master server when `advertise_on_master_server` is on. |
 
-Note on redirects: [RedirectFix](https://github.com/StratumServer/redirectfix) clients
+Note on redirects: [RedirectFix](https://mods.vintagestory.at/show/mod/52239) clients
 reconnect to the proxy's cached address and a staged sticky route sends them to the right
 backend, so the host stamped into the redirect packet is not what the client actually
 dials today. By default that stamped host is the backend's `PublicHost`, which a future
