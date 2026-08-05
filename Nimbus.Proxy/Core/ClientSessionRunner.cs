@@ -11,9 +11,11 @@ internal sealed class ClientSessionRunner
     private readonly ProxyConfig cfg;
     private readonly CancellationToken stopToken;
     private readonly BanCache? bans;
+    private readonly WhitelistCache? whitelist;
 
     public ClientSessionRunner(BackendRouter router, EventBus events, ServerStatusResponder statusResponder,
-        StickyRouteTable stickies, ProxyConfig cfg, CancellationToken stopToken, BanCache? bans = null)
+        StickyRouteTable stickies, ProxyConfig cfg, CancellationToken stopToken, BanCache? bans = null,
+        WhitelistCache? whitelist = null)
     {
         this.router = router;
         this.events = events;
@@ -22,6 +24,7 @@ internal sealed class ClientSessionRunner
         this.cfg = cfg;
         this.stopToken = stopToken;
         this.bans = bans;
+        this.whitelist = whitelist;
     }
 
     public async Task RunAsync(ProxySession session, TcpClient client)
@@ -113,6 +116,11 @@ internal sealed class ClientSessionRunner
                 Log.Warn($"[s{session.Id}] sticky route to {known.Target} dropped: uid {uid} is banned from it; routing normally instead");
                 return false;
             }
+            if (LacksCoverageFor(uid, known.Target))
+            {
+                Log.Warn($"[s{session.Id}] sticky route to {known.Target} dropped: uid {uid} is not whitelisted on it; routing normally instead");
+                return false;
+            }
             target = known.Target;
             Log.Trace($"[s{session.Id}] sticky route by uid {uid} -> {known.Target} ({known.Reason})");
             return true;
@@ -126,6 +134,11 @@ internal sealed class ClientSessionRunner
         if (IsBannedFrom(route.Uid, route.Target))
         {
             Log.Warn($"[s{session.Id}] sticky route to {route.Target} dropped: uid {route.Uid} is banned from it; routing normally instead");
+            return false;
+        }
+        if (LacksCoverageFor(route.Uid, route.Target))
+        {
+            Log.Warn($"[s{session.Id}] sticky route to {route.Target} dropped: uid {route.Uid} is not whitelisted on it; routing normally instead");
             return false;
         }
         target = route.Target;
@@ -142,6 +155,17 @@ internal sealed class ClientSessionRunner
     // with no ServerId carries no scope a ban could be matched against.
     private bool IsBannedFrom(string uid, BackendEndpoint target)
         => bans != null && !string.IsNullOrEmpty(target.ServerId) && bans.FindBlocking(uid, target.ServerId) != null;
+
+    // Same discard for a target that requires a whitelist entry this uid does not hold. The
+    // player falls back to normal routing rather than being refused outright, which is what the
+    // per-server scope is for. A cold cache counts as no coverage unless the operator asked for
+    // the open door, matching the connection gate.
+    private bool LacksCoverageFor(string uid, BackendEndpoint target)
+    {
+        if (!cfg.Whitelist.RequiresCoverage(target.ServerId)) return false;
+        if (whitelist == null || !whitelist.HasSynced) return !cfg.Whitelist.FailOpenUntilFirstSync;
+        return whitelist.FindCovering(uid, target.ServerId) == null;
+    }
 
     private static async Task TryForgeDisconnectAsync(TcpClient client, string message)
     {

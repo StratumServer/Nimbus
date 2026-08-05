@@ -37,6 +37,14 @@ internal sealed partial class ProxySession
             return banFail;
         }
 
+        var whitelistFail = CheckTargetWhitelist(target);
+        if (whitelistFail != null)
+        {
+            Log.Warn($"[s{Id}] redirect rejected: {whitelistFail}");
+            ProxyMetrics.RedirectFailed();
+            return whitelistFail;
+        }
+
         var mintFail = await MintReservationIfPossibleAsync(target, registry, reason ?? "proxy redirect", failOnRegistryError, clientTransferId).ConfigureAwait(false);
         if (mintFail != null) { ProxyMetrics.RedirectFailed(); return mintFail; }
 

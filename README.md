@@ -120,6 +120,51 @@ a proxy whose copy of the ban list is a few seconds out of date.
 
 Vanilla per-server `/ban` keeps working and stays local to that savegame.
 
+## Whitelists
+
+The same list read the other way round: who may come in, rather than who may not.
+
+```shell
+nimctl whitelist add --player Builder --note "closed beta"
+nimctl whitelist add --uid <uid> --server staff     # one backend only
+nimctl whitelist list
+nimctl whitelist remove <uid>
+```
+
+Two scopes, matching bans. A network-wide entry covers every backend, which is the private
+server or closed beta case. An entry scoped to one backend covers that backend and nothing else,
+which is the staff or build server sitting inside a public network: a player who is not listed
+there is refused that backend and keeps the rest of the network.
+
+Enforcement is a proxy switch, not a property of the list:
+
+```toml
+[whitelist]
+network = false                    # true closes the whole network to unlisted players
+servers = [ "staff" ]              # backends closed to unlisted players regardless
+fail_open_until_first_sync = false
+```
+
+Adding entries changes nothing until one of those is on, and an empty list with enforcement on
+means nobody, never everybody. Reading it the other way would turn "the last entry was just
+removed" into "the door is now open", which is not a mistake anyone should be able to make by
+deleting a row. Bans win over whitelists: a listed player who is also banned stays out, and gets
+the ban message.
+
+Enforcement is checked in the four places a scoped ban is, all of them after the ban check: the
+connection gate, both transfer methods, and a staged reconnect route (which is discarded in
+favour of normal routing rather than carrying the player somewhere they cannot go).
+
+The dangerous case is a cold start. If the proxy has never managed to read the list, an empty
+cache is not an answer, and the default is to refuse every join until the registry replies once,
+with a single log line rather than one per attempt. Set `fail_open_until_first_sync = true` to
+let players in during that window instead, trading a closed network for the chance of a wide-open
+one. After the first successful fetch this behaves like bans do: a later outage leaves the last
+known list in force.
+
+Vanilla per-server whitelisting still exists and stays local to that savegame, the same way
+per-server bans do.
+
 ## Addresses: who connects where
 
 Three different addresses exist in a Nimbus network, and mixing them up is the most

@@ -31,6 +31,9 @@ internal sealed class ProxyListener
     // Warm list of network bans, consulted synchronously by the connection gate.
     public BanCache Bans { get; }
 
+    // Warm whitelist, consulted by the same gate right after the bans.
+    public WhitelistCache Whitelist { get; }
+
     public ProxyListener(ProxyConfig cfg, CancellationToken stopToken, IRegistryClient? registry = null,
         PersistentDrainStore? drainStore = null)
     {
@@ -39,6 +42,7 @@ internal sealed class ProxyListener
         Registry = registry;
         Router = new BackendRouter(cfg, registry, drainStore);
         Bans = new BanCache(registry, stopToken);
+        Whitelist = new WhitelistCache(registry, stopToken);
         Events.WarningSink = Log.Warn;
     }
 
@@ -58,9 +62,18 @@ internal sealed class ProxyListener
         {
             _ = Task.Run(() => new TransferIntentDispatcher(cfg, Registry, Sessions, stopToken).RunAsync(), stopToken);
             _ = Task.Run(() => Bans.RunAsync(), stopToken);
+            _ = Task.Run(() => Whitelist.RunAsync(), stopToken);
+        }
+        if (cfg.Whitelist.Enabled)
+        {
+            string scope = cfg.Whitelist.Network
+                ? "the whole network"
+                : $"servers [{string.Join(", ", cfg.Whitelist.Servers)}]";
+            Log.Info($"whitelist enforcement on for {scope} " +
+                     $"(fail_open_until_first_sync={cfg.Whitelist.FailOpenUntilFirstSync})");
         }
         var statusResponder = new ServerStatusResponder(cfg, Registry, () => Sessions.Count, stopToken);
-        var sessionRunner = new ClientSessionRunner(Router, Events, statusResponder, Stickies, cfg, stopToken, Bans);
+        var sessionRunner = new ClientSessionRunner(Router, Events, statusResponder, Stickies, cfg, stopToken, Bans, Whitelist);
 
         try
         {
@@ -71,7 +84,7 @@ internal sealed class ProxyListener
                 catch (OperationCanceledException) { break; }
 
                 long id = Interlocked.Increment(ref sessionCounter);
-                var session = new ProxySession(id, cfg, client, stopToken, Stickies, Registry, UdpOverrides, Events, Bans);
+                var session = new ProxySession(id, cfg, client, stopToken, Stickies, Registry, UdpOverrides, Events, Bans, Whitelist);
                 Sessions[id] = session;
                 ProxyMetrics.SessionAccepted();
                 _ = Task.Run(async () =>

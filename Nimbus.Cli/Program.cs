@@ -42,6 +42,7 @@ internal static class Program
                 "ban"     => BuildBan(rest),
                 "unban"   => BuildUnban(rest),
                 "bans"    => new { cmd = "bans" },
+                "whitelist" => BuildWhitelist(rest),
                 "raw"     => BuildRaw(rest),
                 _ => throw new ArgumentException($"unknown command: {cmd}"),
             };
@@ -135,6 +136,59 @@ internal static class Program
         var d = new Dictionary<string, object?> { ["cmd"] = "unban", ["uid"] = uid };
         if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
         return d;
+    }
+
+    // `whitelist` takes a sub-verb rather than three top-level names, because add/remove/list all
+    // read the same list and reading `whitelist list` out loud is what an operator expects. Bare
+    // `whitelist` lists, which is the harmless one.
+    private static object BuildWhitelist(List<string> args)
+    {
+        string sub = args.Count >= 2 && !args[1].StartsWith("-") ? args[1].ToLowerInvariant() : "list";
+        switch (sub)
+        {
+            case "list" or "ls":
+                return new { cmd = "whitelist-list" };
+
+            case "add":
+            {
+                string? uid = GetOpt(args, "--uid");
+                string? player = GetOpt(args, "--player") ?? GetOpt(args, "--name");
+                if (string.IsNullOrEmpty(uid) && string.IsNullOrEmpty(player))
+                    throw new ArgumentException("whitelist add requires --uid <uid> or --player <name>");
+
+                var d = new Dictionary<string, object?> { ["cmd"] = "whitelist-add" };
+                if (!string.IsNullOrEmpty(uid))    d["uid"] = uid;
+                if (!string.IsNullOrEmpty(player)) d["player"] = player;
+
+                string? serverId = GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
+                if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
+                string? note = GetOpt(args, "--note") ?? GetOpt(args, "--reason");
+                if (!string.IsNullOrEmpty(note)) d["note"] = note;
+
+                string? durationStr = GetOpt(args, "--duration");
+                if (!string.IsNullOrEmpty(durationStr))
+                {
+                    if (!int.TryParse(durationStr, out int duration))
+                        throw new ArgumentException("--duration takes a number of seconds");
+                    d["duration"] = duration;
+                }
+                return d;
+            }
+
+            case "remove" or "rm" or "del":
+            {
+                string? uid = GetOpt(args, "--uid") ?? (args.Count >= 3 && !args[2].StartsWith("-") ? args[2] : null);
+                if (string.IsNullOrEmpty(uid)) throw new ArgumentException("whitelist remove requires --uid <uid>");
+
+                var d = new Dictionary<string, object?> { ["cmd"] = "whitelist-remove", ["uid"] = uid };
+                string? serverId = GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
+                if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
+                return d;
+            }
+
+            default:
+                throw new ArgumentException($"unknown whitelist sub-command: {sub} (add, remove, list)");
+        }
     }
 
     private static object BuildDrain(List<string> args, string cmd)
@@ -231,6 +285,7 @@ internal static class Program
         "stickies" => "sticky",
         "routes" => "route",
         "resume" => "undrain",
+        "wl" => "whitelist",
         _ => cmd,
     };
 
@@ -299,6 +354,11 @@ internal static class Program
         Console.WriteLine("      no --server bans across the whole network; --duration 0 or omitted is permanent.");
         Console.WriteLine("  unban <uid> [--server <id>]             lift a ban");
         Console.WriteLine("  bans                                    list active bans");
+        Console.WriteLine("  whitelist add (--uid <uid> | --player <name>) [--server <id>] [--duration <s>] [--note \"...\"]");
+        Console.WriteLine("      no --server covers the whole network; --duration 0 or omitted is permanent.");
+        Console.WriteLine("  whitelist remove <uid> [--server <id>]  drop an entry, disconnecting whoever loses access");
+        Console.WriteLine("  whitelist list                          list entries and where they are enforced");
+        Console.WriteLine("      enforcement is [whitelist] in nimbus.proxy.toml, never the list being non-empty.");
         Console.WriteLine("  raw '<json>'                            send a raw JSON line (for new commands)");
         Console.WriteLine();
         Console.WriteLine("Defaults: host=127.0.0.1 port=42499.");

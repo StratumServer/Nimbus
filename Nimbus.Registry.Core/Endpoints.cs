@@ -68,6 +68,9 @@ public static class Endpoints
                 return Results.Json(new ReservationResponse { Ok = false, Error = "player is banned from the target server" },
                     statusCode: StatusCodes.Status403Forbidden);
 
+            // Whitelists get no equivalent backstop: whether coverage is required at all lives in
+            // proxy config, and the registry has no way to know which mode a proxy is running.
+
             var r = new TransferReservation
             {
                 Id = NewReservationId(),
@@ -154,6 +157,49 @@ public static class Endpoints
         });
 
         app.MapGet("/api/bans", (BanStore bans) => Results.Ok(new BanListResponse { Ok = true, Bans = bans.Active() }));
+
+        // Network whitelist. Same storage shape as the bans above, read the other way round:
+        // an entry says a player may come in. Whether that is required at all is a proxy-side
+        // switch ([whitelist] in nimbus.proxy.toml), so nothing here refuses anything.
+        app.MapPost("/api/whitelist", async (HttpContext ctx, WhitelistStore whitelist, TimeProvider clock) =>
+        {
+            WhitelistRequest? req;
+            try { req = await ctx.Request.ReadFromJsonAsync<WhitelistRequest>(); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
+
+            if (req is null || string.IsNullOrEmpty(req.PlayerUid))
+                return Results.BadRequest(new WhitelistResponse { Ok = false, Error = "PlayerUid required" });
+
+            long now = clock.GetUtcNow().ToUnixTimeSeconds();
+            var entry = whitelist.Add(new WhitelistEntry
+            {
+                PlayerUid = req.PlayerUid,
+                PlayerName = req.PlayerName ?? "",
+                ServerId = req.ServerId ?? "",
+                Note = req.Note ?? "",
+                AddedBy = req.AddedBy ?? "",
+                CreatedAtUnix = now,
+                ExpiresAtUnix = req.DurationSeconds > 0 ? now + req.DurationSeconds : 0,
+            });
+            return Results.Ok(new WhitelistResponse { Ok = true, Entry = entry });
+        });
+
+        // Drop an entry. Omit ?server= to drop the network-wide one; a scoped entry must be
+        // removed with the same serverId it was created with.
+        app.MapPost("/api/whitelist/remove", (HttpContext ctx, WhitelistStore whitelist) =>
+        {
+            string uid = ctx.Request.Query["uid"].ToString();
+            if (string.IsNullOrEmpty(uid))
+                return Results.BadRequest(new { error = "?uid= required" });
+
+            string serverId = ctx.Request.Query["server"].ToString();
+            if (!whitelist.Remove(uid, serverId))
+                return Results.NotFound(new WhitelistResponse { Ok = false, Error = "no matching entry" });
+            return Results.Ok(new WhitelistResponse { Ok = true });
+        });
+
+        app.MapGet("/api/whitelist", (WhitelistStore whitelist)
+            => Results.Ok(new WhitelistListResponse { Ok = true, Entries = whitelist.Active() }));
 
         // Backends post here when someone asks the proxy to move a player.
         // The proxy drains the queue and runs its normal swap path.
