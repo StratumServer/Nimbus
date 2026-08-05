@@ -268,14 +268,16 @@ internal static class Program
             new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory }, host, port, secret);
 
         int i = 0;
-        for (; i < args.Length; i++)
+        // The loop ends on the last flag with nothing after it as well as on the verb: a flag with
+        // no value has none to take, so it stays in the command and comes back as an unknown
+        // command rather than moving where nimctl connects.
+        while (i + 1 < args.Length)
         {
-            // A flag with nothing after it has no value to take, so it stays in the command and
-            // comes back as an unknown command rather than moving where nimctl connects.
-            if (args[i] == "--host" && i + 1 < args.Length) { host = args[++i]; continue; }
-            if (args[i] == "--port" && i + 1 < args.Length) { port = ParsePort(args[++i]); continue; }
-            if (args[i] == "--secret" && i + 1 < args.Length) { secret = args[++i]; continue; }
-            break;
+            if (args[i] == "--host") host = args[i + 1];
+            else if (args[i] == "--port") port = ParsePort(args[i + 1]);
+            else if (args[i] == "--secret") secret = args[i + 1];
+            else break;
+            i += 2;
         }
         return (host, port, secret, new List<string>(args[i..]));
     }

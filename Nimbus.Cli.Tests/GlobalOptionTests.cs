@@ -170,9 +170,12 @@ public class GlobalOptionTests
     public void SwapKeepsItsOwnHostAndPort()
     {
         // Under every spelling of the verb, since the guard reads the normalised name.
-        Program.RejectMisplacedConnectionFlags(["swap", "3", "--host", "10.0.0.5", "--port", "42421"]);
-        Program.RejectMisplacedConnectionFlags(["transfer", "3", "--host", "10.0.0.5", "--port", "42421"]);
-        Program.RejectMisplacedConnectionFlags(["send", "3", "--host", "10.0.0.5", "--port", "42421"]);
+        Assert.Null(Record.Exception(
+            () => Program.RejectMisplacedConnectionFlags(["swap", "3", "--host", "10.0.0.5", "--port", "42421"])));
+        Assert.Null(Record.Exception(
+            () => Program.RejectMisplacedConnectionFlags(["transfer", "3", "--host", "10.0.0.5", "--port", "42421"])));
+        Assert.Null(Record.Exception(
+            () => Program.RejectMisplacedConnectionFlags(["send", "3", "--host", "10.0.0.5", "--port", "42421"])));
     }
 
     [Theory]
@@ -185,7 +188,7 @@ public class GlobalOptionTests
     [InlineData("raw", """{"cmd":"ping"}""")]
     public void ACommandWithNoConnectionFlagInIt_IsLeftAlone(params string[] args)
     {
-        Program.RejectMisplacedConnectionFlags(args.ToList());
+        Assert.Null(Record.Exception(() => Program.RejectMisplacedConnectionFlags(args.ToList())));
     }
 
     [Fact]
