@@ -43,6 +43,7 @@ internal static class Program
                 "unban"   => BuildUnban(rest),
                 "bans"    => new { cmd = "bans" },
                 "whitelist" => BuildWhitelist(rest),
+                "reload"  => new { cmd = "reload" },
                 "raw"     => BuildRaw(rest),
                 _ => throw new ArgumentException($"unknown command: {cmd}"),
             };
@@ -359,6 +360,7 @@ internal static class Program
         Console.WriteLine("  whitelist remove <uid> [--server <id>]  drop an entry, disconnecting whoever loses access");
         Console.WriteLine("  whitelist list                          list entries and where they are enforced");
         Console.WriteLine("      enforcement is [whitelist] in nimbus.proxy.toml, never the list being non-empty.");
+        Console.WriteLine("  reload                                  reload nimbus.proxy.toml and all plugins");
         Console.WriteLine("  raw '<json>'                            send a raw JSON line (for new commands)");
         Console.WriteLine();
         Console.WriteLine("Defaults: host=127.0.0.1 port=42499.");
