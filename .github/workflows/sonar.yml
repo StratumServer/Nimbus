@@ -105,6 +105,7 @@ jobs:
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.exclusions="**/bin/**,**/obj/**" \
             /d:sonar.coverage.exclusions="eggs/**" \
+            /d:sonar.python.version="3.9" \
             /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
 
       - name: Build
