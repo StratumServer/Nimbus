@@ -59,7 +59,14 @@ internal sealed class BanCommand : IAdminCommand
 
         // Apply immediately rather than waiting for the next refresh, so the kick below and any
         // reconnect attempt see the ban.
-        try { await ctx.Proxy.Bans.RefreshAsync().ConfigureAwait(false); } catch { }
+        try { await ctx.Proxy.Bans.RefreshAsync().ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            // The kick sweep reads the ban the registry just returned, not the cache, so it runs
+            // either way. Only the reconnect gate leans on the cache, and it is caught up by the
+            // next poll; until then the player could get back in, which the operator should hear.
+            Log.Warn($"ban cache refresh failed after banning {uid}: {ex.GetType().Name}: {ex.Message}; the gate picks it up on the next poll");
+        }
 
         // A ban should not leave the player sitting on a backend it covers. A network-wide ban
         // takes every session they hold; a scoped one only the sessions on that backend, which
@@ -135,7 +142,14 @@ internal sealed class UnbanCommand : IAdminCommand
 
         if (lifted)
         {
-            try { await ctx.Proxy.Bans.RefreshAsync().ConfigureAwait(false); } catch { }
+            try { await ctx.Proxy.Bans.RefreshAsync().ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                // Nothing here reads the cache afterwards; the cost of the failure is that the
+                // pardoned player keeps being refused until the next poll, which is the kind of
+                // thing an operator wants told rather than discovered.
+                Log.Warn($"ban cache refresh failed after lifting the ban on {uid}: {ex.GetType().Name}: {ex.Message}; the gate picks it up on the next poll");
+            }
         }
 
         return new { ok = lifted, uid, scope = string.IsNullOrEmpty(serverId) ? "network" : serverId };

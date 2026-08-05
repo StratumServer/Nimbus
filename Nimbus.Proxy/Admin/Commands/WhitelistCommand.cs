@@ -62,7 +62,14 @@ internal sealed class WhitelistAddCommand : IAdminCommand
 
         // Apply immediately rather than waiting for the next refresh, so the player's next join
         // attempt sees the entry.
-        try { await ctx.Proxy.Whitelist.RefreshAsync().ConfigureAwait(false); } catch { }
+        try { await ctx.Proxy.Whitelist.RefreshAsync().ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            // The entry is in the registry either way, so this only delays it reaching the gate
+            // on this proxy. Worth saying out loud: the operator who just ran the command is
+            // probably watching someone try to join.
+            Log.Warn($"whitelist cache refresh failed after listing {uid}: {ex.GetType().Name}: {ex.Message}; the gate picks it up on the next poll");
+        }
 
         return new
         {
@@ -101,7 +108,16 @@ internal sealed class WhitelistRemoveCommand : IAdminCommand
         if (!removed)
             return new { ok = false, uid, scope = string.IsNullOrEmpty(serverId) ? "network" : serverId };
 
-        try { await ctx.Proxy.Whitelist.RefreshAsync().ConfigureAwait(false); } catch { }
+        // The sweep below asks the cache who is still covered, so the removal has to be in the
+        // cache before it runs. Whether it got there decides how the sweep reads a "still
+        // covered" answer, so the outcome is carried rather than assumed.
+        bool cacheHasRemoval;
+        try { cacheHasRemoval = await ctx.Proxy.Whitelist.RefreshAsync().ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            cacheHasRemoval = false;
+            Log.Warn($"whitelist cache refresh failed after removing {uid}: {ex.GetType().Name}: {ex.Message}");
+        }
 
         // Removing an entry can close a door the player is already standing behind. Which of
         // their sessions that is depends on the backend each one sits on and on what coverage is
@@ -116,7 +132,13 @@ internal sealed class WhitelistRemoveCommand : IAdminCommand
             // gates.
             string? current = ((IPlayer)session).CurrentServer?.ServerId;
             if (!ctx.Cfg.Whitelist.RequiresCoverage(current)) continue;
-            if (ctx.Proxy.Whitelist.FindCovering(uid, current) != null) continue;
+            // Only trust a "still covered" answer from a list the removal is actually in. On a
+            // stale list the entry that just went away is still sitting there and would spare
+            // every session it used to cover, which is how this command came to report a kick
+            // count of zero while the player stayed connected. Kicking someone who turns out to
+            // hold other coverage costs them a reconnect; leaving them on costs the removal its
+            // entire point.
+            if (cacheHasRemoval && ctx.Proxy.Whitelist.FindCovering(uid, current) != null) continue;
 
             ((IPlayer)session).Disconnect(ctx.Cfg.Whitelist.Network
                 ? "This network is whitelisted."
@@ -130,6 +152,9 @@ internal sealed class WhitelistRemoveCommand : IAdminCommand
             uid,
             scope = string.IsNullOrEmpty(serverId) ? "network" : serverId,
             kicked,
+            // False means the sweep above ran against a list this removal had not reached, so it
+            // erred towards kicking. The registry still holds the removal.
+            cacheRefreshed = cacheHasRemoval,
         };
     }
 }
