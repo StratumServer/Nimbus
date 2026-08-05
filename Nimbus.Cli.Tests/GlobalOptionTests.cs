@@ -73,6 +73,24 @@ public class GlobalOptionTests
     }
 
     [Fact]
+    public void TheDocumentedSwapToAHostAndPort_CannotBeTypedToday()
+    {
+        // `nimctl --help` line 2 of swap advertises `swap <id> --host <h> --port <p>`, but
+        // ParseGlobalOptions takes both flags before BuildPayload ever sees them. Walking the two
+        // steps in the order Main does is the only way to see what an operator actually gets.
+        var parsed = Parse("swap", "3", "--host", "10.0.0.5", "--port", "42421");
+        var refused = Assert.Throws<ArgumentException>(() => Program.BuildPayload(parsed.Command));
+
+        Assert.Equal("swap requires either --server <id> or both --host and --port", refused.Message);
+
+        // Worse than the refusal is what it did on the way there: nimctl is now pointed at the
+        // backend the operator meant to send the player to. Pinned rather than fixed here because
+        // choosing which of the two spellings wins is a behaviour change, not a test.
+        Assert.Equal("10.0.0.5", parsed.Host);
+        Assert.Equal(42421, parsed.Port);
+    }
+
+    [Fact]
     public void ATrailingGlobalFlagWithNoValue_IsLeftInTheCommandRatherThanEatingTheEnd()
     {
         // Nothing follows it to be taken as the value, so it stays where it was typed and comes
