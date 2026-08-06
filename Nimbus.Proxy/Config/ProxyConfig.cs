@@ -227,7 +227,14 @@ internal sealed class RegistryConfig
 
     // Embedded mode only. Empty Bind disables the HTTP listener.
     // The proxy still keeps its in-process registry path.
-    public string EmbeddedBind { get; set; } = "http://0.0.0.0:8765";
+    //
+    // Loopback by default, so the file written on a first run passes the validator below it and a
+    // single-machine install serves players without being edited first. Backends on another host
+    // or in another container cannot reach a loopback bind: widen this to "http://0.0.0.0:8765"
+    // and, in the same edit, replace embedded_shared_secret, which the validator requires and
+    // refuses to start without. The Pterodactyl eggs write both lines from panel variables, so a
+    // panel install never sees these defaults.
+    public string EmbeddedBind { get; set; } = "http://127.0.0.1:8765";
     public string EmbeddedSharedSecret { get; set; } = "change-me-and-keep-secret";
     public int BackendStaleSeconds { get; set; } = 20;
     public int BackendDropSeconds { get; set; } = 120;

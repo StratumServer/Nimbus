@@ -71,8 +71,65 @@ internal static class Program
                        the next line writes one */ }
         }
         bool existed = File.Exists(path);
+        bool minted = !existed && !File.Exists(jsonSibling) && WriteFirstRunConfig(path);
         var cfg = TomlConfig.LoadOrCreate<ProxyConfig>(path);
-        if (!existed) Log.Warn($"no config at {path}, wrote defaults");
+        if (!existed)
+        {
+            Log.Warn($"no config at {path}, wrote defaults");
+            if (minted)
+                Log.Warn("registry.embedded_shared_secret was generated for this install; copy it into \"SharedSecret\" in each backend's nimbus-server.json");
+        }
         return cfg;
+    }
+
+    // The file an operator has never seen, written before it is read back and validated. Two
+    // things separate it from a plain serialization of the defaults:
+    //
+    //   - the registry shared secret is minted here rather than shipped as a literal, so two
+    //     installs never share one and nothing published in a doc opens either (#40),
+    //   - the value is useless to the operator without knowing where its twin goes, so the line
+    //     above it says so.
+    //
+    // Skipped when a legacy nimbus.proxy.json is still sitting there, because that path is a
+    // migration of an existing network whose secret the backends already have.
+    //
+    // Returns whether a secret was minted, so the caller only tells the operator to go copy one
+    // when there is one to copy.
+    internal static bool WriteFirstRunConfig(string path)
+    {
+        try
+        {
+            var fresh = new ProxyConfig();
+            fresh.Registry.EmbeddedSharedSecret = SecretGenerator.NewSharedSecret();
+            TomlConfig.Save(path, fresh);
+            AnnotateSharedSecret(path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // LoadOrCreate writes the plain defaults right after this, and a config carrying the
+            // known placeholder is one the validator refuses to serve on a public bind. Losing the
+            // generated secret is worth a line in the log, not a failed start.
+            Log.Warn("could not write a generated registry secret into the new config: " + ex.Message);
+            return false;
+        }
+    }
+
+    // Tomlyn serializes a POCO, so the only way a comment reaches the file is to put it there
+    // afterwards. Best effort by design: a missing key leaves the file exactly as written, since a
+    // valid config without a comment beats a mangled one.
+    private static void AnnotateSharedSecret(string path)
+    {
+        const string key = "embedded_shared_secret = ";
+        var lines = File.ReadAllLines(path).ToList();
+        int at = lines.FindIndex(l => l.StartsWith(key, StringComparison.Ordinal));
+        if (at < 0) return;
+        lines.InsertRange(at, new[]
+        {
+            "# Generated for this install. Every backend authenticates to the registry with it:",
+            "# copy this exact value into \"SharedSecret\" in each backend's nimbus-server.json.",
+            "# Changing it here means changing it on every backend in the same pass.",
+        });
+        File.WriteAllLines(path, lines, new System.Text.UTF8Encoding(false));
     }
 }

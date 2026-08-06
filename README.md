@@ -41,10 +41,24 @@ See the **[Getting Started guide](https://github.com/StratumServer/Nimbus/wiki/G
 
 The short version:
 
-1. Run `Nimbus.Proxy`: a config file is written on first run.
+1. Run `Nimbus.Proxy`: a config file is written on first run, and the proxy starts.
 2. Add your VS servers to `[servers]` in `nimbus.proxy.toml`.
-3. Install `Nimbus.ServerMod` on each backend, fill in `nimbus-server.json`.
+3. Install `Nimbus.ServerMod` on each backend and fill in `nimbus-server.json`, including the
+   `registry.embedded_shared_secret` the first run generated.
 4. Distribute [RedirectFix](https://mods.vintagestory.at/show/mod/52239) to your players.
+
+That first run picks its own `registry.embedded_shared_secret`, so no two installs share one and
+nothing published in these docs opens yours. It is the credential every backend authenticates to
+the registry with, and copying it into each `nimbus-server.json` is what step 3 above is mostly
+about. Nothing regenerates it afterwards.
+
+The rest of the defaults assume one machine: the embedded registry listens on
+`registry.embedded_bind = "http://127.0.0.1:8765"`, which nothing off the box can reach. If your
+backends run elsewhere, widen that to `http://0.0.0.0:8765`. The proxy refuses to start on a bind
+other hosts can reach while the secret is still the documented placeholder, since anyone able to
+reach the registry could otherwise mint themselves a reservation onto any backend. The Pterodactyl
+eggs write both lines from panel variables, so a panel install starts from the wide bind and the
+panel's own `NIMBUS_SHARED_SECRET`.
 
 ## Shortcut commands
 
