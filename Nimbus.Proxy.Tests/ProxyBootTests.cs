@@ -159,6 +159,271 @@ public class ProxyBootTests
         Assert.Null(listener.Registry);
     }
 
+    // ---- what a first run does ----
+
+    /// <summary>A directory with no nimbus.proxy.toml in it, which is what an operator unzips.
+    /// The caller gets the path the config will land at.</summary>
+    private static string FreshInstallDir(out string configPath)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "nimbus-firstrun-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        configPath = Path.Combine(dir, "nimbus.proxy.toml");
+        return dir;
+    }
+
+    /// <summary>Program.LoadConfig's write half against a chosen directory: mint the config, then
+    /// read it back with the same loader Main uses.</summary>
+    private static ProxyConfig FirstRun(string configPath)
+    {
+        Assert.True(Program.WriteFirstRunConfig(configPath), "the first run reported no generated secret");
+        return Nimbus.Shared.TomlConfig.LoadOrCreate<ProxyConfig>(configPath);
+    }
+
+    [Fact]
+    public async Task AFreshInstall_WritesAConfigThatBootsWithoutBeingEditedFirst()
+    {
+        // Program.Main's opening sequence on an empty directory: no nimbus.proxy.toml, so one is
+        // written, read back off disk and validated before anything binds. Until #87 that ended at
+        // the validator with exit 2. Going through the file rather than through `new ProxyConfig()`
+        // is the point: it is the written bytes an operator ends up running.
+        string dir = FreshInstallDir(out string path);
+        try
+        {
+            var cfg = FirstRun(path);
+            Assert.True(File.Exists(path), "first run left no config file for the operator to edit");
+
+            var validation = ProxyConfigValidator.Validate(cfg);
+            Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
+
+            // Past the validator, boot continues into the embedded registry. The written bind is
+            // loopback:8765, which a build agent may already have something on, so this asks for
+            // the same loopback host on a port the OS just handed back.
+            Assert.StartsWith("http://127.0.0.1:", cfg.Registry.EmbeddedBind);
+            cfg.Registry.EmbeddedBind = $"http://127.0.0.1:{FreePort()}";
+
+            await using var host = ProxyRegistryHost.Build(cfg, CancellationToken.None);
+
+            Assert.IsType<InProcRegistryClient>(host.Client);
+            using var probe = new TcpClient();
+            await probe.ConnectAsync(IPAddress.Loopback, new Uri(cfg.Registry.EmbeddedBind).Port);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* a leftover temp dir is harmless */ }
+        }
+    }
+
+    [Fact]
+    public void AFreshInstall_MintsItsOwnRegistrySecretInsteadOfShippingOne()
+    {
+        string dir = FreshInstallDir(out string path);
+        try
+        {
+            var cfg = FirstRun(path);
+
+            // A literal in the source is a literal in every install that never edited it, and the
+            // value is in a public repository (#40).
+            Assert.NotEqual("change-me-and-keep-secret", cfg.Registry.EmbeddedSharedSecret);
+            Assert.NotEqual("REPLACE_ME_WITH_A_LONG_RANDOM_STRING", cfg.Registry.EmbeddedSharedSecret);
+            Assert.Equal(Nimbus.Shared.SecretGenerator.Length, cfg.Registry.EmbeddedSharedSecret.Length);
+            Assert.All(cfg.Registry.EmbeddedSharedSecret, c => Assert.True(char.IsAsciiLetterOrDigit(c),
+                $"'{c}' would need quoting or escaping somewhere on its way to a backend"));
+            // The operator retypes this into every backend, sometimes off a panel screen, so a
+            // character that is only distinguishable in some fonts costs them an HMAC failure.
+            Assert.All(cfg.Registry.EmbeddedSharedSecret, c => Assert.DoesNotContain(c, "0Oo1lI"));
+
+            // Generated or not, the file still has to pass the check that reads it back.
+            var validation = ProxyConfigValidator.Validate(cfg);
+            Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
+
+            // A secret is no use to the operator without the other end of it, and the file is the
+            // only place they are looking.
+            Assert.Contains("nimbus-server.json", File.ReadAllText(path), StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* a leftover temp dir is harmless */ }
+        }
+    }
+
+    [Fact]
+    public void TwoFreshInstalls_DoNotEndUpSharingASecret()
+    {
+        string first = FreshInstallDir(out string firstPath);
+        string second = FreshInstallDir(out string secondPath);
+        try
+        {
+            // Two installs that share a secret are one install as far as the registry is
+            // concerned: either network's backends can heartbeat into the other.
+            Assert.NotEqual(FirstRun(firstPath).Registry.EmbeddedSharedSecret,
+                FirstRun(secondPath).Registry.EmbeddedSharedSecret);
+        }
+        finally
+        {
+            try { Directory.Delete(first, recursive: true); } catch { /* harmless */ }
+            try { Directory.Delete(second, recursive: true); } catch { /* harmless */ }
+        }
+    }
+
+    [Fact]
+    public void AnExistingConfigOnASecondRun_IsLeftAloneRatherThanReminted()
+    {
+        string dir = FreshInstallDir(out string path);
+        try
+        {
+            var written = FirstRun(path);
+
+            // Program.LoadConfig only writes when the file is missing. Regenerating on every boot
+            // would silently cut every backend off from the registry after a restart.
+            var reread = Nimbus.Shared.TomlConfig.LoadOrCreate<ProxyConfig>(path);
+
+            Assert.Equal(written.Registry.EmbeddedSharedSecret, reread.Registry.EmbeddedSharedSecret);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* harmless */ }
+        }
+    }
+
+    [Fact]
+    public void AFirstRunThatCannotWriteItsConfig_GivesUpOnTheSecretRatherThanTheBoot()
+    {
+        // A read-only install directory, or one the service account cannot reach. The loader falls
+        // through to the plain defaults, which still start on loopback; the placeholder secret they
+        // carry is the one the validator refuses on any wider bind, so nothing is quietly exposed.
+        string unreachable = Path.Combine(
+            Path.GetTempPath(), "nimbus-no-such-dir-" + Guid.NewGuid().ToString("N"), "nimbus.proxy.toml");
+
+        Assert.False(Program.WriteFirstRunConfig(unreachable));
+        Assert.False(File.Exists(unreachable));
+    }
+
+    /// <summary>Program.LoadConfig resolves its own paths from AppContext.BaseDirectory, which
+    /// under the test runner is this assembly's output folder, so driving the real loader means
+    /// working in it. This clears the three files it touches and puts them back afterwards.
+    /// Nothing else in the suite reads them.</summary>
+    private sealed class BaseDirectoryInstall : IDisposable
+    {
+        public string Toml { get; } = Path.Combine(AppContext.BaseDirectory, "nimbus.proxy.toml");
+        public string LegacyJson { get; } = Path.Combine(AppContext.BaseDirectory, "nimbus.proxy.json");
+        public string Obsolete => LegacyJson + ".obsolete";
+        public string Migrated => LegacyJson + ".migrated";
+
+        private readonly Dictionary<string, string> saved = new();
+
+        private string[] All => new[] { Toml, LegacyJson, Obsolete, Migrated };
+
+        public static BaseDirectoryInstall Clean()
+        {
+            var install = new BaseDirectoryInstall();
+            foreach (var p in install.All)
+            {
+                if (!File.Exists(p)) continue;
+                install.saved[p] = File.ReadAllText(p);
+                File.Delete(p);
+            }
+            return install;
+        }
+
+        public void Dispose()
+        {
+            foreach (var p in All)
+            {
+                try
+                {
+                    if (saved.TryGetValue(p, out var text)) File.WriteAllText(p, text);
+                    else File.Delete(p);
+                }
+                catch { /* the runner's output folder is rebuilt anyway */ }
+            }
+        }
+    }
+
+    [Fact]
+    public void TheLoaderTheProxyActuallyBootsWith_WritesOnceNextToTheBinaryAndRereadsIt()
+    {
+        // The one place the whole first-run sequence runs as Main runs it.
+        using var install = BaseDirectoryInstall.Clean();
+
+        var first = Program.LoadConfig();
+
+        Assert.True(File.Exists(install.Toml), "the boot loader left no config file behind");
+        Assert.NotEqual("change-me-and-keep-secret", first.Registry.EmbeddedSharedSecret);
+        var validation = ProxyConfigValidator.Validate(first);
+        Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
+
+        // The second boot, and every `nimctl reload`, reads what the first one wrote.
+        Assert.Equal(first.Registry.EmbeddedSharedSecret,
+            Program.LoadConfig().Registry.EmbeddedSharedSecret);
+    }
+
+    [Fact]
+    public void ALegacyJsonNextToTheBinary_IsAMigrationAndMintsNoSecret()
+    {
+        using var install = BaseDirectoryInstall.Clean();
+
+        // The pre-Velocity config an upgrade finds. Its shape does not map onto the current schema,
+        // so LoadConfig moves it aside and the defaults are written instead. That reset predates
+        // this PR and is not what this test is about.
+        File.WriteAllText(install.LegacyJson, "{\"Bind\":\"0.0.0.0:42420\"}");
+
+        var cfg = Program.LoadConfig();
+
+        Assert.True(File.Exists(install.Obsolete), "the legacy config was not moved aside");
+        Assert.False(File.Exists(install.LegacyJson));
+
+        // The point. This is an existing network: its backends already hold a shared secret, and
+        // minting one here would hand the operator a fresh credential to go distribute, under a log
+        // line written for first-time installs. The skip used to be read from the .json path after
+        // the rename above had already deleted it, so it only ever fired when the rename threw.
+        Assert.Equal("change-me-and-keep-secret", cfg.Registry.EmbeddedSharedSecret);
+    }
+
+    [Fact]
+    public void ALegacyJsonThatCannotBeMovedAside_IsStillAMigrationAndMintsNoSecret()
+    {
+        using var install = BaseDirectoryInstall.Clean();
+
+        // The rename fails when the install directory is read-only. A directory sitting where the
+        // .obsolete file wants to go makes File.Move throw without needing the whole folder
+        // read-only. LoadOrCreate then finds the .json still there and takes its own migration
+        // branch, which carries the legacy values into the new TOML and leaves the original as
+        // .json.migrated. So this is the path where the network's real secret does survive, and
+        // minting over it would lock out every backend at once.
+        File.WriteAllText(install.LegacyJson,
+            "{\"Bind\":\"0.0.0.0:42420\",\"Registry\":{\"EmbeddedSharedSecret\":\"the-secret-this-network-runs-on\"}}");
+        Directory.CreateDirectory(install.Obsolete);
+        try
+        {
+            var cfg = Program.LoadConfig();
+
+            Assert.True(File.Exists(install.Migrated), "the legacy config was not migrated");
+            Assert.Equal("the-secret-this-network-runs-on", cfg.Registry.EmbeddedSharedSecret);
+            Assert.Contains("the-secret-this-network-runs-on", File.ReadAllText(install.Toml), StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(install.Obsolete, recursive: true); } catch { /* harmless */ }
+        }
+    }
+
+    [Fact]
+    public void AFreshInstallWidenedToOffBoxBackendsWithoutASecret_IsStillRefused()
+    {
+        // The one edit an off-box deployment makes, made carelessly, by an operator who pasted the
+        // placeholder out of a doc rather than keeping what the first run generated. The loopback
+        // default is safe because this stays an error: it is the whole reason moving the default is
+        // not a weakening.
+        var cfg = new ProxyConfig();
+        cfg.Registry.EmbeddedBind = "http://0.0.0.0:8765";
+
+        var result = ProxyConfigValidator.Validate(cfg);
+
+        Assert.False(result.IsValid);
+        Assert.Equal("registry.embedded_bind is not loopback, so registry.embedded_shared_secret must be changed from the default",
+            Assert.Single(result.Errors));
+    }
+
     // ---- the registry the mode setting picks ----
 
     [Theory]

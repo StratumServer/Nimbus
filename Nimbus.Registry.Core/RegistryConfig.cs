@@ -3,7 +3,9 @@ namespace Nimbus.Registry;
 // Top-level registry configuration loaded from nimbus.registry.json.
 public sealed class RegistryConfig
 {
-    // Bind address. Default binds all interfaces on the dev port.
+    // Bind address. Loopback by default, matching the proxy's embedded registry: a standalone
+    // registry is only worth running for backends that are not on this box, so widening this is a
+    // deliberate step, and the secret below has to be replaced in the same edit.
     public string BindUrl { get; set; } = "http://127.0.0.1:8765";
 
     // HMAC shared secret used by every backend. To rotate, put the new secret in

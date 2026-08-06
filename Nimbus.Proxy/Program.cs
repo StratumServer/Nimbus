@@ -60,19 +60,95 @@ internal static class Program
     {
         var path = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
         var jsonSibling = Path.ChangeExtension(path, ".json");
+        bool existed = File.Exists(path);
+
+        // Noted before the rename below, which moves the very file a later File.Exists would be
+        // asking about. Reading it afterwards would answer "no legacy config" on exactly the runs
+        // that had one, and this flag decides whether the run counts as a migration.
+        bool hadLegacy = !existed && File.Exists(jsonSibling);
+
         // The legacy nimbus.proxy.json shape (pre-Velocity layout) doesn't map onto the new
         // schema. Move it aside so LoadOrCreate writes a fresh default TOML rather than
         // picking up incompatible fields.
-        if (!File.Exists(path) && File.Exists(jsonSibling))
+        bool resetFromLegacy = false;
+        if (hadLegacy)
         {
-            try { File.Move(jsonSibling, jsonSibling + ".obsolete", overwrite: true); Log.Warn($"renamed legacy {jsonSibling} -> {jsonSibling}.obsolete"); }
+            try
+            {
+                File.Move(jsonSibling, jsonSibling + ".obsolete", overwrite: true);
+                Log.Warn($"renamed legacy {jsonSibling} -> {jsonSibling}.obsolete");
+                resetFromLegacy = true;
+            }
             catch { /* a read-only install directory keeps the stale file, which is inert:
                        LoadOrCreate only reads the .json sibling when the .toml is missing, and
                        the next line writes one */ }
         }
-        bool existed = File.Exists(path);
+        bool minted = !existed && !hadLegacy && WriteFirstRunConfig(path);
         var cfg = TomlConfig.LoadOrCreate<ProxyConfig>(path);
-        if (!existed) Log.Warn($"no config at {path}, wrote defaults");
+        if (!existed)
+        {
+            Log.Warn($"no config at {path}, wrote defaults");
+            if (minted)
+                Log.Warn("registry.embedded_shared_secret was generated for this install; copy it into \"SharedSecret\" in each backend's nimbus-server.json");
+            // The old settings are gone and the replacements are the shipped ones, which are built
+            // for a single machine. That combination starts cleanly, so without this line the only
+            // symptom is backends on other hosts quietly failing to reach the registry.
+            if (resetFromLegacy)
+                Log.Warn($"the legacy config's settings were not carried over; registry.embedded_bind in the new file is loopback and registry.embedded_shared_secret is the placeholder, so review both in {path} before your backends reconnect");
+        }
         return cfg;
+    }
+
+    // The file an operator has never seen, written before it is read back and validated. Two
+    // things separate it from a plain serialization of the defaults:
+    //
+    //   - the registry shared secret is minted here rather than shipped as a literal, so two
+    //     installs never share one and nothing published in a doc opens either (#40),
+    //   - the value is useless to the operator without knowing where its twin goes, so the line
+    //     above it says so.
+    //
+    // Skipped when the run started with a legacy nimbus.proxy.json next to it, because that is a
+    // migration of an existing network whose backends already have a secret. Minting one there
+    // would hand the operator a credential to distribute on a network that never asked for a new
+    // one, under a log line written for first-time installs.
+    //
+    // Returns whether a secret was minted, so the caller only tells the operator to go copy one
+    // when there is one to copy.
+    internal static bool WriteFirstRunConfig(string path)
+    {
+        try
+        {
+            var fresh = new ProxyConfig();
+            fresh.Registry.EmbeddedSharedSecret = SecretGenerator.NewSharedSecret();
+            TomlConfig.Save(path, fresh);
+            AnnotateSharedSecret(path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // LoadOrCreate writes the plain defaults right after this, and a config carrying the
+            // known placeholder is one the validator refuses to serve on a public bind. Losing the
+            // generated secret is worth a line in the log, not a failed start.
+            Log.Warn("could not write a generated registry secret into the new config: " + ex.Message);
+            return false;
+        }
+    }
+
+    // Tomlyn serializes a POCO, so the only way a comment reaches the file is to put it there
+    // afterwards. Best effort by design: a missing key leaves the file exactly as written, since a
+    // valid config without a comment beats a mangled one.
+    private static void AnnotateSharedSecret(string path)
+    {
+        const string key = "embedded_shared_secret = ";
+        var lines = File.ReadAllLines(path).ToList();
+        int at = lines.FindIndex(l => l.StartsWith(key, StringComparison.Ordinal));
+        if (at < 0) return;
+        lines.InsertRange(at, new[]
+        {
+            "# Generated for this install. Every backend authenticates to the registry with it:",
+            "# copy this exact value into \"SharedSecret\" in each backend's nimbus-server.json.",
+            "# Changing it here means changing it on every backend in the same pass.",
+        });
+        File.WriteAllLines(path, lines, new System.Text.UTF8Encoding(false));
     }
 }

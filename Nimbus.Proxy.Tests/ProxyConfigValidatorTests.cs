@@ -56,36 +56,23 @@ public class ProxyConfigValidatorTests
     }
 
     [Fact]
-    public void TheDefaultsWrittenOnFirstRun_DoNotPassTheirOwnValidator()
+    public void TheBuiltInDefaults_PassTheirOwnValidator()
     {
-        // Pinned, not fixed. README step 1 is "run Nimbus.Proxy: a config file is written on
-        // first run", and Program.Main writes exactly this object, reads it back and validates
-        // it before anything else. On 0.4.0 that sequence ends in:
+        // What a first run writes, and equally what every key an operator left out of their file
+        // resolves to. Until #87 this object failed the very check Program.Main runs on it two
+        // lines after writing it: registry.embedded_bind defaulted to http://0.0.0.0:8765 while
+        // registry.embedded_shared_secret defaulted to the literal placeholder, so README step 1
+        // ended in exit 2 on a file the operator had never seen. The bind is loopback now and the
+        // pair agrees.
         //
-        //   warn: no config at .../nimbus.proxy.toml, wrote defaults
-        //   error: config error: registry.embedded_bind is not loopback, so
-        //          registry.embedded_shared_secret must be changed from the default
-        //   (exit 2)
-        //
-        // because registry.embedded_bind defaults to http://0.0.0.0:8765 while
-        // registry.embedded_shared_secret defaults to the literal placeholder. A first run
-        // refuses to start on a file the operator has never seen. `nimctl reload` hits the same
-        // check on the same file.
-        //
-        // Either default could move to fix it and the two choices are not equivalent (loopback
-        // shuts out off-box backends; a generated secret stops matching what backends already
-        // have configured), so picking one is a behaviour change that belongs in its own PR.
-        var written = ProxyConfigValidator.Validate(new ProxyConfig());
+        // This is the assertion that keeps it that way: any future default a validator rule
+        // refuses fails here rather than in a first-time operator's terminal.
+        var defaults = ProxyConfigValidator.Validate(new ProxyConfig());
 
-        Assert.False(written.IsValid);
-        Assert.Equal("registry.embedded_bind is not loopback, so registry.embedded_shared_secret must be changed from the default",
-            Assert.Single(written.Errors));
-
-        // Everything else about the defaults is fine, so this is one line of the shipped file
-        // rather than a config that needs writing from scratch.
-        var fixedUp = new ProxyConfig();
-        fixedUp.Registry.EmbeddedSharedSecret = "a-long-random-string";
-        Assert.True(ProxyConfigValidator.Validate(fixedUp).IsValid);
+        Assert.True(defaults.IsValid, string.Join("; ", defaults.Errors));
+        Assert.Empty(defaults.Errors);
+        // A warning on a file nobody has edited yet is noise the operator can do nothing about.
+        Assert.Empty(defaults.Warnings);
     }
 
     // ---- bind ----
@@ -568,6 +555,10 @@ public class ProxyConfigValidatorTests
     {
         // The registry mints reservations and holds the ban list. On a published secret, anyone
         // who can reach it can let themselves onto any backend.
+        //
+        // This is also the rule the loopback default leans on: widening embedded_bind for off-box
+        // backends is one line, and an operator who changes that line and no other is stopped here
+        // rather than left serving reservations to the internet.
         AssertError(Validate(cfg =>
         {
             cfg.Registry.Mode = "embedded";
