@@ -31,8 +31,8 @@ internal static class Program
         catch (Exception ex) { Log.Error("config invalid: " + ex.Message); return 2; }
 
         using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, e) => { e.Cancel = true; Log.Info("ctrl+c received, shutting down"); cts.Cancel(); };
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => cts.Cancel();
+        Console.CancelKeyPress += (_, e) => e.Cancel = HandleCancelKey(cts);
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => RequestShutdown(cts);
 
         ProxyRegistryHost registryHost;
         try
@@ -54,6 +54,43 @@ internal static class Program
             return 1;
         }
         return 0;
+    }
+
+    // Cancels the run on behalf of a handler that outlives the source it cancels.
+    //
+    // Both handlers above can fire once that source is disposed. ProcessExit runs during teardown,
+    // after Main has returned and its `using` has run, which is every exit path there is: a config
+    // the validator refused, a registry that could not bind, a clean 0. Under a SIGTERM it is the
+    // other way round, raised while Main is still on its way out, so the dispose races a handler
+    // that is already running. Cancel() on a disposed source throws, a throw out of an event
+    // handler has nowhere to go, and an unhandled exception during teardown is what the process
+    // exits on instead of the code Main decided: the refusal #95 was reported against left 134 and
+    // a stack trace where the service log wanted a 2.
+    //
+    // Unregistering on the way out would close the first path and neither race, so the handlers
+    // tolerate a disposed source rather than assume they run before it.
+    //
+    // Returns whether there was still a run to cancel.
+    internal static bool RequestShutdown(CancellationTokenSource cts)
+    {
+        try
+        {
+            cts.Cancel();
+            return true;
+        }
+        catch (ObjectDisposedException) { return false; }
+    }
+
+    // Whether ctrl+c is taken over, which is what the caller assigns to e.Cancel. Taking it over
+    // is what turns the keypress into a graceful shutdown instead of an immediate kill, and it is
+    // only worth doing while there is something left to shut down. Once the source is gone the run
+    // is already over, and swallowing the keypress there would leave an operator holding ctrl+c on
+    // a process that is not listening for it any more.
+    internal static bool HandleCancelKey(CancellationTokenSource cts)
+    {
+        if (!RequestShutdown(cts)) return false;
+        Log.Info("ctrl+c received, shutting down");
+        return true;
     }
 
     internal static ProxyConfig LoadConfig()

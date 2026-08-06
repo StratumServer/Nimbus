@@ -57,4 +57,24 @@
     </ItemGroup>
     <Copy SourceFiles="@(PluginFixture)" DestinationFolder="$(OutDir)plugin-fixtures" SkipUnchangedFiles="true" />
   </Target>
+
+  <!--
+    The built proxy, staged beside the test binaries. ProxyBootTests copies it into a scratch
+    directory and runs it there: Program reads its config out of the directory the binary sits in,
+    so booting the real thing against a chosen config means giving it a directory of its own, and
+    an exit code is only observable from a process that actually exited.
+
+    A nimbus.proxy.toml left in the proxy's own output folder by a hand run is deliberately not
+    carried along, since each test writes the config it wants to boot.
+  -->
+  <Target Name="StageProxyApp" AfterTargets="Build">
+    <ItemGroup>
+      <!-- Item globs ignore case, so the exclusions have to name the config files rather than
+           reach for nimbus.proxy.*, which also matches Nimbus.Proxy.dll. -->
+      <ProxyAppFile Include="..\Nimbus.Proxy\bin\$(Configuration)\$(TargetFramework)\*"
+                    Exclude="..\Nimbus.Proxy\bin\$(Configuration)\$(TargetFramework)\nimbus.proxy.toml;
+                             ..\Nimbus.Proxy\bin\$(Configuration)\$(TargetFramework)\nimbus.proxy.json*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ProxyAppFile)" DestinationFolder="$(OutDir)proxy-app" SkipUnchangedFiles="true" />
+  </Target>
 </Project>
