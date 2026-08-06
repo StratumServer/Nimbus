@@ -31,4 +31,16 @@ internal static class ClientFrames
         ProtoWire.WriteBytes(envelope, 33, Array.Empty<byte>());
         return ProtoWire.Frame(envelope.ToArray());
     }
+
+    /// <summary>
+    /// ClientPlaying: Packet_Client field 28, tag 226 in PacketDispatch.ClientTags. The frame
+    /// that moves SessionState to Ready, which is the phase the seamless path refuses to run
+    /// before.
+    /// </summary>
+    public static byte[] ClientPlaying()
+    {
+        var envelope = new MemoryStream();
+        ProtoWire.WriteBytes(envelope, 28, Array.Empty<byte>());
+        return ProtoWire.Frame(envelope.ToArray());
+    }
 }

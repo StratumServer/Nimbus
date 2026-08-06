@@ -57,11 +57,16 @@ internal sealed class FakeRegistryClient : IRegistryClient
     internal sealed record MintCall(string PlayerUid, string PlayerName, string TargetServerId,
         string? Reason, string? ClientTransferId);
 
+    /// <summary>True makes every mint come back null, which is how a registry that is up but
+    /// refusing (expired secret, unknown target) looks to the transfer paths.</summary>
+    public bool FailMint;
+
     public Task<TransferReservation?> MintReservationAsync(string playerUid, string playerName,
         string targetServerId, string? reason, CancellationToken ct,
         string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null)
     {
         lock (Mints) Mints.Add(new MintCall(playerUid, playerName, targetServerId, reason, clientTransferId));
+        if (FailMint) return Task.FromResult<TransferReservation?>(null);
         return Task.FromResult<TransferReservation?>(new TransferReservation
         {
             Id = "fake-reservation",
