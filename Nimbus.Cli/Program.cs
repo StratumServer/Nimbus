@@ -223,7 +223,7 @@ internal static class Program
         };
     }
 
-    private static object BuildTokenCreate(List<string> args)
+    private static Dictionary<string, object?> BuildTokenCreate(List<string> args)
     {
         string? name = GetOpt(args, "--name");
         if (string.IsNullOrEmpty(name))

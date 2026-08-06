@@ -17,6 +17,10 @@ internal sealed class ProxyConfigValidation
 
 internal static class ProxyConfigValidator
 {
+    // Named because the scheme is asked about in four places now, and a validator that accepts a
+    // bind it then refuses to serve over is the kind of disagreement a typo here would cause.
+    private const string Https = "https";
+
     public static ProxyConfigValidation Validate(ProxyConfig cfg)
     {
         var result = new ProxyConfigValidation();
@@ -152,7 +156,7 @@ internal static class ProxyConfigValidator
         {
             if (string.IsNullOrWhiteSpace(cfg.Registry.Url))
                 result.Error("registry.url is required when registry.mode = 'remote'");
-            else if (!Uri.TryCreate(cfg.Registry.Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+            else if (!Uri.TryCreate(cfg.Registry.Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or Https))
                 result.Error("registry.url must be an absolute http or https URL");
             if (string.IsNullOrWhiteSpace(cfg.Registry.SharedSecret))
                 result.Error("registry.shared_secret is required when registry.mode = 'remote'");
@@ -160,7 +164,7 @@ internal static class ProxyConfigValidator
 
         if (mode == "embedded" && !string.IsNullOrWhiteSpace(cfg.Registry.EmbeddedBind))
         {
-            if (!Uri.TryCreate(cfg.Registry.EmbeddedBind, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+            if (!Uri.TryCreate(cfg.Registry.EmbeddedBind, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or Https))
             {
                 result.Error("registry.embedded_bind must be an absolute http or https URL, or empty");
             }
@@ -195,7 +199,7 @@ internal static class ProxyConfigValidator
         // is worth a line: the tokens simply never work and there is no other signal.
         if (string.IsNullOrWhiteSpace(cfg.Registry.EmbeddedBind)) return;
         if (!Uri.TryCreate(cfg.Registry.EmbeddedBind, UriKind.Absolute, out var uri)) return;
-        if (uri.Scheme == "https" || IsLoopbackOrLocalhost(uri.Host)) return;
+        if (uri.Scheme == Https || IsLoopbackOrLocalhost(uri.Host)) return;
         if (cfg.Registry.ApiTokensTrustForwardedProto)
         {
             result.Warn("registry.api_tokens_trust_forwarded_proto = true makes the registry believe an X-Forwarded-Proto header on a plain-HTTP bind; only set it when a TLS-terminating proxy is the sole route to registry.embedded_bind");
@@ -245,7 +249,7 @@ internal static class ProxyConfigValidator
     {
         if (!cfg.Metrics.Enabled) return;
 
-        if (!Uri.TryCreate(cfg.Metrics.Bind, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+        if (!Uri.TryCreate(cfg.Metrics.Bind, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or Https))
             result.Error("metrics.bind must be an absolute http or https URL");
         else if (!IsLoopbackOrLocalhost(uri.Host))
         {
