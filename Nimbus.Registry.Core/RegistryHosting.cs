@@ -35,7 +35,10 @@ public static class RegistryHosting
         builder.Services.AddSingleton(sp => new ApiTokenStore(sp.GetRequiredService<TimeProvider>(),
             RegistryStateFiles.Tokens(cfg.StateDir, StateLogger(sp))));
         builder.Services.AddSingleton<ApiTokenService>();
-        builder.Services.AddSingleton<ApiTokenRateLimiter>();
+        // Named rather than resolved by type: the limiter has a second constructor taking the
+        // rate directly, for the tests that pin its arithmetic, and which of the two the container
+        // would pick is not a question worth leaving open.
+        builder.Services.AddSingleton(sp => new ApiTokenRateLimiter(cfg, sp.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton<ReservationService>();
         builder.Services.AddHostedService<RegistrySweeper>();
         if (withMasterServer) builder.Services.AddHostedService<MasterServerBroadcaster>();
