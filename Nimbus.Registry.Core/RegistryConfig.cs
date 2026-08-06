@@ -28,6 +28,13 @@ public sealed class RegistryConfig
     // If true, log every successful heartbeat at Information level.
     public bool LogHeartbeats { get; set; } = false;
 
+    // Where the ban list and the whitelist are kept so they survive a restart. One file per
+    // list, nimbus.bans.json and nimbus.whitelist.json. A relative path resolves against the
+    // working directory, which is where nimbus.registry.toml is read from, and the default puts
+    // the state files right next to it. A file the registry cannot parse is renamed with a
+    // .bad suffix rather than deleted or trusted.
+    public string StateDir { get; set; } = ".";
+
     // Identity advertised to the VS master server. The registry registers the whole
     // network as a single entry. Off by default.
     public ServerIdentityConfig Identity { get; set; } = new();

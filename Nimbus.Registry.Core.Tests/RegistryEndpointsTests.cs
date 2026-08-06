@@ -24,11 +24,17 @@ public class RegistryEndpointsTests
     {
         public required WebApplication App { get; init; }
         public required string BaseUrl { get; init; }
+        public required string StateDir { get; init; }
         public HttpClient Client { get; } = new();
 
         public static async Task<Host> StartAsync(RegistryConfig? cfg = null)
         {
             cfg ??= new RegistryConfig { SharedSecret = Secret };
+            // The ban list and the whitelist are now file-backed, and the default directory is
+            // the working one. Every host in this class would otherwise read and write the same
+            // two files, so a ban added by one test would be waiting for the next one, and for
+            // the next run of the suite. A directory per host keeps each one on its own state.
+            cfg.StateDir = Path.Combine(Path.GetTempPath(), "nimbus-endpoint-tests-" + Guid.NewGuid().ToString("N"));
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -36,7 +42,7 @@ public class RegistryEndpointsTests
             var app = builder.Build();
             app.UseNimbusRegistry();
             await app.StartAsync();
-            return new Host { App = app, BaseUrl = app.Urls.First() };
+            return new Host { App = app, BaseUrl = app.Urls.First(), StateDir = cfg.StateDir };
         }
 
         public async ValueTask DisposeAsync()
@@ -44,6 +50,7 @@ public class RegistryEndpointsTests
             Client.Dispose();
             await App.StopAsync();
             await App.DisposeAsync();
+            try { Directory.Delete(StateDir, recursive: true); } catch { /* never created, or already gone */ }
         }
     }
 

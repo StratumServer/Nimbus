@@ -24,12 +24,19 @@ public static class RegistryHosting
         builder.Services.AddSingleton<ReservationStore>();
         builder.Services.AddSingleton<TransferIntentStore>();
         builder.Services.AddSingleton<NonceCache>();
-        builder.Services.AddSingleton<BanStore>();
-        builder.Services.AddSingleton<WhitelistStore>();
+        // The two moderation lists are the only state worth keeping across a restart, and they
+        // are built by hand rather than by type so the state directory from config reaches them.
+        builder.Services.AddSingleton(sp => new BanStore(sp.GetRequiredService<TimeProvider>(),
+            RegistryStateFiles.Bans(cfg.StateDir, StateLogger(sp))));
+        builder.Services.AddSingleton(sp => new WhitelistStore(sp.GetRequiredService<TimeProvider>(),
+            RegistryStateFiles.Whitelist(cfg.StateDir, StateLogger(sp))));
         builder.Services.AddSingleton<ReservationService>();
         builder.Services.AddHostedService<RegistrySweeper>();
         if (withMasterServer) builder.Services.AddHostedService<MasterServerBroadcaster>();
     }
+
+    private static ILogger StateLogger(IServiceProvider sp)
+        => sp.GetRequiredService<ILoggerFactory>().CreateLogger("RegistryState");
 
     public static void UseNimbusRegistry(this WebApplication app)
     {

@@ -234,6 +234,11 @@ internal sealed class RegistryConfig
     public int NonceWindowSeconds { get; set; } = 90;
     public int MaxReservationTtlSeconds { get; set; } = 300;
     public bool AdvertiseOnMasterServer { get; set; } = false;
+
+    // Where the embedded registry keeps its ban list and whitelist so they survive a restart:
+    // nimbus.bans.json and nimbus.whitelist.json. Relative paths resolve next to the proxy
+    // executable, the same rule [persistence] uses for the drain flags.
+    public string EmbeddedStateDir { get; set; } = ".";
 }
 
 // Whitelist enforcement. The list itself lives in the registry; these switches decide where it
