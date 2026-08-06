@@ -355,6 +355,75 @@ public class PayloadBuilderTests
         Assert.Equal("undrain requires <serverId> or --server <id>", Refused("undrain").Message);
     }
 
+    // ---- evacuate ----
+
+    [Fact]
+    public void Evacuate_ReadsTheBackendTheWayDrainDoes()
+    {
+        // Same shape as the verb it is meant to be typed after, because `drain hub` then
+        // `evacuate hub` is the pair and the second should not need a different spelling.
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub"}""", Payload("evacuate", "hub"));
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub"}""", Payload("evacuate", "--server", "hub"));
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub"}""", Payload("evacuate", "--serverId", "hub"));
+    }
+
+    [Fact]
+    public void EvacuateWithNoServerId_IsRefusedUnderTheVerbTheOperatorTyped()
+    {
+        Assert.Equal("evacuate requires <serverId> or --server <id>", Refused("evacuate").Message);
+    }
+
+    [Fact]
+    public void EvacuateToANamedBackend_SendsItUnderTheKeyTheProxyReads()
+    {
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub","to":"creative"}""",
+            Payload("evacuate", "hub", "--to", "creative"));
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub","to":"creative"}""",
+            Payload("evacuate", "hub", "--target", "creative"));
+    }
+
+    [Fact]
+    public void EvacuateWithNoTargetNamed_SendsNoTargetAtAll()
+    {
+        // An omitted --to is the router picking per player, which is a different instruction to
+        // any particular backend, so nothing stands in for it on the wire.
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub"}""", Payload("evacuate", "hub"));
+    }
+
+    [Fact]
+    public void EvacuateAtAGivenPace_SendsThePaceAsANumber()
+    {
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub","paceMs":500}""",
+            Payload("evacuate", "hub", "--pace-ms", "500"));
+        // Zero is the deliberate stampede and has to survive the trip: dropped as "empty" it
+        // would come out the far end as the 250ms default.
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub","paceMs":0}""",
+            Payload("evacuate", "hub", "--pace-ms", "0"));
+    }
+
+    [Fact]
+    public void EvacuateAtAPaceThatIsNotANumber_IsRefusedInWordsRatherThanThrownOn()
+    {
+        Assert.Equal("--pace-ms takes a number of milliseconds",
+            Refused("evacuate", "hub", "--pace-ms", "slowly").Message);
+    }
+
+    [Fact]
+    public void EvacuateWithEverythingNamed_KeepsTheKeysTheProxyExpects()
+    {
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub","to":"creative","paceMs":100,"reason":"hub reboot"}""",
+            Payload("evacuate", "hub", "--to", "creative", "--pace-ms", "100", "--reason", "hub reboot"));
+    }
+
+    [Fact]
+    public void EvacuateNamingItsOwnSourceAsTheTarget_IsLeftForTheProxyToRefuse()
+    {
+        // Whether a move to the source is a move at all is the proxy's call, and it is the side
+        // that has to refuse it anyway for the operators reaching the socket without nimctl.
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub","to":"hub"}""",
+            Payload("evacuate", "hub", "--to", "hub"));
+    }
+
     // ---- raw ----
 
     [Fact]
@@ -389,6 +458,7 @@ public class PayloadBuilderTests
     [InlineData("stickies", "sticky")]
     [InlineData("routes", "route")]
     [InlineData("resume", "undrain")]
+    [InlineData("evac", "evacuate")]
     [InlineData("wl", "whitelist")]
     public void EveryAlias_ResolvesToTheVerbItStandsFor(string alias, string verb)
     {
@@ -410,6 +480,7 @@ public class PayloadBuilderTests
         Assert.Equal("""{"cmd":"list"}""", Payload("ls"));
         Assert.Equal("""{"cmd":"kick","id":5}""", Payload("drop", "5"));
         Assert.Equal("""{"cmd":"undrain","serverId":"creative"}""", Payload("resume", "creative"));
+        Assert.Equal("""{"cmd":"evacuate","serverId":"hub"}""", Payload("evac", "hub"));
         Assert.Equal("""{"cmd":"whitelist-list"}""", Payload("wl"));
     }
 

@@ -344,6 +344,26 @@ public class GlobalOptionTests
         Assert.Equal(0, Program.ExitCodeFromResponse(""));
     }
 
+    [Theory]
+    [InlineData("ping")]
+    [InlineData("swap")]
+    [InlineData("drain")]
+    public void MostCommandsAnswerStraightAway_AndGetTheShortReadBudget(string verb)
+    {
+        Assert.Equal(TimeSpan.FromSeconds(15), Program.ReadTimeout(new List<string> { verb }));
+    }
+
+    [Theory]
+    [InlineData("evacuate")]
+    [InlineData("evac")]
+    public void EvacuateAnswersWhenItsSweepIsDone_SoItWaitsLongerForTheLine(string verb)
+    {
+        // The sweep moves players one paced step at a time and replies with the summary at the
+        // end, so a 15s budget would hang up on the proxy mid-evacuation and leave the operator
+        // with no idea who had already been moved.
+        Assert.Equal(TimeSpan.FromSeconds(120), Program.ReadTimeout(new List<string> { verb }));
+    }
+
     [Fact]
     public void TheAnswerIsPrintedIndentedWhenItIsJson()
     {

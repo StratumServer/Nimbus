@@ -91,9 +91,10 @@ internal sealed class AdminHarness : IAsyncDisposable
         return await conn.SendAsync(payload);
     }
 
-    /// <summary>Puts a player on the proxy for real: a socket, the identification frame that
-    /// gives the session its uid, and the entry in the session table the admin commands walk.</summary>
-    public async Task<PlayerHandle> JoinAsync(string uid, string name)
+    /// <summary>The socket and session-table half of a join, before anything is said on the wire.
+    /// Both <see cref="JoinAsync"/> and <see cref="ConnectWithoutIdentifyingAsync"/> start here and
+    /// differ only in the first frame they send.</summary>
+    private async Task<(PlayerHandle Handle, TcpClient Player)> AttachAsync()
     {
         var front = new TcpListener(IPAddress.Loopback, 0);
         front.Start();
@@ -112,10 +113,30 @@ internal sealed class AdminHarness : IAsyncDisposable
 
         var handle = new PlayerHandle(id, session, player, front, running);
         players.Add(handle);
+        return (handle, player);
+    }
 
+    /// <summary>A stock client that has been routed to a backend but has said nothing that
+    /// carries an identity: it holds a slot in the session table with no uid and no captured
+    /// Identification, which is the session shape the transfer paths have nothing to move.</summary>
+    public async Task<PlayerHandle> ConnectWithoutIdentifyingAsync()
+    {
+        var (handle, player) = await AttachAsync();
+        await player.GetStream().WriteAsync(ClientFrames.LoginTokenQuery(), cts.Token);
+        await player.GetStream().FlushAsync(cts.Token);
+        await WaitFor(() => handle.Session.CurrentBackend != null,
+            $"session {handle.Id} was never routed to a backend");
+        return handle;
+    }
+
+    /// <summary>Puts a player on the proxy for real: a socket, the identification frame that
+    /// gives the session its uid, and the entry in the session table the admin commands walk.</summary>
+    public async Task<PlayerHandle> JoinAsync(string uid, string name)
+    {
+        var (handle, player) = await AttachAsync();
         await player.GetStream().WriteAsync(ClientFrames.Identification(uid, name), cts.Token);
         await player.GetStream().FlushAsync(cts.Token);
-        await WaitFor(() => session.PlayerUid == uid, $"session {id} never picked up uid {uid}");
+        await WaitFor(() => handle.Session.PlayerUid == uid, $"session {handle.Id} never picked up uid {uid}");
         return handle;
     }
 

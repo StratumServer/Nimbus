@@ -43,6 +43,7 @@ internal sealed class AdminCommandRegistry
         new RouteCommand(),
         new DrainCommand(),
         new UndrainCommand(),
+        new EvacuateCommand(),
         new BanCommand(),
         new UnbanCommand(),
         new BansCommand(),

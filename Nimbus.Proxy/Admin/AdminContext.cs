@@ -38,6 +38,11 @@ internal readonly struct AdminRequest
         this.root = root;
     }
 
+    // Whether the caller mentioned a field at all, whatever they put in it. Tells an optional
+    // field left out from one sent with a value the reader cannot use, which is the difference
+    // between falling back to a default and refusing a typo.
+    public bool Has(string name) => root.TryGetProperty(name, out _);
+
     public bool TryString(string name, out string value)
     {
         value = "";
