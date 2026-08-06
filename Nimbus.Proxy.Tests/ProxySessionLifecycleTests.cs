@@ -1,4 +1,3 @@
-using System.Text;
 using Xunit;
 
 namespace Nimbus.Proxy.Tests;
@@ -374,6 +373,4 @@ public class ProxySessionLifecycleTests
         }
         return false;
     }
-
-    private static string Utf8(byte[] bytes) => Encoding.UTF8.GetString(bytes);
 }

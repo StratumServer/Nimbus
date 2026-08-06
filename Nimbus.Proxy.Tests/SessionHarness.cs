@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using Xunit;
 
 namespace Nimbus.Proxy.Tests;
@@ -241,6 +240,4 @@ internal static class ChatFrames
         ProtoWire.WriteBytes(envelope, 4, body.ToArray());
         return ProtoWire.Frame(envelope.ToArray());
     }
-
-    public static string Utf8(byte[] bytes) => Encoding.UTF8.GetString(bytes);
 }

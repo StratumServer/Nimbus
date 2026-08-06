@@ -159,20 +159,13 @@ internal sealed class FakePlayer : IPlayer
     public IServerInfo? CurrentServer { get; set; }
     public bool SupportsSeamlessTransfers => false;
 
-    /// <summary>Transfers a handler asked for, as (target, mode, reason).</summary>
-    public List<(IServerInfo Target, string Mode, string? Reason)> Transfers { get; } = new();
-
-    /// <summary>Reasons a handler disconnected this player with.</summary>
-    public List<string?> Disconnects { get; } = new();
-
+    // Nothing in the plugin tests moves a player through the api; the events they carry a player
+    // on are the subject, so these are here to satisfy IPlayer and nothing more.
     public Task<string?> TransferAsync(IServerInfo target, string? reason = null)
-        => TransferAsync(target, "redirect", reason);
+        => Task.FromResult<string?>(null);
 
     public Task<string?> TransferAsync(IServerInfo target, string mode, string? reason = null)
-    {
-        Transfers.Add((target, mode, reason));
-        return Task.FromResult<string?>(null);
-    }
+        => Task.FromResult<string?>(null);
 
-    public void Disconnect(string? reason = null) => Disconnects.Add(reason);
+    public void Disconnect(string? reason = null) { }
 }

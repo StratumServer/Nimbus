@@ -96,10 +96,8 @@ internal sealed partial class ProxySession : IPlayer
         this.clientStream = client.GetStream();
         this.sessionStopToken = stopToken;
         var clientEp = client.Client?.RemoteEndPoint as System.Net.IPEndPoint;
-        this.clientRemote = clientEp != null
-            ? (clientEp.Address.IsIPv4MappedToIPv6 ? clientEp.Address.MapToIPv4().ToString() : clientEp.Address.ToString())
-            : "?";
         this.clientAddress = clientEp?.Address;
+        this.clientRemote = DescribeClient(this.clientAddress);
         this.stickies = stickies;
         this.registry = registry;
         this.udpOverrides = udpOverrides;
@@ -113,6 +111,15 @@ internal sealed partial class ProxySession : IPlayer
         this.sniffC2S = new FrameSniffer(id, "c->s", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffS2C = new FrameSniffer(id, "s->c", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffC2S.OnRawFrame = OnClientFrame;
+    }
+
+    // The client address as everything that reads a log line or a sticky route expects it: an
+    // IPv4 one unwrapped from ::ffff:1.2.3.4 under dual-stack, and "?" when the socket had no
+    // endpoint to offer.
+    private static string DescribeClient(System.Net.IPAddress? address)
+    {
+        if (address == null) return "?";
+        return address.IsIPv4MappedToIPv6 ? address.MapToIPv4().ToString() : address.ToString();
     }
 
     public SessionState.Phase Phase => state?.Current ?? SessionState.Phase.TcpOpen;
