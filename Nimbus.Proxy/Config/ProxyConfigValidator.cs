@@ -169,6 +169,39 @@ internal static class ProxyConfigValidator
                 result.Error("registry.embedded_bind is not loopback, so registry.embedded_shared_secret must be changed from the default");
             }
         }
+
+        ValidateApiTokens(cfg, mode, result);
+    }
+
+    // The [api_tokens] settings on the embedded registry. All of them are inert in remote mode,
+    // where the standalone registry reads its own section, and saying so beats letting an
+    // operator wonder why the switch they flipped changed nothing.
+    private static void ValidateApiTokens(ProxyConfig cfg, string mode, ProxyConfigValidation result)
+    {
+        if (!cfg.Registry.ApiTokensEnabled) return;
+
+        if (mode != "embedded")
+        {
+            result.Warn("registry.api_tokens_enabled only applies to the embedded registry; in remote mode the standalone registry's own [api_tokens] section decides");
+            return;
+        }
+
+        if (cfg.Registry.ApiTokensRateLimitPerMinute <= 0)
+            result.Error("registry.api_tokens_rate_limit_per_minute must be greater than zero");
+
+        // The configuration where bearer auth refuses every request it is given: token auth is
+        // accepted on loopback or on this registry's own TLS listener, and a plain-HTTP bind that
+        // outside callers can reach is neither. Nothing is broken by it, which is exactly why it
+        // is worth a line: the tokens simply never work and there is no other signal.
+        if (string.IsNullOrWhiteSpace(cfg.Registry.EmbeddedBind)) return;
+        if (!Uri.TryCreate(cfg.Registry.EmbeddedBind, UriKind.Absolute, out var uri)) return;
+        if (uri.Scheme == "https" || IsLoopbackOrLocalhost(uri.Host)) return;
+        if (cfg.Registry.ApiTokensTrustForwardedProto)
+        {
+            result.Warn("registry.api_tokens_trust_forwarded_proto = true makes the registry believe an X-Forwarded-Proto header on a plain-HTTP bind; only set it when a TLS-terminating proxy is the sole route to registry.embedded_bind");
+            return;
+        }
+        result.Warn("registry.api_tokens_enabled = true on a non-loopback plain-HTTP registry.embedded_bind: bearer auth will refuse every request, because a token is only as safe as the transport under it. Serve https, bind loopback, or set registry.api_tokens_trust_forwarded_proto behind a TLS-terminating proxy");
     }
 
     private static void ValidateWhitelist(ProxyConfig cfg, ProxyConfigValidation result)

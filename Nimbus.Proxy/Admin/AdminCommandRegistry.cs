@@ -49,6 +49,9 @@ internal sealed class AdminCommandRegistry
         new WhitelistAddCommand(),
         new WhitelistRemoveCommand(),
         new WhitelistListCommand(),
+        new TokenCreateCommand(),
+        new TokenRevokeCommand(),
+        new TokenListCommand(),
         new ReloadCommand(),
     });
 }

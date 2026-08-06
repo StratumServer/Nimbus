@@ -63,6 +63,7 @@ internal static class Program
             "unban"   => BuildUnban(args),
             "bans"    => new { cmd = "bans" },
             "whitelist" => BuildWhitelist(args),
+            "token"   => BuildToken(args),
             "reload"  => new { cmd = "reload" },
             "raw"     => BuildRaw(args),
             _ => throw new ArgumentException($"unknown command: {cmd}"),
@@ -204,6 +205,58 @@ internal static class Program
 
             default:
                 throw new ArgumentException($"unknown whitelist sub-command: {sub} (add, remove, list)");
+        }
+    }
+
+    // `token` takes a sub-verb for the same reason `whitelist` does: create, revoke and list all
+    // read the one list. Bare `token` lists, which is the harmless one, and the only one that
+    // never puts a secret on a terminal.
+    private static object BuildToken(List<string> args)
+    {
+        string sub = args.Count >= 2 && !args[1].StartsWith("-") ? args[1].ToLowerInvariant() : "list";
+        switch (sub)
+        {
+            case "list" or "ls":
+                return new { cmd = "token-list" };
+
+            case "create" or "new" or "add":
+            {
+                string? name = GetOpt(args, "--name");
+                if (string.IsNullOrEmpty(name))
+                    throw new ArgumentException("token create requires --name <name>");
+
+                string? scopes = GetOpt(args, "--scopes") ?? GetOpt(args, "--scope");
+                if (string.IsNullOrEmpty(scopes))
+                    throw new ArgumentException("token create requires --scopes <a,b> (bans:read, bans:write, whitelist:read, whitelist:write, servers:read)");
+
+                var d = new Dictionary<string, object?> { ["cmd"] = "token-create", ["name"] = name, ["scopes"] = scopes };
+
+                bool permanent = args.Contains("--permanent");
+                string? durationStr = GetOpt(args, "--duration");
+                // Refused rather than resolved in nimctl's favour: one of the two is being
+                // ignored whichever way it is settled, and the operator is the only one who knows
+                // which they meant.
+                if (permanent && !string.IsNullOrEmpty(durationStr))
+                    throw new ArgumentException("--permanent and --duration are mutually exclusive");
+                if (permanent) d["permanent"] = true;
+                if (!string.IsNullOrEmpty(durationStr))
+                {
+                    if (!int.TryParse(durationStr, out int duration))
+                        throw new ArgumentException("--duration takes a number of seconds");
+                    d["duration"] = duration;
+                }
+                return d;
+            }
+
+            case "revoke" or "rm" or "del":
+            {
+                string? id = GetOpt(args, "--id") ?? (args.Count >= 3 && !args[2].StartsWith("-") ? args[2] : null);
+                if (string.IsNullOrEmpty(id)) throw new ArgumentException("token revoke requires <id>");
+                return new { cmd = "token-revoke", id };
+            }
+
+            default:
+                throw new ArgumentException($"unknown token sub-command: {sub} (create, revoke, list)");
         }
     }
 
@@ -358,6 +411,7 @@ internal static class Program
         "routes" => "route",
         "resume" => "undrain",
         "wl" => "whitelist",
+        "tokens" => "token",
         _ => cmd,
     };
 
@@ -435,6 +489,14 @@ internal static class Program
         Console.WriteLine("  whitelist remove <uid> [--server <id>]  drop an entry, disconnecting whoever loses access");
         Console.WriteLine("  whitelist list                          list entries and where they are enforced");
         Console.WriteLine("      enforcement is [whitelist] in nimbus.proxy.toml, never the list being non-empty.");
+        Console.WriteLine("  token create --name <n> --scopes <a,b> [--duration <s> | --permanent]");
+        Console.WriteLine("      scopes: bans:read, bans:write, whitelist:read, whitelist:write, servers:read.");
+        Console.WriteLine("      default expiry is 90 days; --permanent is the explicit opt-out.");
+        Console.WriteLine("      the secret is printed once and cannot be recovered afterwards.");
+        Console.WriteLine("  token revoke <id>                       revoke a token by the id `token list` shows");
+        Console.WriteLine("  token list                              list issued tokens, scopes, expiry and last use");
+        Console.WriteLine("      tokens authenticate over loopback or TLS only, and only when the registry has");
+        Console.WriteLine("      api_tokens.enabled = true.");
         Console.WriteLine("  reload                                  reload nimbus.proxy.toml and all plugins");
         Console.WriteLine("  raw '<json>'                            send a raw JSON line (for new commands)");
         Console.WriteLine();

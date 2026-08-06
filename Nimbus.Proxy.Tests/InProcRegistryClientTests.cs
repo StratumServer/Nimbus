@@ -41,6 +41,7 @@ public class InProcRegistryClientTests
         public required TransferIntentStore Intents { get; init; }
         public required BanStore Bans { get; init; }
         public required WhitelistStore Whitelist { get; init; }
+        public required ApiTokenStore Tokens { get; init; }
         public required FixedClock Clock { get; init; }
 
         public static Embedded Create(Action<RegistryConfig>? configure = null)
@@ -54,15 +55,17 @@ public class InProcRegistryClientTests
             var intents = new TransferIntentStore(clock);
             var bans = new BanStore(clock);
             var whitelist = new WhitelistStore(clock);
+            var tokens = new ApiTokenStore(clock);
             return new Embedded
             {
                 Client = new InProcRegistryClient(backends, reservations, intents, bans, whitelist,
-                    proxyCfg, clock),
+                    new ApiTokenService(tokens, clock), proxyCfg, clock),
                 Backends = backends,
                 Reservations = reservations,
                 Intents = intents,
                 Bans = bans,
                 Whitelist = whitelist,
+                Tokens = tokens,
                 Clock = clock,
             };
         }

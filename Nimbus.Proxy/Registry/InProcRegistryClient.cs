@@ -15,17 +15,19 @@ internal sealed class InProcRegistryClient : IRegistryClient
     private readonly TransferIntentStore intents;
     private readonly BanStore bans;
     private readonly WhitelistStore whitelist;
+    private readonly ApiTokenService tokens;
     private readonly RegistryConfig cfg;
     private readonly TimeProvider clock;
 
     public InProcRegistryClient(BackendRegistry backends, ReservationStore reservations,
-        TransferIntentStore intents, BanStore bans, WhitelistStore whitelist, RegistryConfig cfg,
-        TimeProvider? clock = null)
+        TransferIntentStore intents, BanStore bans, WhitelistStore whitelist, ApiTokenService tokens,
+        RegistryConfig cfg, TimeProvider? clock = null)
     {
         this.backends = backends;
         this.intents = intents;
         this.bans = bans;
         this.whitelist = whitelist;
+        this.tokens = tokens;
         this.cfg = cfg;
         this.clock = clock ?? TimeProvider.System;
         // Built here rather than resolved: the embedded registry can run with no HTTP listener
@@ -114,4 +116,38 @@ internal sealed class InProcRegistryClient : IRegistryClient
     // of them to extract, the endpoints delegate the same way.
     public Task<bool> RemoveWhitelistAsync(string playerUid, string? serverId, CancellationToken ct)
         => Task.FromResult(whitelist.Remove(playerUid, serverId));
+
+    // Same ApiTokenService the HTTP endpoints call, so the default-90-days rule, the scope
+    // vocabulary and the refusal reasons are the same object in embedded and remote mode. A
+    // refusal is a null here where the endpoint answers 400, with the reason in the log: there is
+    // no HTTP caller to hand a status code to.
+    public Task<ApiTokenCreateResponse?> CreateApiTokenAsync(ApiTokenCreateRequest request, CancellationToken ct)
+    {
+        var result = tokens.Create(request);
+        if (result.Status != ApiTokenCreateStatus.Ok)
+        {
+            Log.Warn($"in-proc registry: refusing to mint an api token, {Explain(result)}");
+            return Task.FromResult<ApiTokenCreateResponse?>(null);
+        }
+
+        return Task.FromResult<ApiTokenCreateResponse?>(new ApiTokenCreateResponse
+        {
+            Ok = true,
+            Token = result.Plaintext,
+            Record = result.Token!.Redacted(),
+        });
+    }
+
+    private static string Explain(ApiTokenCreateResult result) => result.Status switch
+    {
+        ApiTokenCreateStatus.MissingName => "no name given",
+        ApiTokenCreateStatus.NoScopes => "no scopes given",
+        _ => $"unknown scope '{result.UnknownScope}'",
+    };
+
+    public Task<List<ApiToken>?> GetApiTokensAsync(CancellationToken ct)
+        => Task.FromResult<List<ApiToken>?>(tokens.List());
+
+    public Task<bool> RevokeApiTokenAsync(string id, CancellationToken ct)
+        => Task.FromResult(tokens.Revoke(id));
 }

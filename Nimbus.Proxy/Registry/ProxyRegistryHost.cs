@@ -85,6 +85,12 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
             MaxReservationTtlSeconds = cfg.Registry.MaxReservationTtlSeconds,
             LogHeartbeats = false,
             StateDir = ResolveStateDir(cfg.Registry.EmbeddedStateDir),
+            ApiTokens = new ApiTokensConfig
+            {
+                Enabled = cfg.Registry.ApiTokensEnabled,
+                RateLimitPerMinute = cfg.Registry.ApiTokensRateLimitPerMinute,
+                TrustForwardedProto = cfg.Registry.ApiTokensTrustForwardedProto,
+            },
         };
         coreCfg.Identity.AdvertiseOnMasterServer = cfg.Registry.AdvertiseOnMasterServer;
 
@@ -116,7 +122,8 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
             var intents = app.Services.GetRequiredService<TransferIntentStore>();
             var bans = app.Services.GetRequiredService<BanStore>();
             var whitelist = app.Services.GetRequiredService<WhitelistStore>();
-            return new ProxyRegistryHost(new InProcRegistryClient(backends, reservations, intents, bans, whitelist, cfg.Registry), app);
+            var tokens = app.Services.GetRequiredService<ApiTokenService>();
+            return new ProxyRegistryHost(new InProcRegistryClient(backends, reservations, intents, bans, whitelist, tokens, cfg.Registry), app);
         }
 
         // No listener means no container either, so the stores are built here with the same
@@ -127,7 +134,11 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
         var intentsSvc = new TransferIntentStore();
         var bansSvc = new BanStore(state: RegistryStateFiles.Bans(coreCfg.StateDir));
         var whitelistSvc = new WhitelistStore(state: RegistryStateFiles.Whitelist(coreCfg.StateDir));
+        // Tokens are worth minting in this mode even though nothing here answers a bearer header:
+        // an operator preparing a bot on a proxy with no listener still needs the credential, and
+        // the registry that will answer it reads the same file.
+        var tokensSvc = new ApiTokenService(new ApiTokenStore(state: RegistryStateFiles.Tokens(coreCfg.StateDir)));
         Log.Info($"registry: embedded (no http listener) proxy_id={cfg.Registry.ProxyId} state_dir={coreCfg.StateDir}");
-        return new ProxyRegistryHost(new InProcRegistryClient(backendsSvc, reservationsSvc, intentsSvc, bansSvc, whitelistSvc, cfg.Registry), null);
+        return new ProxyRegistryHost(new InProcRegistryClient(backendsSvc, reservationsSvc, intentsSvc, bansSvc, whitelistSvc, tokensSvc, cfg.Registry), null);
     }
 }
