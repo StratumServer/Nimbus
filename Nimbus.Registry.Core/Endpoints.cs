@@ -299,10 +299,24 @@ public static class Endpoints
     // still be passing its arguments in the query.
     private static async Task<T?> ReadOptionalBodyAsync<T>(HttpContext ctx) where T : class
     {
-        if (ctx.Request.ContentLength is null or 0) return null;
+        if (!DeclaresABody(ctx.Request)) return null;
         // RequestAborted, not None: finishing the read for a caller that has already hung up
         // buys nothing, and the handler above turns the cancellation into the same 400 a
         // truncated body gets.
         return await ctx.Request.ReadFromJsonAsync<T>(ctx.RequestAborted);
+    }
+
+    // A caller announces a body in one of two ways: it measures it (Content-Length) or it
+    // chunks it (Transfer-Encoding). Reading only the first sent every chunked request down
+    // the deprecated query path with an empty request object, so its arguments vanished and
+    // the answer was usually a 400 (#91). Neither header means there is genuinely nothing to
+    // read, which is still the old proxy asking to be answered from the query.
+    private static bool DeclaresABody(HttpRequest request)
+    {
+        if (request.ContentLength is { } length) return length > 0;
+        // Joined rather than walked: "gzip, chunked" and a repeated header read the same way,
+        // and a header that is not there at all reads as an empty string rather than null.
+        return request.Headers.TransferEncoding.ToString()
+            .Contains("chunked", StringComparison.OrdinalIgnoreCase);
     }
 }
