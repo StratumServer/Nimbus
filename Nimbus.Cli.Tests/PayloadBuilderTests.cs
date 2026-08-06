@@ -69,10 +69,19 @@ public class PayloadBuilderTests
     public void ASwapToAHostAndPort_SendsThePortAsANumber()
     {
         // A quoted port would land in the admin frame as a string and the swap would be refused
-        // for having no port at all. Note that these two flags do not reach this builder from a
-        // real command line today: see TheGlobalHostAndPortFlags_AreConsumedWhereverTheyAppear.
+        // for having no port at all. These two flags reach this builder off a real command line
+        // since #81: see TheGlobalFlagsStopAtTheVerb_LeavingWhatFollowsToTheCommand.
         Assert.Equal("""{"cmd":"swap","id":3,"host":"10.0.0.5","port":42421}""",
             Payload("swap", "3", "--host", "10.0.0.5", "--port", "42421"));
+    }
+
+    [Fact]
+    public void ASwapToAPortThatIsNotANumber_IsRefusedInWordsRatherThanThrownOn()
+    {
+        // Same message the connection-side --port gives, since an operator typing this one has no
+        // way of knowing which of the two parsers they landed in.
+        Assert.Equal("--port takes a port number",
+            Refused("swap", "3", "--host", "10.0.0.5", "--port", "42421a").Message);
     }
 
     [Fact]

@@ -5,8 +5,8 @@ using System.Text.Json;
 namespace Nimbus.Cli;
 
 // CLI for the Nimbus.Proxy admin endpoint. One TCP connection per command.
-// Defaults: host=127.0.0.1, port=42499. Override with --host/--port, NIMCTL_HOST/NIMCTL_PORT,
-// or a nimctl.json file in CWD or next to the exe.
+// Defaults: host=127.0.0.1, port=42499. Override with --host/--port before the command, with
+// NIMCTL_HOST/NIMCTL_PORT, or with a nimctl.json file in CWD or next to the exe.
 internal static class Program
 {
     private const string DefaultHost = "127.0.0.1";
@@ -14,16 +14,19 @@ internal static class Program
 
     private static int Main(string[] args)
     {
-        var (host, port, secret, rest) = ParseGlobalOptions(args);
-
-        if (rest.Count == 0 || IsHelp(rest[0]))
-        {
-            PrintHelp();
-            return rest.Count == 0 ? 2 : 0;
-        }
-
+        // Parsing is inside the try because a bad --port is now a usage error with a message on
+        // stderr rather than a FormatException with a stack trace behind it.
         try
         {
+            var (host, port, secret, rest) = ParseGlobalOptions(args);
+
+            if (rest.Count == 0 || IsHelp(rest[0]))
+            {
+                PrintHelp();
+                return rest.Count == 0 ? 2 : 0;
+            }
+
+            RejectMisplacedConnectionFlags(rest);
             object payload = BuildPayload(rest);
 
             string response = SendAsync(host, port, secret, payload).GetAwaiter().GetResult();
@@ -106,7 +109,7 @@ internal static class Program
         var d = new Dictionary<string, object?> { ["cmd"] = "swap", ["id"] = id };
         if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
         if (!string.IsNullOrEmpty(host))     d["host"] = host;
-        if (!string.IsNullOrEmpty(portStr))  d["port"] = int.Parse(portStr);
+        if (!string.IsNullOrEmpty(portStr))  d["port"] = ParsePort(portStr);
         if (!string.IsNullOrEmpty(reason))   d["reason"] = reason;
         if (seamless) d["mode"] = "seamless";
         if (redirect) d["mode"] = "redirect";
@@ -250,6 +253,11 @@ internal static class Program
         return line ?? "";
     }
 
+    // Where nimctl itself connects, and what is left over for the verb. Parsing stops at the first
+    // token that is not one of these three name-value pairs, which is the verb: connection settings
+    // before the command, verb arguments after it, exactly as the help reads. Reading them wherever
+    // they appeared is what made the documented `swap <id> --host <h> --port <p>` repoint nimctl at
+    // the transfer target instead of sending the player there (issue #81).
     internal static (string host, int port, string? secret, List<string> rest) ParseGlobalOptions(string[] args)
     {
         string host = Environment.GetEnvironmentVariable("NIMCTL_HOST") ?? DefaultHost;
@@ -259,15 +267,57 @@ internal static class Program
         (host, port, secret) = ApplyConfigFile(
             new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory }, host, port, secret);
 
-        var rest = new List<string>(args.Length);
-        for (int i = 0; i < args.Length; i++)
+        int i = 0;
+        // The loop ends on the last flag with nothing after it as well as on the verb: a flag with
+        // no value has none to take, so it stays in the command and comes back as an unknown
+        // command rather than moving where nimctl connects.
+        while (i + 1 < args.Length)
         {
-            if (args[i] == "--host" && i + 1 < args.Length) { host = args[++i]; continue; }
-            if (args[i] == "--port" && i + 1 < args.Length) { port = int.Parse(args[++i]); continue; }
-            if (args[i] == "--secret" && i + 1 < args.Length) { secret = args[++i]; continue; }
-            rest.Add(args[i]);
+            if (args[i] == "--host") host = args[i + 1];
+            else if (args[i] == "--port") port = ParsePort(args[i + 1]);
+            else if (args[i] == "--secret") secret = args[i + 1];
+            else break;
+            i += 2;
         }
-        return (host, port, secret, rest);
+        return (host, port, secret, new List<string>(args[i..]));
+    }
+
+    // --port is read on both sides of the verb and has to refuse a typo the same way in both,
+    // in the shape --duration already uses rather than as a raw FormatException.
+    private static int ParsePort(string value)
+    {
+        if (!int.TryParse(value, out int port)) throw new ArgumentException("--port takes a port number");
+        return port;
+    }
+
+    // Connection flags are read before the verb only, so one typed after it would now be ignored.
+    // `swap` is the only verb with a --host and --port of its own, and no verb has a --secret, so
+    // anything else found here is an operator using the spelling that used to work by accident.
+    // Saying so beats talking to the default proxy without a word about it.
+    internal static void RejectMisplacedConnectionFlags(List<string> args)
+    {
+        bool verbTakesHostAndPort = NormalizeCommand(args[0]) == "swap";
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var corrected = new List<string>();
+
+        // From 1: args[0] is the verb, and a verb is never one of these.
+        for (int i = 1; i < args.Count; i++)
+        {
+            string flag = args[i];
+            bool misplaced = flag == "--secret"
+                || ((flag == "--host" || flag == "--port") && !verbTakesHostAndPort);
+            if (!misplaced || !seen.Add(flag)) continue;
+
+            // The operator's own values go in the correction so it can be retyped as it stands,
+            // except the secret: this message reaches stderr, and from there scrollback and logs.
+            string value = flag != "--secret" && i + 1 < args.Count ? args[i + 1] : $"<{flag[2..]}>";
+            corrected.Add($"{flag} {value}");
+        }
+
+        if (corrected.Count == 0) return;
+        throw new ArgumentException(
+            "connection flags go before the command, not after it: "
+            + $"nimctl {string.Join(' ', corrected)} {args[0]} ...");
     }
 
     // nimctl.json from the first of `dirs` that has one. { "Host": "...", "Port": ..., "Secret": "..." }
@@ -353,7 +403,11 @@ internal static class Program
         Console.WriteLine("nimctl - Nimbus.Proxy admin client");
         Console.WriteLine();
         Console.WriteLine("Usage:");
-        Console.WriteLine("  nimctl [--host H] [--port P] <command> [args]");
+        Console.WriteLine("  nimctl [--host H] [--port P] [--secret S] <command> [args]");
+        Console.WriteLine();
+        Console.WriteLine("  --host, --port and --secret say where nimctl connects and go before the command.");
+        Console.WriteLine("  Everything after the command belongs to it, which is how the --host and --port of");
+        Console.WriteLine("  `swap` name the backend a player is sent to rather than the proxy being asked.");
         Console.WriteLine();
         Console.WriteLine("Commands:");
         Console.WriteLine("  ping                                    health check");
@@ -386,8 +440,8 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("Defaults: host=127.0.0.1 port=42499.");
         Console.WriteLine();
-        Console.WriteLine("Auth: pass --secret <s>, set NIMCTL_SECRET, or add \"Secret\" to nimctl.json when the");
-        Console.WriteLine("      proxy is configured with admin.secret.");
+        Console.WriteLine("Auth: pass --secret <s> before the command, set NIMCTL_SECRET, or add \"Secret\" to");
+        Console.WriteLine("      nimctl.json when the proxy is configured with admin.secret.");
         Console.WriteLine("Overrides (highest wins): CLI flags > nimctl.json > NIMCTL_HOST/PORT env > built-in.");
         Console.WriteLine();
         Console.WriteLine("Exit codes: 0=ok, 1=error, 2=usage, 3=server replied ok:false.");
