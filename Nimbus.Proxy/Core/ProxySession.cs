@@ -24,6 +24,11 @@ internal sealed partial class ProxySession : IPlayer
     private readonly CancellationToken sessionStopToken;
     private readonly DateTimeOffset sessionStart = DateTimeOffset.UtcNow;
     private readonly string clientRemote; // captured at construction — safe after socket close
+    // The key this session's UDP override is filed under, captured for the same reason: the
+    // socket is closed by the time the teardown wants to take the override back down, and
+    // TcpClient.Close() nulls Client. Kept in the raw, un-normalised form the relay matches
+    // incoming datagrams against.
+    private readonly System.Net.IPAddress? clientAddress;
     private readonly SessionState? state;
     private readonly FrameSniffer? sniffC2S;
     private readonly FrameSniffer? sniffS2C;
@@ -90,9 +95,9 @@ internal sealed partial class ProxySession : IPlayer
         this.client.NoDelay = true;
         this.clientStream = client.GetStream();
         this.sessionStopToken = stopToken;
-        this.clientRemote = client.Client?.RemoteEndPoint is System.Net.IPEndPoint cep
-            ? (cep.Address.IsIPv4MappedToIPv6 ? cep.Address.MapToIPv4().ToString() : cep.Address.ToString())
-            : "?";
+        var clientEp = client.Client?.RemoteEndPoint as System.Net.IPEndPoint;
+        this.clientAddress = clientEp?.Address;
+        this.clientRemote = DescribeClient(this.clientAddress);
         this.stickies = stickies;
         this.registry = registry;
         this.udpOverrides = udpOverrides;
@@ -106,6 +111,15 @@ internal sealed partial class ProxySession : IPlayer
         this.sniffC2S = new FrameSniffer(id, "c->s", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffS2C = new FrameSniffer(id, "s->c", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffC2S.OnRawFrame = OnClientFrame;
+    }
+
+    // The client address as everything that reads a log line or a sticky route expects it: an
+    // IPv4 one unwrapped from ::ffff:1.2.3.4 under dual-stack, and "?" when the socket had no
+    // endpoint to offer.
+    private static string DescribeClient(System.Net.IPAddress? address)
+    {
+        if (address == null) return "?";
+        return address.IsIPv4MappedToIPv6 ? address.MapToIPv4().ToString() : address.ToString();
     }
 
     public SessionState.Phase Phase => state?.Current ?? SessionState.Phase.TcpOpen;
@@ -622,13 +636,13 @@ internal sealed partial class ProxySession : IPlayer
             // one left to close and the dead one throws. This is the last owner either way.
             try { upstream?.Close(); } catch { /* backend already dropped us */ }
             try { client.Close(); } catch { /* client already dropped us */ }
-            // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts fresh.
-            try
-            {
-                if (udpOverrides != null && client.Client?.RemoteEndPoint is System.Net.IPEndPoint ep)
-                    udpOverrides.Clear(ep.Address);
-            }
-            catch { /* the socket is closed by now, so there is no address left to clear under */ }
+            // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts
+            // fresh. Off the address captured at construction, not off the socket: by here the
+            // client socket has been closed either by this teardown or by Close(), and
+            // TcpClient.Close() nulls Client, so reading the endpoint back gives nothing to clear
+            // under and the override outlives the session.
+            if (udpOverrides != null && clientAddress != null)
+                udpOverrides.Clear(clientAddress);
             if (events != null)
             {
                 // Disconnect notifications are the last thing this session does. A handler that
@@ -741,13 +755,10 @@ internal sealed partial class ProxySession : IPlayer
     // Pin UDP for this client to the same backend our TCP session uses. No-op without overrides.
     private void UpdateUdpOverride(BackendEndpoint target)
     {
-        if (udpOverrides == null) return;
-        try
-        {
-            if (client.Client?.RemoteEndPoint is System.Net.IPEndPoint ep)
-                udpOverrides.Set(ep.Address, target);
-        }
-        catch { /* no usable client address means no override to pin; UDP falls back to default */ }
+        // Same captured address the teardown clears under, so the two always agree on the key.
+        // No usable client address means no override to pin, and UDP falls back to the default.
+        if (udpOverrides == null || clientAddress == null) return;
+        udpOverrides.Set(clientAddress, target);
     }
 
     private async Task<bool> TryWriteFirstClientFrameAsync(TcpClient up, ReadOnlyMemory<byte> frame)

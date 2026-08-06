@@ -36,6 +36,10 @@ internal sealed class AdminHarness : IAsyncDisposable
     public FakeRegistryClient Registry { get; }
     public int Port { get; }
 
+    /// <summary>What the `plugins` command reports. Mutable so a test can load real plugins first
+    /// and then ask the socket what an operator would see.</summary>
+    public List<LoadedPlugin> Plugins { get; } = new();
+
     /// <summary>Starts the admin socket in front of a proxy whose only backend is a recording
     /// stand-in named <c>hub</c>, unless <paramref name="serverIds"/> asks for more.</summary>
     public static async Task<AdminHarness> StartAsync(
@@ -61,8 +65,7 @@ internal sealed class AdminHarness : IAsyncDisposable
         var harness = new AdminHarness(cfg, proxy, registry, cfg.Admin.EndPoint().Port);
         harness.backends.AddRange(recorders);
 
-        var listener = new AdminListener(cfg, proxy, harness.cts.Token,
-            () => Array.Empty<LoadedPlugin>());
+        var listener = new AdminListener(cfg, proxy, harness.cts.Token, () => harness.Plugins);
         _ = Task.Run(listener.RunAsync);
         await harness.WaitForAdminSocketAsync();
         return harness;
