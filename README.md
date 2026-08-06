@@ -172,6 +172,61 @@ known list in force.
 Vanilla per-server whitelisting still exists and stays local to that savegame, the same way
 per-server bans do.
 
+## API tokens for integrations
+
+The registry has one credential otherwise, the network shared secret, and it is all or nothing:
+anything holding it can mint reservations, ban any player and read the whole network. A scoped
+token is the answer to "can I drive this from a Discord bot" that does not involve handing the bot
+the master key.
+
+```shell
+nimctl token create --name discord-bot --scopes whitelist:write,whitelist:read
+nimctl token list
+nimctl token revoke <id>
+```
+
+The secret is printed once, by that first command, and never again. What the registry keeps is its
+SHA-256, so a leaked state file or a leaked backup exposes nothing that can be replayed. Tokens
+carry a `nsk_` prefix so one pasted into a config or a commit is identifiable on sight, by a human
+or by a secret scanner, and they expire after 90 days unless `--permanent` was asked for by name.
+
+Five scopes, coarse on purpose: `bans:read`, `bans:write`, `whitelist:read`, `whitelist:write`,
+`servers:read`. A route declares the one it needs and a token carries a set. Nothing else is
+reachable: heartbeats, reservations, transfer intents and token management itself take HMAC and
+only HMAC, whatever scopes a token holds. That caps a leaked bot credential at moderation-list
+writes at rate-limit speed. Writes made with a token are attributed to it, so a ban placed by the
+bot reads `token:discord-bot` rather than sharing an identity with the operators.
+
+Using one is a bearer header and no signing at all:
+
+```shell
+curl -X POST https://registry.example.org/api/whitelist \
+  -H "Authorization: Bearer nsk_..." \
+  -H "Content-Type: application/json" \
+  -d '{"playerUid":"...","note":"invited"}'
+```
+
+That simplicity is bought entirely from the transport, so the registry refuses token auth unless
+the connection is loopback or arrived over its own TLS listener. `X-Forwarded-Proto` is not
+believed by default, because anything that can reach the bind can write that header:
+
+```toml
+[api_tokens]
+enabled = false                # master switch; bearer auth is refused outright while it is off
+rate_limit_per_minute = 60     # per token, on top of any per-IP limit in front
+trust_forwarded_proto = false  # only behind a TLS-terminating proxy that is the sole route in
+```
+
+Embedded mode reads the same three settings as `registry.api_tokens_enabled`,
+`registry.api_tokens_rate_limit_per_minute` and `registry.api_tokens_trust_forwarded_proto` in
+`nimbus.proxy.toml`. Issued tokens are written to `nimbus.tokens.json` in the same state directory
+the ban list and whitelist use, so a revocation outlives the process that made it. Creating tokens
+works with the switch off, which is the order an operator does it in; only authenticating with one
+requires it.
+
+A request carrying no `Authorization: Bearer nsk_` header is untouched by any of this and reaches
+the HMAC check exactly as before, so every existing backend, proxy and `nimctl` is unaffected.
+
 ## Addresses: who connects where
 
 Three different addresses exist in a Nimbus network, and mixing them up is the most
