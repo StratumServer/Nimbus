@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using Xunit;
@@ -664,6 +665,164 @@ public class ProxyBootTests
         // Turning trace logging on without dropping every player is most of the point of reload.
         Assert.True(cfg.Logging.Verbose);
         Log.Configure(verbose: false);
+    }
+
+    // ---- how a run ends ----
+
+    /// <summary>
+    /// A copy of the built proxy in a directory of its own, with the config the test wants it to
+    /// boot on next to it. Program resolves nimbus.proxy.toml from AppContext.BaseDirectory, so
+    /// that directory is the only handle a test has on which config the real binary reads, and
+    /// running the binary is the only way to see what it exits with. The copy is staged next to
+    /// the test binaries by the StageProxyApp target in the csproj.
+    /// </summary>
+    private sealed class ProxyInstall : IDisposable
+    {
+        private static readonly string Staged = Path.Combine(AppContext.BaseDirectory, "proxy-app");
+
+        private readonly string dir;
+
+        public ProxyInstall()
+        {
+            dir = Path.Combine(Path.GetTempPath(), "nimbus-exit-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            Assert.True(File.Exists(Path.Combine(Staged, "Nimbus.Proxy.dll")),
+                $"no staged proxy build in {Staged}, so there is nothing to boot");
+            foreach (var file in Directory.GetFiles(Staged))
+                File.Copy(file, Path.Combine(dir, Path.GetFileName(file)));
+        }
+
+        public void Write(ProxyConfig cfg) =>
+            Nimbus.Shared.TomlConfig.Save(Path.Combine(dir, "nimbus.proxy.toml"), cfg);
+
+        /// <summary>Boots it and waits for it to be over. Everything the operator would have in
+        /// front of them comes back together, since which stream a crash lands on is part of what
+        /// is being asserted.</summary>
+        public async Task<(int ExitCode, string Output)> RunToCompletionAsync()
+        {
+            // The muxer belonging to the runtime this test host is already on, located from where
+            // that runtime was loaded from: shared/Microsoft.NETCore.App/<version>, three levels
+            // under the install root. Asking PATH for `dotnet` instead would pick whichever install
+            // happens to be first on a machine that has several, which need not be the one the
+            // proxy was built against, and the apphost next to the dll resolves its runtime the
+            // same unreliable way.
+            string runtime = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+            string muxer = Path.Combine(
+                Path.GetFullPath(Path.Combine(runtime, "..", "..", "..")),
+                OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
+            Assert.True(File.Exists(muxer), $"no dotnet host at {muxer} to boot the proxy with");
+
+            var start = new ProcessStartInfo(muxer)
+            {
+                WorkingDirectory = dir,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            start.ArgumentList.Add("exec");
+            start.ArgumentList.Add(Path.Combine(dir, "Nimbus.Proxy.dll"));
+
+            using var proxy = Process.Start(start)!;
+            var stdout = proxy.StandardOutput.ReadToEndAsync();
+            var stderr = proxy.StandardError.ReadToEndAsync();
+            using var giveUp = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            try
+            {
+                await proxy.WaitForExitAsync(giveUp.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                proxy.Kill(entireProcessTree: true);
+                Assert.Fail("the proxy never exited");
+            }
+            return (proxy.ExitCode, await stdout + await stderr);
+        }
+
+        public void Dispose()
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* a leftover temp dir is harmless */ }
+        }
+    }
+
+    [Fact]
+    public async Task ARegistryThatCannotBind_ExitsTwoRatherThanCrashingOnTheWayOut()
+    {
+        // The refusal #94 was tested against: the registry port is already taken, Main says so and
+        // returns 2. What came after the return was the bug. The ProcessExit handler fired during
+        // teardown and cancelled the source Main's `using` had just disposed, which throws, and a
+        // throw out of an event handler has nowhere to go, so the orderly refusal reached the
+        // service log as a stack trace and a crash code instead of the line naming the address to
+        // free (#95).
+        var taken = new TcpListener(IPAddress.Loopback, 0);
+        taken.Start();
+        try
+        {
+            using var install = new ProxyInstall();
+            var cfg = new ProxyConfig();
+            cfg.Registry.Mode = "embedded";
+            cfg.Registry.EmbeddedBind = $"http://127.0.0.1:{((IPEndPoint)taken.LocalEndpoint).Port}";
+            cfg.Registry.EmbeddedSharedSecret = "a-long-random-string";
+            install.Write(cfg);
+
+            var (exitCode, output) = await install.RunToCompletionAsync();
+
+            // 2 is what a supervisor reads as "this one is not coming back until someone edits
+            // something", as against a crash it should restart into.
+            Assert.Equal(2, exitCode);
+            Assert.Contains("registry init failed", output, StringComparison.Ordinal);
+            Assert.Contains(cfg.Registry.EmbeddedBind, output, StringComparison.Ordinal);
+            Assert.DoesNotContain("Unhandled exception", output, StringComparison.Ordinal);
+            Assert.DoesNotContain(nameof(ObjectDisposedException), output, StringComparison.Ordinal);
+        }
+        finally { taken.Stop(); }
+    }
+
+    [Fact]
+    public void ShutdownRequestedWhileTheProxyIsRunning_CancelsTheRun()
+    {
+        using var cts = new CancellationTokenSource();
+
+        Assert.True(Program.RequestShutdown(cts));
+        Assert.True(cts.IsCancellationRequested);
+    }
+
+    [Fact]
+    public void ShutdownRequestedOnceTheRunIsOver_IsAcceptedQuietly()
+    {
+        // ProcessExit fires after Main has returned, so the source it was given is always already
+        // disposed by then. Every exit path goes through here, including the successful one.
+        var disposed = new CancellationTokenSource();
+        disposed.Dispose();
+
+        Assert.False(Program.RequestShutdown(disposed));
+    }
+
+    [Fact]
+    public void CtrlCWhileTheProxyIsRunning_IsTakenOverAndShutsItDown()
+    {
+        using var cts = new CancellationTokenSource();
+
+        // The true is what the handler assigns to e.Cancel, which is what stops the runtime from
+        // being killed outright and lets the sessions be closed properly.
+        Assert.True(Program.HandleCancelKey(cts));
+        Assert.True(cts.IsCancellationRequested);
+    }
+
+    [Fact]
+    public void CtrlCOnceTheRunIsOver_IsLeftToWhoeverHandlesItNext()
+    {
+        // Ctrl+c can land in the same window ProcessExit runs in, and would have thrown out of the
+        // handler the same way. There is no run left to cancel there, so the keypress is not taken
+        // over either: swallowing it would leave an operator pressing ctrl+c at a process that has
+        // stopped listening for it.
+        //
+        // Pinned here rather than against the running binary on purpose. ConsoleCancelEventArgs has
+        // no public constructor, so the registered handler cannot be invoked from outside the
+        // runtime, and provoking the real thing means landing a SIGINT inside the gap between
+        // Main's return and the process going away, which is a race a test would lose most runs.
+        var disposed = new CancellationTokenSource();
+        disposed.Dispose();
+
+        Assert.False(Program.HandleCancelKey(disposed));
     }
 
     private static async Task ConnectWhenReadyAsync(TcpClient client, int port, CancellationToken ct)
