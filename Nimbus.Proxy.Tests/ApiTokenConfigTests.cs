@@ -154,14 +154,15 @@ public class ApiTokenConfigTests
             cfg.Registry.ApiTokensEnabled = true;
 
             await using var host = ProxyRegistryHost.Build(cfg, CancellationToken.None);
-            var created = await host.Client!.CreateApiTokenAsync(new ApiTokenCreateRequest
+            Assert.NotNull(host.Client);
+            var created = await host.Client.CreateApiTokenAsync(new ApiTokenCreateRequest
             {
                 Name = "discord-bot",
                 Scopes = new List<string> { ApiTokenScopes.WhitelistWrite },
             }, CancellationToken.None);
 
             Assert.NotNull(created);
-            Assert.StartsWith(ApiTokenSecret.Prefix, created!.Token);
+            Assert.StartsWith(ApiTokenSecret.Prefix, created.Token);
             // Minting works in the no-listener mode as well: an operator preparing a bot still
             // needs the credential, and the registry that will answer it reads the same file.
             string file = Path.Combine(dir, RegistryStateFiles.TokensFileName);

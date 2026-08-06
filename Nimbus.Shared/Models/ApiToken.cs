@@ -50,11 +50,7 @@ public sealed record ApiToken
     // Scope names are lowercase by convention and compared without case so a token created with
     // "Bans:Write" is not quietly useless.
     public bool HasScope(string scope)
-    {
-        foreach (var held in Scopes)
-            if (string.Equals(held, scope, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
-    }
+        => Scopes.Any(held => string.Equals(held, scope, StringComparison.OrdinalIgnoreCase));
 
     // The copy that goes on the wire. The hash is not a secret in the sense the token is, but
     // publishing it buys nobody anything, so responses carry the record with that one field

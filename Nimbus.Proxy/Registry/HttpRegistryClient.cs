@@ -308,10 +308,10 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         try
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
-            const string path = "api/tokens";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
+            const string path = "/api/tokens";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            Sign(msg, "POST", "/" + path, body);
+            Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
@@ -319,7 +319,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
                 // The detail is the registry's refusal reason (an unknown scope, a missing name)
                 // and never carries a credential: the only response that ever holds one is a 200.
                 string detail = await SafeReadAsync(resp).ConfigureAwait(false);
-                Log.Warn($"registry POST /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
+                Log.Warn($"registry POST {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
                 return null;
             }
             var parsed = await resp.Content.ReadFromJsonAsync<ApiTokenCreateResponse>(cancellationToken: ct).ConfigureAwait(false);
@@ -338,13 +338,13 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
     {
         try
         {
-            const string path = "api/tokens";
-            using var msg = new HttpRequestMessage(HttpMethod.Get, path);
-            Sign(msg, "GET", "/" + path, Array.Empty<byte>());
+            const string path = "/api/tokens";
+            using var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
+            Sign(msg, "GET", path, Array.Empty<byte>());
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
-                Log.Warn($"registry GET /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
+                Log.Warn($"registry GET {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
                 return null;
             }
             var parsed = await resp.Content.ReadFromJsonAsync<ApiTokenListResponse>(cancellationToken: ct).ConfigureAwait(false);
@@ -362,10 +362,10 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         try
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(new ApiTokenRevokeRequest { Id = id });
-            const string path = "api/tokens/revoke";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
+            const string path = "/api/tokens/revoke";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            Sign(msg, "POST", "/" + path, body);
+            Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;

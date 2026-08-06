@@ -509,11 +509,11 @@ public class InProcRegistryClientTests
         }, Ct);
 
         Assert.NotNull(created);
-        Assert.StartsWith(ApiTokenSecret.Prefix, created!.Token);
+        Assert.StartsWith(ApiTokenSecret.Prefix, created.Token);
         // Found by the hash, which is the only lookup the auth path does.
         var held = e.Tokens.FindByHash(ApiTokenSecret.Hash(created.Token));
         Assert.NotNull(held);
-        Assert.Equal("discord-bot", held!.Name);
+        Assert.Equal("discord-bot", held.Name);
         Assert.Equal(e.Clock.NowUnix + ApiTokenService.DefaultDurationSeconds, held.ExpiresAtUnix);
         // The record handed back is redacted, the stored one is not.
         Assert.Equal("", created.Record!.Hash);

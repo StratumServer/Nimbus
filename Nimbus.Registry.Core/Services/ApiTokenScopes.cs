@@ -23,12 +23,8 @@ public static class ApiTokenScopes
     };
 
     public static bool IsKnown(string? scope)
-    {
-        if (string.IsNullOrWhiteSpace(scope)) return false;
-        foreach (var known in All)
-            if (string.Equals(known, scope, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
-    }
+        => !string.IsNullOrWhiteSpace(scope)
+           && All.Any(known => string.Equals(known, scope, StringComparison.OrdinalIgnoreCase));
 
     // The scope a bearer token needs to reach this route, or null when no scope reaches it at
     // all. Null is the answer for the internal endpoints (heartbeat, reservations, transfer

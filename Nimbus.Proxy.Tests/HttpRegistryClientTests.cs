@@ -413,7 +413,7 @@ public class HttpRegistryClientTests
         }, Ct);
 
         Assert.NotNull(created);
-        Assert.True(created!.Ok);
+        Assert.True(created.Ok);
         Assert.StartsWith("nsk_", created.Token);
         Assert.Equal("discord-bot", created.Record!.Name);
 

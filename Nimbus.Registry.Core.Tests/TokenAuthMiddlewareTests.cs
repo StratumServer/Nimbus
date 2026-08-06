@@ -26,9 +26,9 @@ public class TokenAuthMiddlewareTests
         public List<string> Lines { get; } = new();
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
-        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? ex,
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
-            => Lines.Add(formatter(state, ex));
+            => Lines.Add(formatter(state, exception));
 
         public string Text => string.Join("\n", Lines);
     }

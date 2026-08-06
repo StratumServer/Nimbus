@@ -59,14 +59,15 @@ public sealed class ApiTokenStore
     // The lookup the auth path runs. Case is fixed by ApiTokenSecret.Hash on both sides, so an
     // ordinal comparison is the whole match.
     public ApiToken? FindByHash(string hash)
-        => string.IsNullOrEmpty(hash) ? null : _byHash.TryGetValue(hash, out var token) ? token : null;
+    {
+        if (string.IsNullOrEmpty(hash)) return null;
+        return _byHash.TryGetValue(hash, out var token) ? token : null;
+    }
 
     public ApiToken? FindById(string id)
     {
         if (string.IsNullOrEmpty(id)) return null;
-        foreach (var kv in _byHash)
-            if (string.Equals(kv.Value.Id, id, StringComparison.OrdinalIgnoreCase)) return kv.Value;
-        return null;
+        return _byHash.Values.FirstOrDefault(token => string.Equals(token.Id, id, StringComparison.OrdinalIgnoreCase));
     }
 
     // False when no token carries that id, or when it was already revoked: a second revoke is

@@ -77,7 +77,7 @@ public sealed class ApiTokenStoreTests : IDisposable
 
         var held = store.FindByHash(ApiTokenSecret.Hash(result.Plaintext));
         Assert.NotNull(held);
-        Assert.Equal(result.Token!.Id, held!.Id);
+        Assert.Equal(result.Token!.Id, held.Id);
         Assert.Equal(ApiTokenSecret.Hash(result.Plaintext), held.Hash);
         Assert.DoesNotContain(result.Plaintext, held.Hash, StringComparison.Ordinal);
     }
@@ -266,7 +266,7 @@ public sealed class ApiTokenStoreTests : IDisposable
 
         var held = store.FindByHash(result.Token.Hash);
         Assert.NotNull(held);
-        Assert.True(held!.Revoked);
+        Assert.True(held.Revoked);
         Assert.False(held.IsUsableAt(clock.NowUnix));
         // Still listed: the record is the audit trail, and an absence answers none of the
         // questions asked after a leak.
@@ -300,7 +300,7 @@ public sealed class ApiTokenStoreTests : IDisposable
 
         var held = second.FindByHash(result.Token.Hash);
         Assert.NotNull(held);
-        Assert.True(held!.Revoked);
+        Assert.True(held.Revoked);
     }
 
     // ---- persistence ----
@@ -313,7 +313,7 @@ public sealed class ApiTokenStoreTests : IDisposable
         var reloaded = NewStore().FindByHash(ApiTokenSecret.Hash(result.Plaintext));
 
         Assert.NotNull(reloaded);
-        Assert.Equal("discord-bot", reloaded!.Name);
+        Assert.Equal("discord-bot", reloaded.Name);
         Assert.Equal(result.Token!.Id, reloaded.Id);
         Assert.Equal(result.Token.ExpiresAtUnix, reloaded.ExpiresAtUnix);
         Assert.Equal(new[] { ApiTokenScopes.WhitelistWrite, ApiTokenScopes.WhitelistRead }, reloaded.Scopes);
@@ -335,7 +335,7 @@ public sealed class ApiTokenStoreTests : IDisposable
         // the answer to "why did the bot stop working".
         var held = reloaded.FindByHash(result.Token!.Hash);
         Assert.NotNull(held);
-        Assert.False(held!.IsUsableAt(clock.NowUnix));
+        Assert.False(held.IsUsableAt(clock.NowUnix));
     }
 
     [Fact]

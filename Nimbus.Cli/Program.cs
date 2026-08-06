@@ -213,7 +213,7 @@ internal static class Program
     // never puts a secret on a terminal.
     private static object BuildToken(List<string> args)
     {
-        string sub = args.Count >= 2 && !args[1].StartsWith("-") ? args[1].ToLowerInvariant() : "list";
+        string sub = args.Count >= 2 && !args[1].StartsWith('-') ? args[1].ToLowerInvariant() : "list";
         switch (sub)
         {
             case "list" or "ls":
@@ -250,7 +250,7 @@ internal static class Program
 
             case "revoke" or "rm" or "del":
             {
-                string? id = GetOpt(args, "--id") ?? (args.Count >= 3 && !args[2].StartsWith("-") ? args[2] : null);
+                string? id = GetOpt(args, "--id") ?? (args.Count >= 3 && !args[2].StartsWith('-') ? args[2] : null);
                 if (string.IsNullOrEmpty(id)) throw new ArgumentException("token revoke requires <id>");
                 return new { cmd = "token-revoke", id };
             }
