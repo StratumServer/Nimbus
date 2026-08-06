@@ -30,6 +30,15 @@ public static class RegistryHosting
             RegistryStateFiles.Bans(cfg.StateDir, StateLogger(sp))));
         builder.Services.AddSingleton(sp => new WhitelistStore(sp.GetRequiredService<TimeProvider>(),
             RegistryStateFiles.Whitelist(cfg.StateDir, StateLogger(sp))));
+        // Third: the issued scoped credentials. A token that died with the registry process would
+        // be unusable, and a revocation that died with it would be worse.
+        builder.Services.AddSingleton(sp => new ApiTokenStore(sp.GetRequiredService<TimeProvider>(),
+            RegistryStateFiles.Tokens(cfg.StateDir, StateLogger(sp))));
+        builder.Services.AddSingleton<ApiTokenService>();
+        // Named rather than resolved by type: the limiter has a second constructor taking the
+        // rate directly, for the tests that pin its arithmetic, and which of the two the container
+        // would pick is not a question worth leaving open.
+        builder.Services.AddSingleton(sp => new ApiTokenRateLimiter(cfg, sp.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton<ReservationService>();
         builder.Services.AddHostedService<RegistrySweeper>();
         if (withMasterServer) builder.Services.AddHostedService<MasterServerBroadcaster>();
@@ -40,6 +49,9 @@ public static class RegistryHosting
 
     public static void UseNimbusRegistry(this WebApplication app)
     {
+        // In front of the HMAC one, and only interested in requests carrying a bearer token.
+        // Everything else reaches HmacAuthMiddleware exactly as it did before.
+        app.UseMiddleware<TokenAuthMiddleware>();
         app.UseMiddleware<HmacAuthMiddleware>();
         Endpoints.Map(app);
     }

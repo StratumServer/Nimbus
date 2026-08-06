@@ -35,6 +35,10 @@ public sealed class RegistryConfig
     // .bad suffix rather than deleted or trusted.
     public string StateDir { get; set; } = ".";
 
+    // Scoped bearer credentials for third-party integrations. Off by default: a registry that
+    // nobody has issued a token from should not be answering bearer headers at all.
+    public ApiTokensConfig ApiTokens { get; set; } = new();
+
     // Identity advertised to the VS master server. The registry registers the whole
     // network as a single entry. Off by default.
     public ServerIdentityConfig Identity { get; set; } = new();
@@ -44,6 +48,54 @@ public sealed class RegistryConfig
         if (!string.IsNullOrEmpty(SharedSecret)) yield return SharedSecret;
         foreach (var s in AcceptedSecrets)
             if (!string.IsNullOrEmpty(s)) yield return s;
+    }
+}
+
+// The [api_tokens] section. Scoped bearer tokens are the third-party path (#54); the components
+// Nimbus ships keep signing every call with HMAC and are unaffected by everything here.
+public sealed class ApiTokensConfig
+{
+    // Master switch. False refuses bearer authentication outright, whatever tokens exist, so a
+    // registry that has never been meant to answer integrations does not start doing so because
+    // somebody minted a token.
+    public bool Enabled { get; set; } = false;
+
+    // Per-token budget, on top of whatever per-IP limiting sits in front. A non-positive value is
+    // a config error and falls back to 60 rather than to no limit at all.
+    public int RateLimitPerMinute { get; set; } = 60;
+
+    // A bearer token is only as safe as the transport under it, so token auth is accepted on a
+    // loopback connection or on this registry's own TLS listener and nowhere else. Set this true
+    // only when a reverse proxy in front terminates TLS and is the sole route to this bind: it
+    // makes the registry believe an X-Forwarded-Proto header, and anything that can reach the
+    // bind directly can then write that header itself.
+    public bool TrustForwardedProto { get; set; } = false;
+}
+
+// The configurations that are accepted, start cleanly and then quietly do nothing. The standalone
+// registry has no validator of its own, so this is where its complaints live; the proxy carries
+// the same two checks for the embedded registry in ProxyConfigValidator, worded the same way.
+public static class RegistryConfigWarnings
+{
+    public static List<string> ApiTokens(RegistryConfig cfg)
+    {
+        var complaints = new List<string>();
+        if (!cfg.ApiTokens.Enabled) return complaints;
+
+        if (cfg.ApiTokens.RateLimitPerMinute <= 0)
+            complaints.Add($"api_tokens.rate_limit_per_minute is {cfg.ApiTokens.RateLimitPerMinute}, which is not a rate. Falling back to 60 per token per minute.");
+
+        // A bind that cannot be reached from outside, or one this registry serves TLS on itself,
+        // is a bind tokens work over. Anything else is the configuration where bearer auth refuses
+        // every request it is given, with no other signal an operator would ever see.
+        if (!Uri.TryCreate(cfg.BindUrl, UriKind.Absolute, out var uri)) return complaints;
+        // 0.0.0.0 is not loopback: it is every interface, loopback included.
+        if (uri.Scheme == "https" || uri.IsLoopback) return complaints;
+
+        complaints.Add(cfg.ApiTokens.TrustForwardedProto
+            ? "api_tokens.trust_forwarded_proto = true makes the registry believe an X-Forwarded-Proto header on a plain-HTTP bind. Only set it when a TLS-terminating proxy is the sole route to bind_url."
+            : "api_tokens.enabled = true on a non-loopback plain-HTTP bind_url: bearer auth will refuse every request, because a token is only as safe as the transport under it. Serve https, bind loopback, or set api_tokens.trust_forwarded_proto behind a TLS-terminating proxy.");
+        return complaints;
     }
 }
 

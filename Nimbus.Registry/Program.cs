@@ -29,6 +29,9 @@ public static class Program
             Console.WriteLine("[Nimbus] WARNING: SharedSecret is still default. Heartbeats will be open to anyone who can hit this URL. Edit nimbus.registry.toml before going live.");
         }
 
+        foreach (var complaint in RegistryConfigWarnings.ApiTokens(cfg))
+            Console.WriteLine($"[Nimbus] WARNING: {complaint}");
+
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseUrls(cfg.BindUrl);
         builder.Logging.ClearProviders();

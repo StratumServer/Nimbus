@@ -15,24 +15,24 @@ internal sealed class InProcRegistryClient : IRegistryClient
     private readonly TransferIntentStore intents;
     private readonly BanStore bans;
     private readonly WhitelistStore whitelist;
+    private readonly ApiTokenService tokens;
     private readonly RegistryConfig cfg;
     private readonly TimeProvider clock;
 
-    public InProcRegistryClient(BackendRegistry backends, ReservationStore reservations,
-        TransferIntentStore intents, BanStore bans, WhitelistStore whitelist, RegistryConfig cfg,
-        TimeProvider? clock = null)
+    public InProcRegistryClient(RegistryStores stores, RegistryConfig cfg, TimeProvider? clock = null)
     {
-        this.backends = backends;
-        this.intents = intents;
-        this.bans = bans;
-        this.whitelist = whitelist;
+        this.backends = stores.Backends;
+        this.intents = stores.Intents;
+        this.bans = stores.Bans;
+        this.whitelist = stores.Whitelist;
         this.cfg = cfg;
         this.clock = clock ?? TimeProvider.System;
         // Built here rather than resolved: the embedded registry can run with no HTTP listener
-        // and therefore no container to resolve from. The service holds no state of its own,
-        // only references to the stores above, so this is the same rules over the same data and
+        // and therefore no container to resolve from. Both services hold no state of their own,
+        // only references to the stores above, so these are the same rules over the same data and
         // not a second source of truth.
-        this.reservations = new ReservationService(backends, reservations, bans, this.clock);
+        this.reservations = new ReservationService(stores.Backends, stores.Reservations, stores.Bans, this.clock);
+        this.tokens = new ApiTokenService(stores.Tokens, this.clock);
     }
 
     public Task<TransferReservation?> MintReservationAsync(
@@ -114,4 +114,39 @@ internal sealed class InProcRegistryClient : IRegistryClient
     // of them to extract, the endpoints delegate the same way.
     public Task<bool> RemoveWhitelistAsync(string playerUid, string? serverId, CancellationToken ct)
         => Task.FromResult(whitelist.Remove(playerUid, serverId));
+
+    // Same ApiTokenService the HTTP endpoints call, so the default-90-days rule, the scope
+    // vocabulary and the refusal reasons are the same object in embedded and remote mode. A
+    // refusal is a null here where the endpoint answers 400, with the reason in the log: there is
+    // no HTTP caller to hand a status code to.
+    public Task<ApiTokenCreateResponse?> CreateApiTokenAsync(ApiTokenCreateRequest request, CancellationToken ct)
+    {
+        var result = tokens.Create(request);
+        if (result.Status != ApiTokenCreateStatus.Ok)
+        {
+            Log.Warn($"in-proc registry: refusing to mint an api token, {Explain(result)}");
+            return Task.FromResult<ApiTokenCreateResponse?>(null);
+        }
+
+        return Task.FromResult<ApiTokenCreateResponse?>(new ApiTokenCreateResponse
+        {
+            Ok = true,
+            Token = result.Plaintext,
+            Record = result.Token!.Redacted(),
+        });
+    }
+
+    private static string Explain(ApiTokenCreateResult result) => result.Status switch
+    {
+        ApiTokenCreateStatus.MissingName => "no name given",
+        ApiTokenCreateStatus.InvalidName => "the name is too long or carries control characters",
+        ApiTokenCreateStatus.NoScopes => "no scopes given",
+        _ => $"unknown scope '{result.UnknownScope}'",
+    };
+
+    public Task<List<ApiToken>?> GetApiTokensAsync(CancellationToken ct)
+        => Task.FromResult<List<ApiToken>?>(tokens.List());
+
+    public Task<bool> RevokeApiTokenAsync(string id, CancellationToken ct)
+        => Task.FromResult(tokens.Revoke(id));
 }

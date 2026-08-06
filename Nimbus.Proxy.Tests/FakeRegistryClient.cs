@@ -132,4 +132,33 @@ internal sealed class FakeRegistryClient : IRegistryClient
         LastWhitelistRemove = (playerUid, serverId);
         return Task.FromResult(RemoveWhitelistResult);
     }
+
+    /// <summary>What CreateApiTokenAsync answers. Null is "the registry refused the token".</summary>
+    public ApiTokenCreateResponse? CreateApiTokenResult;
+    public ApiTokenCreateRequest? LastApiTokenRequest;
+
+    /// <summary>Records handed to the next listing. Null is "registry error", as everywhere else
+    /// on this double.</summary>
+    public List<ApiToken>? ApiTokens;
+
+    /// <summary>What RevokeApiTokenAsync answers, and the id it was last called with.</summary>
+    public bool RevokeApiTokenResult;
+    public string? LastApiTokenRevoke;
+
+    public Task<ApiTokenCreateResponse?> CreateApiTokenAsync(ApiTokenCreateRequest request, CancellationToken ct)
+    {
+        LastApiTokenRequest = request;
+        return Task.FromResult(CreateApiTokenResult);
+    }
+
+    public Task<List<ApiToken>?> GetApiTokensAsync(CancellationToken ct)
+        => Throw
+            ? throw new InvalidOperationException("registry down")
+            : Task.FromResult(ApiTokens);
+
+    public Task<bool> RevokeApiTokenAsync(string id, CancellationToken ct)
+    {
+        LastApiTokenRevoke = id;
+        return Task.FromResult(RevokeApiTokenResult);
+    }
 }

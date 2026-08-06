@@ -30,6 +30,15 @@ public sealed class HmacAuthMiddleware
             return;
         }
 
+        // Already authenticated by TokenAuthMiddleware, which runs in front of this one and only
+        // ever stamps an identity it accepted. A bearer request carries no signature headers and
+        // would be rejected here for missing them; a refused one never got this far.
+        if (ctx.Items.ContainsKey(ApiTokenIdentity.ItemsKey))
+        {
+            await _next(ctx);
+            return;
+        }
+
         if (!ctx.Request.Headers.TryGetValue(NimbusProtocol.SignatureHeader, out var sigVals)
             || !ctx.Request.Headers.TryGetValue(NimbusProtocol.TimestampHeader, out var tsVals)
             || !ctx.Request.Headers.TryGetValue(NimbusProtocol.NonceHeader, out var nonceVals)

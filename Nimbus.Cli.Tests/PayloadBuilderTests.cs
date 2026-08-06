@@ -254,6 +254,90 @@ public class PayloadBuilderTests
             Payload("whitelist", "ADD", "--uid", "uid-1"));
     }
 
+    // ---- token ----
+
+    [Fact]
+    public void Token_ListsWhenNoSubVerbIsGiven()
+    {
+        // Bare `token` has to land on the listing, which is the one sub-verb that never puts a
+        // secret on a terminal.
+        Assert.Equal("""{"cmd":"token-list"}""", Payload("token"));
+        Assert.Equal("""{"cmd":"token-list"}""", Payload("token", "list"));
+        Assert.Equal("""{"cmd":"token-list"}""", Payload("token", "ls"));
+        Assert.Equal("""{"cmd":"token-list"}""", Payload("tokens"));
+    }
+
+    [Fact]
+    public void ATokenCreate_CarriesTheNameAndTheScopesAsWritten()
+    {
+        // The scopes travel as one comma-separated string: the admin frame reads named string
+        // fields, and splitting them proxy-side keeps the two ends agreeing on one shape.
+        Assert.Equal("""{"cmd":"token-create","name":"discord-bot","scopes":"whitelist:write"}""",
+            Payload("token", "create", "--name", "discord-bot", "--scopes", "whitelist:write"));
+        Assert.Equal("""{"cmd":"token-create","name":"bot","scopes":"bans:write,whitelist:write","duration":86400}""",
+            Payload("token", "create", "--name", "bot", "--scopes", "bans:write,whitelist:write",
+                "--duration", "86400"));
+    }
+
+    [Fact]
+    public void ATokenCreate_SendsPermanenceAsAFlagRatherThanAsAZeroDuration()
+    {
+        // A duration of zero means "use the default" everywhere else in this CLI, so permanence
+        // has to be its own field or the explicit opt-out would read as the default.
+        Assert.Equal("""{"cmd":"token-create","name":"bot","scopes":"servers:read","permanent":true}""",
+            Payload("token", "create", "--name", "bot", "--scopes", "servers:read", "--permanent"));
+    }
+
+    [Fact]
+    public void ATokenCreate_RefusesToGuessBetweenPermanentAndADuration()
+    {
+        Assert.Equal("--permanent and --duration are mutually exclusive",
+            Refused("token", "create", "--name", "bot", "--scopes", "bans:read",
+                "--permanent", "--duration", "60").Message);
+    }
+
+    [Fact]
+    public void ATokenCreate_WithoutANameOrScopes_IsRefused()
+    {
+        Assert.Equal("token create requires --name <name>", Refused("token", "create").Message);
+        Assert.StartsWith("token create requires --scopes",
+            Refused("token", "create", "--name", "bot").Message);
+        Assert.Equal("--duration takes a number of seconds",
+            Refused("token", "create", "--name", "bot", "--scopes", "bans:read", "--duration", "forever").Message);
+    }
+
+    [Fact]
+    public void ATokenCreate_TakesTheSingularSpellingOfScopesToo()
+    {
+        Assert.Equal("""{"cmd":"token-create","name":"bot","scopes":"bans:read"}""",
+            Payload("token", "create", "--name", "bot", "--scope", "bans:read"));
+    }
+
+    [Fact]
+    public void ATokenRevoke_TakesTheIdPositionallyOrUnderTheFlag()
+    {
+        Assert.Equal("""{"cmd":"token-revoke","id":"a1b2c3"}""", Payload("token", "revoke", "a1b2c3"));
+        Assert.Equal("""{"cmd":"token-revoke","id":"a1b2c3"}""", Payload("token", "rm", "--id", "a1b2c3"));
+    }
+
+    [Fact]
+    public void ATokenRevoke_WithNoId_IsRefused()
+        => Assert.Equal("token revoke requires <id>", Refused("token", "revoke").Message);
+
+    [Fact]
+    public void ATokenSubVerbNobodyKnows_IsNamedBackWithTheOnesThatExist()
+    {
+        Assert.Equal("unknown token sub-command: rotate (create, revoke, list)",
+            Refused("token", "rotate").Message);
+    }
+
+    [Fact]
+    public void ATokenSubVerbIsReadWithoutRegardToCase()
+    {
+        Assert.Equal("""{"cmd":"token-create","name":"bot","scopes":"bans:read"}""",
+            Payload("token", "CREATE", "--name", "bot", "--scopes", "bans:read"));
+    }
+
     // ---- drain ----
 
     [Fact]

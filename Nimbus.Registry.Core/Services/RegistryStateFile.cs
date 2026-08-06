@@ -142,12 +142,18 @@ public static class RegistryStateFiles
 {
     public const string BansFileName = "nimbus.bans.json";
     public const string WhitelistFileName = "nimbus.whitelist.json";
+    public const string TokensFileName = "nimbus.tokens.json";
 
     public static RegistryStateFile<NetworkBan> Bans(string? stateDir, ILogger? log = null)
         => new(Path.Combine(Resolve(stateDir), BansFileName), log);
 
     public static RegistryStateFile<WhitelistEntry> Whitelist(string? stateDir, ILogger? log = null)
         => new(Path.Combine(Resolve(stateDir), WhitelistFileName), log);
+
+    // Its own file for the same reason the other two have theirs: a corrupt token list must not
+    // be able to take the ban list down with it. What it holds is hashes, never secrets.
+    public static RegistryStateFile<ApiToken> Tokens(string? stateDir, ILogger? log = null)
+        => new(Path.Combine(Resolve(stateDir), TokensFileName), log);
 
     // An unset directory means the working directory, which is where nimbus.registry.toml is
     // read from as well.

@@ -235,10 +235,19 @@ internal sealed class RegistryConfig
     public int MaxReservationTtlSeconds { get; set; } = 300;
     public bool AdvertiseOnMasterServer { get; set; } = false;
 
-    // Where the embedded registry keeps its ban list and whitelist so they survive a restart:
-    // nimbus.bans.json and nimbus.whitelist.json. Relative paths resolve next to the proxy
-    // executable, the same rule [persistence] uses for the drain flags.
+    // Where the embedded registry keeps its ban list, whitelist and issued API tokens so they
+    // survive a restart: nimbus.bans.json, nimbus.whitelist.json and nimbus.tokens.json. Relative
+    // paths resolve next to the proxy executable, the same rule [persistence] uses for the drain
+    // flags.
     public string EmbeddedStateDir { get; set; } = ".";
+
+    // Embedded mode only, and the same three settings the standalone registry reads from its own
+    // [api_tokens] section. They gate how a scoped bearer token is accepted, never how one is
+    // created: `nimctl token create` works either way, because minting a credential the registry
+    // is not yet answering is how an operator gets ready to turn it on.
+    public bool ApiTokensEnabled { get; set; } = false;
+    public int ApiTokensRateLimitPerMinute { get; set; } = 60;
+    public bool ApiTokensTrustForwardedProto { get; set; } = false;
 }
 
 // Whitelist enforcement. The list itself lives in the registry; these switches decide where it
