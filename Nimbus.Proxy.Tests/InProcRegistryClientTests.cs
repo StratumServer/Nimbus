@@ -58,8 +58,15 @@ public class InProcRegistryClientTests
             var tokens = new ApiTokenStore(clock);
             return new Embedded
             {
-                Client = new InProcRegistryClient(backends, reservations, intents, bans, whitelist,
-                    new ApiTokenService(tokens, clock), proxyCfg, clock),
+                Client = new InProcRegistryClient(new RegistryStores
+                {
+                    Backends = backends,
+                    Reservations = reservations,
+                    Intents = intents,
+                    Bans = bans,
+                    Whitelist = whitelist,
+                    Tokens = tokens,
+                }, proxyCfg, clock),
                 Backends = backends,
                 Reservations = reservations,
                 Intents = intents,

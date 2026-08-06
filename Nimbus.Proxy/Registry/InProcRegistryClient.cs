@@ -19,22 +19,20 @@ internal sealed class InProcRegistryClient : IRegistryClient
     private readonly RegistryConfig cfg;
     private readonly TimeProvider clock;
 
-    public InProcRegistryClient(BackendRegistry backends, ReservationStore reservations,
-        TransferIntentStore intents, BanStore bans, WhitelistStore whitelist, ApiTokenService tokens,
-        RegistryConfig cfg, TimeProvider? clock = null)
+    public InProcRegistryClient(RegistryStores stores, RegistryConfig cfg, TimeProvider? clock = null)
     {
-        this.backends = backends;
-        this.intents = intents;
-        this.bans = bans;
-        this.whitelist = whitelist;
-        this.tokens = tokens;
+        this.backends = stores.Backends;
+        this.intents = stores.Intents;
+        this.bans = stores.Bans;
+        this.whitelist = stores.Whitelist;
         this.cfg = cfg;
         this.clock = clock ?? TimeProvider.System;
         // Built here rather than resolved: the embedded registry can run with no HTTP listener
-        // and therefore no container to resolve from. The service holds no state of its own,
-        // only references to the stores above, so this is the same rules over the same data and
+        // and therefore no container to resolve from. Both services hold no state of their own,
+        // only references to the stores above, so these are the same rules over the same data and
         // not a second source of truth.
-        this.reservations = new ReservationService(backends, reservations, bans, this.clock);
+        this.reservations = new ReservationService(stores.Backends, stores.Reservations, stores.Bans, this.clock);
+        this.tokens = new ApiTokenService(stores.Tokens, this.clock);
     }
 
     public Task<TransferReservation?> MintReservationAsync(

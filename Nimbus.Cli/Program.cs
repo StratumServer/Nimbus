@@ -214,50 +214,49 @@ internal static class Program
     private static object BuildToken(List<string> args)
     {
         string sub = args.Count >= 2 && !args[1].StartsWith('-') ? args[1].ToLowerInvariant() : "list";
-        switch (sub)
+        return sub switch
         {
-            case "list" or "ls":
-                return new { cmd = "token-list" };
+            "list" or "ls" => new { cmd = "token-list" },
+            "create" or "new" or "add" => BuildTokenCreate(args),
+            "revoke" or "rm" or "del" => BuildTokenRevoke(args),
+            _ => throw new ArgumentException($"unknown token sub-command: {sub} (create, revoke, list)"),
+        };
+    }
 
-            case "create" or "new" or "add":
-            {
-                string? name = GetOpt(args, "--name");
-                if (string.IsNullOrEmpty(name))
-                    throw new ArgumentException("token create requires --name <name>");
+    private static object BuildTokenCreate(List<string> args)
+    {
+        string? name = GetOpt(args, "--name");
+        if (string.IsNullOrEmpty(name))
+            throw new ArgumentException("token create requires --name <name>");
 
-                string? scopes = GetOpt(args, "--scopes") ?? GetOpt(args, "--scope");
-                if (string.IsNullOrEmpty(scopes))
-                    throw new ArgumentException("token create requires --scopes <a,b> (bans:read, bans:write, whitelist:read, whitelist:write, servers:read)");
+        string? scopes = GetOpt(args, "--scopes") ?? GetOpt(args, "--scope");
+        if (string.IsNullOrEmpty(scopes))
+            throw new ArgumentException("token create requires --scopes <a,b> (bans:read, bans:write, whitelist:read, whitelist:write, servers:read)");
 
-                var d = new Dictionary<string, object?> { ["cmd"] = "token-create", ["name"] = name, ["scopes"] = scopes };
+        var d = new Dictionary<string, object?> { ["cmd"] = "token-create", ["name"] = name, ["scopes"] = scopes };
 
-                bool permanent = args.Contains("--permanent");
-                string? durationStr = GetOpt(args, "--duration");
-                // Refused rather than resolved in nimctl's favour: one of the two is being
-                // ignored whichever way it is settled, and the operator is the only one who knows
-                // which they meant.
-                if (permanent && !string.IsNullOrEmpty(durationStr))
-                    throw new ArgumentException("--permanent and --duration are mutually exclusive");
-                if (permanent) d["permanent"] = true;
-                if (!string.IsNullOrEmpty(durationStr))
-                {
-                    if (!int.TryParse(durationStr, out int duration))
-                        throw new ArgumentException("--duration takes a number of seconds");
-                    d["duration"] = duration;
-                }
-                return d;
-            }
-
-            case "revoke" or "rm" or "del":
-            {
-                string? id = GetOpt(args, "--id") ?? (args.Count >= 3 && !args[2].StartsWith('-') ? args[2] : null);
-                if (string.IsNullOrEmpty(id)) throw new ArgumentException("token revoke requires <id>");
-                return new { cmd = "token-revoke", id };
-            }
-
-            default:
-                throw new ArgumentException($"unknown token sub-command: {sub} (create, revoke, list)");
+        bool permanent = args.Contains("--permanent");
+        string? durationStr = GetOpt(args, "--duration");
+        // Refused rather than resolved in nimctl's favour: one of the two is being ignored
+        // whichever way it is settled, and the operator is the only one who knows which they
+        // meant.
+        if (permanent && !string.IsNullOrEmpty(durationStr))
+            throw new ArgumentException("--permanent and --duration are mutually exclusive");
+        if (permanent) d["permanent"] = true;
+        if (!string.IsNullOrEmpty(durationStr))
+        {
+            if (!int.TryParse(durationStr, out int duration))
+                throw new ArgumentException("--duration takes a number of seconds");
+            d["duration"] = duration;
         }
+        return d;
+    }
+
+    private static object BuildTokenRevoke(List<string> args)
+    {
+        string? id = GetOpt(args, "--id") ?? (args.Count >= 3 && !args[2].StartsWith('-') ? args[2] : null);
+        if (string.IsNullOrEmpty(id)) throw new ArgumentException("token revoke requires <id>");
+        return new { cmd = "token-revoke", id };
     }
 
     private static object BuildDrain(List<string> args, string cmd)
