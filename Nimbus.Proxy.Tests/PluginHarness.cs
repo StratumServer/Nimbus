@@ -76,6 +76,17 @@ internal sealed class PluginDir : IDisposable
         return this;
     }
 
+    /// <summary>Drops one field out of an existing manifest, for the "the author never wrote this
+    /// key" cases.</summary>
+    public PluginDir RemoveManifestField(string dll, string key)
+    {
+        string path = System.IO.Path.Combine(Path, System.IO.Path.ChangeExtension(dll, ".plugin.json"));
+        var node = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        node.Remove(key);
+        File.WriteAllText(path, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        return this;
+    }
+
     public PluginDir DeleteManifest(string dll)
     {
         File.Delete(System.IO.Path.Combine(Path, System.IO.Path.ChangeExtension(dll, ".plugin.json")));

@@ -337,59 +337,136 @@ public class PluginLoaderTests
 
     // ---- the api version gate ----
 
-    [Theory]
-    [InlineData("0.1")]   // exactly what the proxy offers
-    [InlineData("0.0")]   // older minor, still speakable
-    public void APluginAskingForAnApiThisProxySpeaks_Loads(string apiVersion)
-    {
-        using var dir = PluginDir.With(PluginDir.Sample).PatchManifest(PluginDir.Sample, "apiVersion", apiVersion);
-        var loader = Loader();
-
-        loader.LoadAll(dir.Path, new FakeProxyApi());
-
-        Assert.Single(loader.Loaded);
-    }
-
-    [Theory]
-    [InlineData("0.2")]        // newer minor: the plugin wants members this proxy does not have
-    [InlineData("1.0")]        // different major
-    [InlineData("2.5")]
-    [InlineData("not-a-version")]
-    public void APluginAskingForAnApiThisProxyDoesNotSpeak_IsRefused(string apiVersion)
-    {
-        using var dir = PluginDir.With(PluginDir.Sample).PatchManifest(PluginDir.Sample, "apiVersion", apiVersion);
-        var api = new FakeProxyApi().WithServer("hub", "10.0.0.4", 42421);
-        var loader = Loader();
-
-        loader.LoadAll(dir.Path, api);
-
-        // Refused before construction: a plugin built against a different api surface would throw
-        // a MissingMethodException somewhere unhelpful instead.
-        Assert.Empty(loader.Loaded);
-        Assert.False(api.Events.HasSubscribers<PlayerChooseInitialServerEvent>());
-    }
-
     [Fact]
-    public void AManifestSpellingApiVersionTheWayTheSampleDoes_IsNotRead()
+    public void TheApiVersionKeyTheSampleSpells_IsTheOneThatIsRead()
     {
-        // Pinned, not fixed. Nimbus.SamplePlugin.plugin.json declares "api_version": "1.0.0", but
-        // PluginManifest has no snake_case mapping and no naming policy is set on the
-        // deserializer, so that key is never bound and the api version falls back to whatever the
-        // proxy currently offers. Two consequences, both real:
-        //   - the compatibility gate cannot refuse anything written the way the sample is;
-        //   - the sample plugin itself only loads because of this. Read as declared, "1.0.0" is a
-        //     different major to CurrentApiVersion and the shipped sample would be refused.
-        // Reconciling the two spellings changes which plugins load, so it belongs in its own PR.
+        // api_version, snake_case, exactly as every manifest in the wild spells it. Before this
+        // was bound the value on disk was thrown away and the gate below compared the proxy's own
+        // version against itself, which no plugin can fail.
         using var dir = PluginDir.With(PluginDir.Sample)
             .WriteManifest(PluginDir.Sample, """
-                {"id":"hub-fallback","name":"Hub Fallback","version":"0.4.0","api_version":"9.9"}
+                {"id":"hub-fallback","name":"Hub Fallback","version":"0.4.0","api_version":"0.0"}
                 """);
         var loader = Loader();
 
         loader.LoadAll(dir.Path, new FakeProxyApi());
 
+        Assert.Equal("0.0", Assert.Single(loader.Loaded).Metadata.ApiVersion);
+    }
+
+    [Fact]
+    public void TheShippedSampleManifest_DeclaresTheApiThisBuildOffers()
+    {
+        // The sample is the only worked example a plugin author has, so it has to be a manifest
+        // that loads. Bumping CurrentApiVersion past what it declares breaks here rather than in
+        // somebody's plugins directory.
+        using var dir = PluginDir.With(PluginDir.Sample);
+        var loader = Loader();
+
+        loader.LoadAll(dir.Path, new FakeProxyApi());
+
+        Assert.Equal(PluginLoader.CurrentApiVersion, Assert.Single(loader.Loaded).Metadata.ApiVersion);
+    }
+
+    [Theory]
+    [InlineData("0.1")]     // exactly what the proxy offers
+    [InlineData("0.1.0")]   // the same, spelled with a patch component
+    [InlineData("0.0")]     // older minor, still speakable
+    public void APluginAskingForAnApiThisProxySpeaks_Loads(string apiVersion)
+    {
+        using var dir = PluginDir.With(PluginDir.Sample).PatchManifest(PluginDir.Sample, "api_version", apiVersion);
+        var loader = Loader();
+
+        loader.LoadAll(dir.Path, new FakeProxyApi());
+
+        Assert.Equal(apiVersion, Assert.Single(loader.Loaded).Metadata.ApiVersion);
+    }
+
+    [Theory]
+    [InlineData("1.0")]        // different major: a different set of types and signatures
+    [InlineData("2.5")]
+    [InlineData("0.2")]        // newer minor: the plugin wants members this proxy does not have
+    [InlineData("not-a-version")]
+    public void APluginAskingForAnApiThisProxyDoesNotSpeak_IsRefused(string apiVersion)
+    {
+        using var dir = PluginDir.With(PluginDir.Sample).PatchManifest(PluginDir.Sample, "api_version", apiVersion);
+        var api = new FakeProxyApi().WithServer("hub", "10.0.0.4", 42421);
+        var loader = Loader();
+
+        string log = CapturingLog(() => loader.LoadAll(dir.Path, api));
+
+        // Refused before construction: a plugin built against a different api surface would throw
+        // a MissingMethodException somewhere unhelpful instead.
+        Assert.Empty(loader.Loaded);
+        Assert.False(api.Events.HasSubscribers<PlayerChooseInitialServerEvent>());
+        // An operator staring at a plugin that stopped appearing needs the plugin, the version it
+        // asked for and the version it was measured against, all three, in one line.
+        Assert.Contains(SampleId, log);
+        Assert.Contains(apiVersion, log);
+        Assert.Contains(PluginLoader.CurrentApiVersion, log);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void AManifestWithABlankApiVersion_IsTreatedAsNotDeclaringOne(string blank)
+    {
+        using var dir = PluginDir.With(PluginDir.Sample).PatchManifest(PluginDir.Sample, "api_version", blank);
+        var loader = Loader();
+
+        string log = CapturingLog(() => loader.LoadAll(dir.Path, new FakeProxyApi()));
+
+        Assert.Equal(PluginLoader.CurrentApiVersion, Assert.Single(loader.Loaded).Metadata.ApiVersion);
+        Assert.Contains("declares no api_version", log);
+    }
+
+    [Fact]
+    public void APluginDeclaringNoApiVersion_LoadsAndIsWarnedAbout()
+    {
+        using var dir = PluginDir.With(PluginDir.Sample).RemoveManifestField(PluginDir.Sample, "api_version");
+        var api = new FakeProxyApi().WithServer("hub", "10.0.0.4", 42421);
+        var loader = Loader();
+
+        string log = CapturingLog(() => loader.LoadAll(dir.Path, api));
+
+        // Nothing bound api_version until now, so plugins written without it were never refused
+        // for it. Starting to refuse them the day the gate works would take working installs down
+        // over a field nobody was told mattered. It loads, and the warning is the notice that it
+        // will not keep loading forever.
         var plugin = Assert.Single(loader.Loaded);
         Assert.Equal(PluginLoader.CurrentApiVersion, plugin.Metadata.ApiVersion);
+        Assert.Contains($"{SampleId} declares no api_version", log);
+        Assert.Contains("will be required in a future release", log);
+    }
+
+    [Fact]
+    public void APluginWithNoManifestAtAll_IsWarnedAboutTheSameWay()
+    {
+        using var dir = PluginDir.With(PluginDir.Sample).DeleteManifest(PluginDir.Sample);
+        var loader = Loader();
+
+        string log = CapturingLog(() => loader.LoadAll(dir.Path, new FakeProxyApi()));
+
+        // No manifest is a manifest that declares no api version, and gets the same treatment.
+        Assert.Single(loader.Loaded);
+        Assert.Contains("declares no api_version", log);
+    }
+
+    /// <summary>Runs the loader with the proxy's log redirected and hands back what it wrote.</summary>
+    private static string CapturingLog(Action action)
+    {
+        var captured = new StringWriter();
+        var previous = Console.Out;
+        try
+        {
+            Console.SetOut(captured);
+            action();
+        }
+        finally
+        {
+            Console.SetOut(previous);
+        }
+        return captured.ToString();
     }
 
     // ---- dependencies ----
