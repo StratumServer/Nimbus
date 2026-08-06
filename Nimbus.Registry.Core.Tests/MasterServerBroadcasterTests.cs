@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Microsoft.Extensions.Logging.Abstractions;
 using Nimbus.Registry.MasterServer;
 using Nimbus.Registry.Services;
 using Nimbus.Shared.Models;
@@ -41,12 +40,15 @@ public class MasterServerBroadcasterTests
     }
 
     /// <summary>Runs the broadcaster over <paramref name="body"/> and stops it cleanly, which is
-    /// what triggers the unregister.</summary>
-    private static async Task RunAsync(RegistryConfig cfg, BackendRegistry backends, Func<Task> body)
+    /// what triggers the unregister. The body is handed the broadcaster's log, because a request
+    /// arriving at the master server is not the same as the broadcaster having read the answer to
+    /// it, and a test that stops in between sees neither.</summary>
+    private static async Task RunAsync(RegistryConfig cfg, BackendRegistry backends, Func<RecordingLogger, Task> body)
     {
-        var broadcaster = new MasterServerBroadcaster(cfg, backends, NullLogger<MasterServerBroadcaster>.Instance);
+        var log = new RecordingLogger();
+        var broadcaster = new MasterServerBroadcaster(cfg, backends, log);
         await broadcaster.StartAsync(CancellationToken.None);
-        try { await body(); }
+        try { await body(log); }
         finally { await broadcaster.StopAsync(CancellationToken.None); }
         // A background service that faulted would leave the registry running with no advertising
         // and nothing said about it, so the task itself is part of the contract.
@@ -74,7 +76,7 @@ public class MasterServerBroadcasterTests
 
         // Off by default, and off has to mean off: a private network must not appear on a public
         // server list because someone filled in the identity block.
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async () => await Task.Delay(300));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async _ => await Task.Delay(300));
 
         Assert.Empty(master.Calls);
     }
@@ -86,7 +88,7 @@ public class MasterServerBroadcasterTests
         var cfg = Advertising(master.Url, id => id.PublicHost = "");
 
         // Registering without a reachable host would publish an entry nobody can connect to.
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async () => await Task.Delay(300));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async _ => await Task.Delay(300));
 
         Assert.Empty(master.Calls);
     }
@@ -99,7 +101,7 @@ public class MasterServerBroadcasterTests
         await using var master = await FakeMasterServer.StartAsync();
         var cfg = Advertising(master.Url, id => id.PublicHost = host);
 
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async () => await Task.Delay(300));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async _ => await Task.Delay(300));
 
         Assert.Empty(master.Calls);
     }
@@ -126,7 +128,7 @@ public class MasterServerBroadcasterTests
 
         JsonElement packet = default;
         await RunAsync(cfg, RegistryWith(Backend("hub", 40)),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         // The port is the proxy's, never a backend's: it is what the client dials from the list.
         Assert.Equal(42999, packet.GetProperty("port").GetInt32());
@@ -150,7 +152,7 @@ public class MasterServerBroadcasterTests
 
         JsonElement packet = default;
         await RunAsync(cfg, RegistryWith(Backend("hub", 10), Backend("creative", 20)),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         // The network is one entry on the list, so its slot count is the whole network's.
         Assert.Equal(30, packet.GetProperty("maxPlayers").GetInt32());
@@ -170,7 +172,7 @@ public class MasterServerBroadcasterTests
         backends.Upsert(Backend("hub", 10));
 
         JsonElement packet = default;
-        await RunAsync(cfg, backends, async () => packet = await master.WaitForAsync("register"));
+        await RunAsync(cfg, backends, async _ => packet = await master.WaitForAsync("register"));
 
         // A backend that stopped answering has no slots to offer. Advertising them sends players
         // at a server that is not there.
@@ -185,7 +187,7 @@ public class MasterServerBroadcasterTests
 
         JsonElement packet = default;
         await RunAsync(cfg, RegistryWith(Backend("hub", 10)),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         // An operator running four 20-slot backends does not have 80 concurrent seats worth of
         // hardware, so the override is what goes on the list.
@@ -200,7 +202,7 @@ public class MasterServerBroadcasterTests
 
         JsonElement packet = default;
         await RunAsync(cfg, RegistryWith(Backend("hub", 10)),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         // maxPlayers is a ushort on the wire. Unclamped, 100000 would come out as 34464.
         Assert.Equal(ushort.MaxValue, packet.GetProperty("maxPlayers").GetInt32());
@@ -218,7 +220,7 @@ public class MasterServerBroadcasterTests
         await RunAsync(cfg, RegistryWith(
                 Backend("hub", 10, ("nimbusclient", "1.0.0"), ("redirectfix", "1.1.0")),
                 Backend("creative", 10, ("nimbusclient", "1.0.0"), ("carryon", "2.0.0"))),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         // A client filtering the server list by the mods it has needs the whole network's set,
         // listed once each.
@@ -235,7 +237,7 @@ public class MasterServerBroadcasterTests
         await RunAsync(cfg, RegistryWith(
                 Backend("hub", 10, ("carryon", "1.9.0")),
                 Backend("creative", 10, ("carryon", "2.0.0"))),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         var mod = packet.GetProperty("Mods").EnumerateArray().Single();
         // Mid-rollout the two backends disagree. Advertising the older one tells a client it can
@@ -256,7 +258,7 @@ public class MasterServerBroadcasterTests
         backends.Upsert(Backend("hub", 10, ("nimbusclient", "1.0.0")));
 
         JsonElement packet = default;
-        await RunAsync(cfg, backends, async () => packet = await master.WaitForAsync("register"));
+        await RunAsync(cfg, backends, async _ => packet = await master.WaitForAsync("register"));
 
         Assert.Equal(new[] { "nimbusclient" }, ModIds(packet));
     }
@@ -269,7 +271,7 @@ public class MasterServerBroadcasterTests
 
         JsonElement packet = default;
         await RunAsync(cfg, RegistryWith(Backend("hub", 10, ("", "1.0.0"), ("carryon", "2.0.0"))),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         Assert.Equal(new[] { "carryon" }, ModIds(packet));
     }
@@ -286,7 +288,7 @@ public class MasterServerBroadcasterTests
 
         JsonElement packet = default;
         await RunAsync(cfg, RegistryWith(Backend("hub", 10, ("something-internal", "0.1.0"))),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         // An operator whose backends run server-side mods clients do not need says so here, and
         // what they say is the whole list.
@@ -303,7 +305,7 @@ public class MasterServerBroadcasterTests
         await RunAsync(cfg, RegistryWith(
                 Backend("hub", 10, ("nimbusclient", "1.0.0")),
                 Backend("modded", 10, ("a-hundred-mods", "1.0.0"))),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         // Networks where one backend is the front door and the rest are opt-in advertise the
         // front door's requirements, so the list is not scary to a vanilla client.
@@ -318,7 +320,7 @@ public class MasterServerBroadcasterTests
 
         JsonElement packet = default;
         await RunAsync(cfg, RegistryWith(Backend("hub", 10, ("nimbusclient", "1.0.0"))),
-            async () => packet = await master.WaitForAsync("register"));
+            async _ => packet = await master.WaitForAsync("register"));
 
         // Falling back to the aggregate would quietly advertise a list the operator did not ask
         // for. Empty is wrong in a way they will notice.
@@ -335,7 +337,7 @@ public class MasterServerBroadcasterTests
         var backends = new BackendRegistry(new RegistryConfig());
 
         JsonElement packet = default;
-        await RunAsync(cfg, backends, async () =>
+        await RunAsync(cfg, backends, async _ =>
         {
             // Nothing has heartbeated yet. Registering now would put a 0-slot entry on the list,
             // and a heartbeat cannot correct maxPlayers afterwards.
@@ -358,7 +360,7 @@ public class MasterServerBroadcasterTests
         // A backend that answers but reports zero capacity is still starting up.
         backends.Upsert(Backend("hub", 0));
 
-        await RunAsync(cfg, backends, async () =>
+        await RunAsync(cfg, backends, async _ =>
         {
             await Task.Delay(500);
             Assert.Empty(master.Calls);
@@ -376,7 +378,7 @@ public class MasterServerBroadcasterTests
         JsonElement packet = default;
         // The wait exists to get a real capacity into the first packet. An operator who stated
         // the capacity outright has already supplied it.
-        await RunAsync(cfg, backends, async () => packet = await master.WaitForAsync("register"));
+        await RunAsync(cfg, backends, async _ => packet = await master.WaitForAsync("register"));
 
         Assert.Equal(64, packet.GetProperty("maxPlayers").GetInt32());
     }
@@ -390,8 +392,13 @@ public class MasterServerBroadcasterTests
         master.OnRegister = () => FakeMasterServer.Ok("token-abc");
         var cfg = Advertising(master.Url);
 
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)),
-            async () => await master.WaitForAsync("register"));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async log =>
+        {
+            await master.WaitForAsync("register");
+            // Not just "the register arrived": the token only exists once the broadcaster has
+            // read the answer, and stopping before then would find nothing to unregister with.
+            await log.WaitForAsync("master server registered ok");
+        });
 
         // Left registered, the entry sits on the list until the master server times it out and
         // every click on it in the meantime is a failed connection.
@@ -406,8 +413,11 @@ public class MasterServerBroadcasterTests
         master.OnRegister = () => FakeMasterServer.Status("blacklisted", "network is blacklisted");
         var cfg = Advertising(master.Url);
 
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)),
-            async () => await master.WaitForAsync("register"));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async log =>
+        {
+            await master.WaitForAsync("register");
+            await log.WaitForAsync("blacklisted");
+        });
 
         // No token was handed out, so there is nothing to unregister, and the registry itself
         // carries on: players who know the address can still connect directly.
@@ -421,8 +431,11 @@ public class MasterServerBroadcasterTests
         master.OnRegister = () => FakeMasterServer.Status("error", "bad game version");
         var cfg = Advertising(master.Url);
 
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)),
-            async () => await master.WaitForAsync("register"));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async log =>
+        {
+            await master.WaitForAsync("register");
+            await log.WaitForAsync("register rejected");
+        });
 
         Assert.Empty(master.Bodies("unregister"));
     }
@@ -434,8 +447,13 @@ public class MasterServerBroadcasterTests
         master.OnRegister = () => Microsoft.AspNetCore.Http.Results.StatusCode(503);
         var cfg = Advertising(master.Url);
 
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)),
-            async () => await master.WaitForAsync("register"));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async log =>
+        {
+            await master.WaitForAsync("register");
+            // The client turns a non-success status into a "timeout" answer, which the
+            // broadcaster reports as a rejection rather than treating as registered.
+            await log.WaitForAsync("register rejected");
+        });
 
         Assert.Empty(master.Bodies("unregister"));
     }
@@ -447,8 +465,11 @@ public class MasterServerBroadcasterTests
         master.OnRegister = () => Microsoft.AspNetCore.Http.Results.Text("<html>maintenance</html>", "text/html");
         var cfg = Advertising(master.Url);
 
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)),
-            async () => await master.WaitForAsync("register"));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async log =>
+        {
+            await master.WaitForAsync("register");
+            await log.WaitForAsync("master server register failed");
+        });
 
         Assert.Empty(master.Bodies("unregister"));
     }
@@ -460,7 +481,7 @@ public class MasterServerBroadcasterTests
         // the registry is what keeps a private network working while it is down.
         var cfg = Advertising(FakeMasterServer.DeadUrl());
 
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async () => await Task.Delay(500));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async _ => await Task.Delay(500));
         // RunAsync asserts the background service did not fault, which is the whole claim here.
     }
 
@@ -472,8 +493,11 @@ public class MasterServerBroadcasterTests
         var cfg = Advertising(master.Url);
 
         // Nothing can be done about it by then and a throw here would come out of host shutdown.
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)),
-            async () => await master.WaitForAsync("register"));
+        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async log =>
+        {
+            await master.WaitForAsync("register");
+            await log.WaitForAsync("master server registered ok");
+        });
 
         Assert.Single(master.Bodies("unregister"));
     }
@@ -488,7 +512,7 @@ public class MasterServerBroadcasterTests
 
         // A registry stopped moments after it started, before any backend reported in. It must
         // come down rather than sit out the rest of the 30s window.
-        await RunAsync(cfg, new BackendRegistry(new RegistryConfig()), async () => await Task.Delay(100));
+        await RunAsync(cfg, new BackendRegistry(new RegistryConfig()), async _ => await Task.Delay(100));
 
         Assert.Empty(master.Calls);
     }

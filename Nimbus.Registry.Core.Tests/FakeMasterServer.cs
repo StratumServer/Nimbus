@@ -3,7 +3,6 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Nimbus.Registry.Core.Tests;
@@ -110,4 +109,42 @@ internal sealed class FakeMasterServer : IAsyncDisposable
     }
 
     internal sealed record Recorded(string Action, JsonElement Body);
+}
+
+/// <summary>
+/// Keeps what the broadcaster logged. Recording a call is not the same as the broadcaster having
+/// read the answer to it: the request body lands here while the response is still in flight, and
+/// what the broadcaster does with a register response is take the token out of it. The line it
+/// writes once it has is the only signal from outside that the response has been processed, so
+/// tests wait on that rather than on the request.
+/// </summary>
+internal sealed class RecordingLogger : ILogger<Nimbus.Registry.MasterServer.MasterServerBroadcaster>
+{
+    private readonly List<string> lines = new();
+    private readonly object gate = new();
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        lock (gate) lines.Add(formatter(state, exception));
+    }
+
+    public IReadOnlyList<string> Lines { get { lock (gate) return lines.ToArray(); } }
+
+    /// <summary>Blocks until a line containing <paramref name="fragment"/> has been written.</summary>
+    public async Task WaitForAsync(string fragment, int millis = 10000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(millis);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (Lines.Any(l => l.Contains(fragment, StringComparison.Ordinal))) return;
+            await Task.Delay(20);
+        }
+        throw new TimeoutException(
+            $"the broadcaster never logged '{fragment}'; it logged: {string.Join(" | ", Lines)}");
+    }
 }
