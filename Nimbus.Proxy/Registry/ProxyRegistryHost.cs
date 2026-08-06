@@ -64,6 +64,15 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
             disposable.Dispose();
     }
 
+    // Same rule as ProxyRuntime uses for the drain flags: a relative directory hangs off the
+    // proxy executable, so a proxy started from a service manager with some other working
+    // directory still finds yesterday's bans.
+    private static string ResolveStateDir(string dir)
+    {
+        if (string.IsNullOrWhiteSpace(dir)) return AppContext.BaseDirectory;
+        return Path.IsPathRooted(dir) ? dir : Path.Combine(AppContext.BaseDirectory, dir);
+    }
+
     private static ProxyRegistryHost BuildEmbedded(ProxyConfig cfg, CancellationToken stopToken)
     {
         var coreCfg = new Nimbus.Registry.RegistryConfig
@@ -75,6 +84,7 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
             NonceWindowSeconds = cfg.Registry.NonceWindowSeconds,
             MaxReservationTtlSeconds = cfg.Registry.MaxReservationTtlSeconds,
             LogHeartbeats = false,
+            StateDir = ResolveStateDir(cfg.Registry.EmbeddedStateDir),
         };
         coreCfg.Identity.AdvertiseOnMasterServer = cfg.Registry.AdvertiseOnMasterServer;
 
@@ -99,7 +109,7 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
             {
                 throw new InvalidOperationException($"embedded registry failed to start on '{cfg.Registry.EmbeddedBind}': {ex.Message}", ex);
             }
-            Log.Info($"registry: embedded http bind={cfg.Registry.EmbeddedBind} proxy_id={cfg.Registry.ProxyId}");
+            Log.Info($"registry: embedded http bind={cfg.Registry.EmbeddedBind} proxy_id={cfg.Registry.ProxyId} state_dir={coreCfg.StateDir}");
 
             var backends = app.Services.GetRequiredService<BackendRegistry>();
             var reservations = app.Services.GetRequiredService<ReservationStore>();
@@ -109,12 +119,15 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
             return new ProxyRegistryHost(new InProcRegistryClient(backends, reservations, intents, bans, whitelist, cfg.Registry), app);
         }
 
+        // No listener means no container either, so the stores are built here with the same
+        // state files AddNimbusRegistry would have given them. Bans have to outlive a restart
+        // in this mode as much as in any other; it is the default one.
         var backendsSvc = new BackendRegistry(coreCfg);
         var reservationsSvc = new ReservationStore();
         var intentsSvc = new TransferIntentStore();
-        var bansSvc = new BanStore();
-        var whitelistSvc = new WhitelistStore();
-        Log.Info($"registry: embedded (no http listener) proxy_id={cfg.Registry.ProxyId}");
+        var bansSvc = new BanStore(state: RegistryStateFiles.Bans(coreCfg.StateDir));
+        var whitelistSvc = new WhitelistStore(state: RegistryStateFiles.Whitelist(coreCfg.StateDir));
+        Log.Info($"registry: embedded (no http listener) proxy_id={cfg.Registry.ProxyId} state_dir={coreCfg.StateDir}");
         return new ProxyRegistryHost(new InProcRegistryClient(backendsSvc, reservationsSvc, intentsSvc, bansSvc, whitelistSvc, cfg.Registry), null);
     }
 }

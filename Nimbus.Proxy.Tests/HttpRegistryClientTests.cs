@@ -33,12 +33,18 @@ public class HttpRegistryClientTests
     {
         public required WebApplication App { get; init; }
         public required string BaseUrl { get; init; }
+        public required string StateDir { get; init; }
         public HttpClient Raw { get; } = new();
 
         public static async Task<Registry> StartAsync(Action<Nimbus.Registry.RegistryConfig>? configure = null)
         {
             var cfg = new Nimbus.Registry.RegistryConfig { SharedSecret = Secret };
             configure?.Invoke(cfg);
+            // The registry's ban list and whitelist are file-backed now and default to the
+            // working directory, so every registry started here would otherwise share one pair
+            // of files: a ban added by one test would be waiting for the next one, and for the
+            // next run of the suite.
+            cfg.StateDir = Path.Combine(Path.GetTempPath(), "nimbus-http-client-tests-" + Guid.NewGuid().ToString("N"));
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -46,7 +52,7 @@ public class HttpRegistryClientTests
             var app = builder.Build();
             app.UseNimbusRegistry();
             await app.StartAsync();
-            return new Registry { App = app, BaseUrl = app.Urls.First() };
+            return new Registry { App = app, BaseUrl = app.Urls.First(), StateDir = cfg.StateDir };
         }
 
         /// <summary>Registers a backend the way a real one does, so reservations and intents have
@@ -100,6 +106,7 @@ public class HttpRegistryClientTests
             Raw.Dispose();
             await App.StopAsync();
             await App.DisposeAsync();
+            try { Directory.Delete(StateDir, recursive: true); } catch { /* never created, or already gone */ }
         }
     }
 

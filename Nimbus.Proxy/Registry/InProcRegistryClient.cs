@@ -1,17 +1,17 @@
-using System.Security.Cryptography;
 using Nimbus.Registry.Services;
 using Nimbus.Shared.Models;
 
 namespace Nimbus.Proxy;
 
 // Direct in-process bridge to the embedded registry services. Bypasses HTTP + HMAC because
-// both sides are the same OS process. Mirrors the request handling in Nimbus.Registry.Core
-// Endpoints (reservation mint, snapshot get, intent drain) to keep behavior identical
-// between embedded and remote modes.
+// both sides are the same OS process. The decisions it makes are not written here: reservation
+// minting goes through the same ReservationService the HTTP endpoint uses and the moderation
+// entries are shaped by the same RegistryStamps, so embedded and remote deployments cannot
+// drift apart on a rule that was only added to one of them (#65).
 internal sealed class InProcRegistryClient : IRegistryClient
 {
     private readonly BackendRegistry backends;
-    private readonly ReservationStore reservations;
+    private readonly ReservationService reservations;
     private readonly TransferIntentStore intents;
     private readonly BanStore bans;
     private readonly WhitelistStore whitelist;
@@ -23,64 +23,51 @@ internal sealed class InProcRegistryClient : IRegistryClient
         TimeProvider? clock = null)
     {
         this.backends = backends;
-        this.reservations = reservations;
         this.intents = intents;
         this.bans = bans;
         this.whitelist = whitelist;
         this.cfg = cfg;
         this.clock = clock ?? TimeProvider.System;
+        // Built here rather than resolved: the embedded registry can run with no HTTP listener
+        // and therefore no container to resolve from. The service holds no state of its own,
+        // only references to the stores above, so this is the same rules over the same data and
+        // not a second source of truth.
+        this.reservations = new ReservationService(backends, reservations, bans, this.clock);
     }
 
     public Task<TransferReservation?> MintReservationAsync(
         string playerUid, string playerName, string targetServerId, string? reason, CancellationToken ct,
         string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null)
     {
-        if (string.IsNullOrEmpty(playerUid) || string.IsNullOrEmpty(targetServerId))
-            return Task.FromResult<TransferReservation?>(null);
-
-        // Target must exist (matches /api/reservations behavior). Unknown targets would just
-        // produce an unconsumable reservation, so fail fast.
-        if (backends.Get(targetServerId) == null)
+        // The TTL is the one difference in the inputs: over HTTP the caller names it in the
+        // request body, here it is proxy config, since the caller is the proxy itself.
+        var result = reservations.Mint(new ReservationMintRequest
         {
-            Log.Warn($"in-proc registry: unknown target server '{targetServerId}'");
-            return Task.FromResult<TransferReservation?>(null);
-        }
-
-        // Mirrors the ban check on /api/reservations so embedded and remote modes refuse the
-        // same mints.
-        if (bans.FindBlocking(playerUid, targetServerId) != null)
-        {
-            Log.Warn($"in-proc registry: refusing reservation, uid={playerUid} is banned from '{targetServerId}'");
-            return Task.FromResult<TransferReservation?>(null);
-        }
-
-        // No matching whitelist check here, on purpose: whether coverage is required at all is a
-        // proxy-side toggle, the [whitelist] section of nimbus.proxy.toml, which the registry
-        // never sees.
-
-        int ttl = cfg.ReservationTtlSeconds;
-        if (ttl <= 0) ttl = 60;
-        if (ttl > cfg.MaxReservationTtlSeconds) ttl = cfg.MaxReservationTtlSeconds;
-
-        // The injected clock, like AddBanAsync and AddWhitelistAsync: ReservationStore judges
-        // expiry on that same clock, so stamping from DateTimeOffset.UtcNow here put the mint
-        // and the read of it on two different timelines.
-        var now = clock.GetUtcNow().ToUnixTimeSeconds();
-        var r = new TransferReservation
-        {
-            Id = NewId(),
             PlayerUid = playerUid,
             PlayerName = playerName ?? "",
             SourceServerId = cfg.ProxyId,
             TargetServerId = targetServerId,
-            ExpiresAtUnix = now + ttl,
+            TtlSeconds = cfg.ReservationTtlSeconds,
+            MaxTtlSeconds = cfg.MaxReservationTtlSeconds,
             Reason = reason,
             RealRemoteIp = realRemoteIp ?? "",
             RealRemotePort = realRemotePort,
             ClientTransferId = clientTransferId ?? "",
-        };
-        reservations.Add(r);
-        return Task.FromResult<TransferReservation?>(r);
+        });
+
+        // A refusal is a null here where the endpoint would answer 400/404/403. There is no
+        // caller to report to in-process, so the reason goes to the log instead.
+        switch (result.Status)
+        {
+            case ReservationMintStatus.UnknownTarget:
+                Log.Warn($"in-proc registry: unknown target server '{targetServerId}'");
+                break;
+            case ReservationMintStatus.Banned:
+                Log.Warn($"in-proc registry: refusing reservation, uid={playerUid} is banned from '{targetServerId}'");
+                break;
+        }
+
+        return Task.FromResult(result.Reservation);
     }
 
     public Task<NetworkSnapshot?> GetServersAsync(CancellationToken ct, bool forceRefresh = false)
@@ -102,24 +89,12 @@ internal sealed class InProcRegistryClient : IRegistryClient
     public Task<List<NetworkBan>?> GetBansAsync(CancellationToken ct)
         => Task.FromResult<List<NetworkBan>?>(bans.Active());
 
-    // Mirrors POST /api/bans so embedded and remote modes stamp identical bans.
+    // Same stamping as POST /api/bans, from the same helper, so embedded and remote modes
+    // cannot end up with differently shaped bans.
     public Task<NetworkBan?> AddBanAsync(BanRequest request, CancellationToken ct)
     {
-        if (request == null || string.IsNullOrEmpty(request.PlayerUid))
-            return Task.FromResult<NetworkBan?>(null);
-
-        long now = clock.GetUtcNow().ToUnixTimeSeconds();
-        var ban = bans.Add(new NetworkBan
-        {
-            PlayerUid = request.PlayerUid,
-            PlayerName = request.PlayerName ?? "",
-            ServerId = request.ServerId ?? "",
-            Reason = request.Reason ?? "",
-            BannedBy = request.BannedBy ?? "",
-            CreatedAtUnix = now,
-            ExpiresAtUnix = request.DurationSeconds > 0 ? now + request.DurationSeconds : 0,
-        });
-        return Task.FromResult<NetworkBan?>(ban);
+        var ban = RegistryStamps.NewBan(request, clock.GetUtcNow().ToUnixTimeSeconds());
+        return Task.FromResult(ban is null ? null : bans.Add(ban));
     }
 
     public Task<bool> LiftBanAsync(string playerUid, string? serverId, CancellationToken ct)
@@ -128,33 +103,15 @@ internal sealed class InProcRegistryClient : IRegistryClient
     public Task<List<WhitelistEntry>?> GetWhitelistAsync(CancellationToken ct)
         => Task.FromResult<List<WhitelistEntry>?>(whitelist.Active());
 
-    // Mirrors POST /api/whitelist so embedded and remote modes stamp identical entries.
+    // Same stamping as POST /api/whitelist, from the same helper.
     public Task<WhitelistEntry?> AddWhitelistAsync(WhitelistRequest request, CancellationToken ct)
     {
-        if (request == null || string.IsNullOrEmpty(request.PlayerUid))
-            return Task.FromResult<WhitelistEntry?>(null);
-
-        long now = clock.GetUtcNow().ToUnixTimeSeconds();
-        var entry = whitelist.Add(new WhitelistEntry
-        {
-            PlayerUid = request.PlayerUid,
-            PlayerName = request.PlayerName ?? "",
-            ServerId = request.ServerId ?? "",
-            Note = request.Note ?? "",
-            AddedBy = request.AddedBy ?? "",
-            CreatedAtUnix = now,
-            ExpiresAtUnix = request.DurationSeconds > 0 ? now + request.DurationSeconds : 0,
-        });
-        return Task.FromResult<WhitelistEntry?>(entry);
+        var entry = RegistryStamps.NewWhitelistEntry(request, clock.GetUtcNow().ToUnixTimeSeconds());
+        return Task.FromResult(entry is null ? null : whitelist.Add(entry));
     }
 
+    // Lifts and removals are the store method and nothing else: there was never a second copy
+    // of them to extract, the endpoints delegate the same way.
     public Task<bool> RemoveWhitelistAsync(string playerUid, string? serverId, CancellationToken ct)
         => Task.FromResult(whitelist.Remove(playerUid, serverId));
-
-    private static string NewId()
-    {
-        Span<byte> bytes = stackalloc byte[12];
-        RandomNumberGenerator.Fill(bytes);
-        return Convert.ToHexString(bytes);
-    }
 }

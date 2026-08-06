@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -42,50 +41,43 @@ public static class Endpoints
         // Network snapshot.
         app.MapGet("/api/servers", (BackendRegistry reg) => Results.Ok(reg.Snapshot()));
 
-        // Reservations.
-        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationStore store, BackendRegistry reg, BanStore bans, RegistryConfig cfg, TimeProvider clock) =>
+        // Reservations. The mint rules live in ReservationService because the proxy's embedded
+        // mode reaches them without passing through here; this handler is the HTTP dress on
+        // them (parse, map the refusal to a status code).
+        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationService reservations, RegistryConfig cfg) =>
         {
             ReservationRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<ReservationRequest>(); }
             catch { return Results.BadRequest(new { error = "malformed body" }); }
 
-            if (req is null || string.IsNullOrEmpty(req.PlayerUid) || string.IsNullOrEmpty(req.TargetServerId))
+            if (req is null)
                 return Results.BadRequest(new { error = "PlayerUid + TargetServerId required" });
 
-            if (req.TtlSeconds <= 0) req.TtlSeconds = NimbusProtocol.DefaultReservationTtlSeconds;
-            if (cfg.MaxReservationTtlSeconds > 0 && req.TtlSeconds > cfg.MaxReservationTtlSeconds)
-                req.TtlSeconds = cfg.MaxReservationTtlSeconds;
-
-            // Target must be known + non-stale.
-            var target = reg.Get(req.TargetServerId);
-            if (target is null)
-                return Results.NotFound(new ReservationResponse { Ok = false, Error = "target server not registered" });
-
-            // Bans are enforced at the proxy, which knows the player and the destination at the
-            // same time. This is the multi-proxy backstop: a proxy running on a ban list that is
-            // seconds out of date still cannot mint the reservation that would seat the player.
-            if (bans.FindBlocking(req.PlayerUid, req.TargetServerId) is not null)
-                return Results.Json(new ReservationResponse { Ok = false, Error = "player is banned from the target server" },
-                    statusCode: StatusCodes.Status403Forbidden);
-
-            // Whitelists get no equivalent backstop: whether coverage is required at all lives in
-            // proxy config, and the registry has no way to know which mode a proxy is running.
-
-            var r = new TransferReservation
+            var result = reservations.Mint(new ReservationMintRequest
             {
-                Id = NewReservationId(),
                 PlayerUid = req.PlayerUid,
                 PlayerName = req.PlayerName,
                 SourceServerId = req.SourceServerId,
                 TargetServerId = req.TargetServerId,
-                ExpiresAtUnix = clock.GetUtcNow().ToUnixTimeSeconds() + req.TtlSeconds,
+                TtlSeconds = req.TtlSeconds,
+                MaxTtlSeconds = cfg.MaxReservationTtlSeconds,
                 Reason = req.Reason,
-                RealRemoteIp = req.RealRemoteIp ?? "",
+                RealRemoteIp = req.RealRemoteIp,
                 RealRemotePort = req.RealRemotePort,
-                ClientTransferId = req.ClientTransferId ?? "",
+                ClientTransferId = req.ClientTransferId,
+            });
+
+            return result.Status switch
+            {
+                ReservationMintStatus.MissingSubject
+                    => Results.BadRequest(new { error = "PlayerUid + TargetServerId required" }),
+                ReservationMintStatus.UnknownTarget
+                    => Results.NotFound(new ReservationResponse { Ok = false, Error = "target server not registered" }),
+                ReservationMintStatus.Banned
+                    => Results.Json(new ReservationResponse { Ok = false, Error = "player is banned from the target server" },
+                        statusCode: StatusCodes.Status403Forbidden),
+                _ => Results.Ok(new ReservationResponse { Ok = true, Reservation = result.Reservation }),
             };
-            store.Add(r);
-            return Results.Ok(new ReservationResponse { Ok = true, Reservation = r });
         });
 
         // Backend consumes a reservation during identification. Single-use.
@@ -124,21 +116,11 @@ public static class Endpoints
             try { req = await ctx.Request.ReadFromJsonAsync<BanRequest>(); }
             catch { return Results.BadRequest(new { error = "malformed body" }); }
 
-            if (req is null || string.IsNullOrEmpty(req.PlayerUid))
+            var stamped = RegistryStamps.NewBan(req, clock.GetUtcNow().ToUnixTimeSeconds());
+            if (stamped is null)
                 return Results.BadRequest(new BanResponse { Ok = false, Error = "PlayerUid required" });
 
-            long now = clock.GetUtcNow().ToUnixTimeSeconds();
-            var ban = bans.Add(new NetworkBan
-            {
-                PlayerUid = req.PlayerUid,
-                PlayerName = req.PlayerName ?? "",
-                ServerId = req.ServerId ?? "",
-                Reason = req.Reason ?? "",
-                BannedBy = req.BannedBy ?? "",
-                CreatedAtUnix = now,
-                ExpiresAtUnix = req.DurationSeconds > 0 ? now + req.DurationSeconds : 0,
-            });
-            return Results.Ok(new BanResponse { Ok = true, Ban = ban });
+            return Results.Ok(new BanResponse { Ok = true, Ban = bans.Add(stamped) });
         });
 
         // Lift a ban. Omit ServerId to lift the network-wide one; a scoped ban must be lifted
@@ -178,21 +160,11 @@ public static class Endpoints
             try { req = await ctx.Request.ReadFromJsonAsync<WhitelistRequest>(); }
             catch { return Results.BadRequest(new { error = "malformed body" }); }
 
-            if (req is null || string.IsNullOrEmpty(req.PlayerUid))
+            var stamped = RegistryStamps.NewWhitelistEntry(req, clock.GetUtcNow().ToUnixTimeSeconds());
+            if (stamped is null)
                 return Results.BadRequest(new WhitelistResponse { Ok = false, Error = "PlayerUid required" });
 
-            long now = clock.GetUtcNow().ToUnixTimeSeconds();
-            var entry = whitelist.Add(new WhitelistEntry
-            {
-                PlayerUid = req.PlayerUid,
-                PlayerName = req.PlayerName ?? "",
-                ServerId = req.ServerId ?? "",
-                Note = req.Note ?? "",
-                AddedBy = req.AddedBy ?? "",
-                CreatedAtUnix = now,
-                ExpiresAtUnix = req.DurationSeconds > 0 ? now + req.DurationSeconds : 0,
-            });
-            return Results.Ok(new WhitelistResponse { Ok = true, Entry = entry });
+            return Results.Ok(new WhitelistResponse { Ok = true, Entry = whitelist.Add(stamped) });
         });
 
         // Drop an entry. Omit ServerId to drop the network-wide one; a scoped entry must be
@@ -255,12 +227,5 @@ public static class Endpoints
         // buys nothing, and the handler above turns the cancellation into the same 400 a
         // truncated body gets.
         return await ctx.Request.ReadFromJsonAsync<T>(ctx.RequestAborted);
-    }
-
-    private static string NewReservationId()
-    {
-        Span<byte> bytes = stackalloc byte[12];
-        RandomNumberGenerator.Fill(bytes);
-        return Convert.ToHexString(bytes);
     }
 }

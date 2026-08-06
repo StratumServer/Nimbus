@@ -118,6 +118,13 @@ still said nothing that names the player, so the ban list can only be consulted 
 hand. The registry refuses to mint a reservation for a banned pair as well, which is what catches
 a proxy whose copy of the ban list is a few seconds out of date.
 
+The list outlives the registry process. Bans and whitelist entries are written to
+`nimbus.bans.json` and `nimbus.whitelist.json` as they are made, in the directory named by
+`state_dir` (registry config) or `registry.embedded_state_dir` (proxy config, embedded mode),
+and read back at startup with anything that expired in the meantime dropped. A state file the
+registry cannot parse is renamed with a `.bad` suffix and reported rather than trusted or
+silently replaced.
+
 Vanilla per-server `/ban` keeps working and stays local to that savegame.
 
 ## Whitelists
