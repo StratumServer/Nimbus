@@ -232,6 +232,12 @@ public static class Endpoints
             {
                 ApiTokenCreateStatus.MissingName
                     => Results.BadRequest(new ApiTokenCreateResponse { Ok = false, Error = "name required" }),
+                ApiTokenCreateStatus.InvalidName
+                    => Results.BadRequest(new ApiTokenCreateResponse
+                    {
+                        Ok = false,
+                        Error = $"name must be at most {ApiTokenService.MaxNameLength} characters and carry no control characters",
+                    }),
                 ApiTokenCreateStatus.NoScopes
                     => Results.BadRequest(new ApiTokenCreateResponse { Ok = false, Error = "at least one scope required" }),
                 ApiTokenCreateStatus.UnknownScope

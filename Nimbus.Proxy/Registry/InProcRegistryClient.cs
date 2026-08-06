@@ -141,6 +141,7 @@ internal sealed class InProcRegistryClient : IRegistryClient
     private static string Explain(ApiTokenCreateResult result) => result.Status switch
     {
         ApiTokenCreateStatus.MissingName => "no name given",
+        ApiTokenCreateStatus.InvalidName => "the name is too long or carries control characters",
         ApiTokenCreateStatus.NoScopes => "no scopes given",
         _ => $"unknown scope '{result.UnknownScope}'",
     };

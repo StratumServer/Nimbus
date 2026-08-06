@@ -522,6 +522,7 @@ public class InProcRegistryClientTests
 
     [Theory]
     [InlineData("", "whitelist:write")]
+    [InlineData("bot\nforged", "whitelist:write")]
     [InlineData("bot", "")]
     [InlineData("bot", "bans:destroy")]
     public async Task ATokenTheRulesRefuse_IsANullHereAndA400OverHttp(string name, string scope)

@@ -182,6 +182,37 @@ public sealed class ApiTokenStoreTests : IDisposable
     public void ANullRequestIsRefusedRatherThanThrown()
         => Assert.Equal(ApiTokenCreateStatus.MissingName, NewService().Create(null).Status);
 
+    [Theory]
+    [InlineData("bot\nBANNED uid-2 by console")]
+    [InlineData("bot\rdiscord")]
+    [InlineData("bot\tdiscord")]
+    public void ANameThatCouldForgeALogLineIsRefused(string name)
+    {
+        // The name is stamped into BannedBy and written into every log line about the token, so a
+        // newline in it is a second log line somebody else wrote.
+        var result = NewService().Create(Request(name));
+
+        Assert.Equal(ApiTokenCreateStatus.InvalidName, result.Status);
+        Assert.Null(result.Token);
+    }
+
+    [Fact]
+    public void ANameLongerThanTheLimitIsRefused()
+    {
+        Assert.Equal(ApiTokenCreateStatus.InvalidName,
+            NewService().Create(Request(new string('a', ApiTokenService.MaxNameLength + 1))).Status);
+        Assert.Equal(ApiTokenCreateStatus.Ok,
+            NewService().Create(Request(new string('a', ApiTokenService.MaxNameLength))).Status);
+    }
+
+    [Fact]
+    public void ANameIsTrimmedBeforeItIsMeasured()
+    {
+        var result = NewService().Create(Request("  discord-bot  "));
+
+        Assert.Equal("discord-bot", result.Token!.Name);
+    }
+
     [Fact]
     public void ATokenWithNoScopesIsRefused()
     {

@@ -174,6 +174,22 @@ public class ApiTokenEndpointsTests
     }
 
     [Fact]
+    public async Task ANameThatCouldForgeALogLineIs400()
+    {
+        await using var host = await Host.StartAsync();
+
+        var resp = await host.Client.SendAsync(host.Signed(HttpMethod.Post, "/api/tokens",
+            new ApiTokenCreateRequest
+            {
+                Name = "bot\nBANNED uid-2 by console",
+                Scopes = new List<string> { ApiTokenScopes.BansRead },
+            }));
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Contains("control characters", await resp.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task CreatingATokenWithNoScopesIs400()
     {
         await using var host = await Host.StartAsync();

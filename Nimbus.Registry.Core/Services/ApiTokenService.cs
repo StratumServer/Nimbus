@@ -10,6 +10,7 @@ public enum ApiTokenCreateStatus
 {
     Ok,
     MissingName,
+    InvalidName,
     NoScopes,
     UnknownScope,
 }
@@ -38,6 +39,12 @@ public sealed class ApiTokenService
     // `permanent` is the way out, and it has to be asked for.
     public const int DefaultDurationSeconds = 90 * 24 * 60 * 60;
 
+    // A name is not just a label. It is stamped into BannedBy and AddedBy as "token:<name>",
+    // where players and operators read it, and it is written into every log line about this
+    // credential. So it is bounded, and control characters are refused: a newline in a name is a
+    // forged second log line, and there is no legitimate token called that.
+    public const int MaxNameLength = 64;
+
     private readonly ApiTokenStore _store;
     private readonly TimeProvider _clock;
 
@@ -49,11 +56,15 @@ public sealed class ApiTokenService
 
     public ApiTokenCreateResult Create(ApiTokenCreateRequest? request)
     {
+        // Every log line and every listing identifies a token by its name, so a token without one
+        // is a credential nobody can talk about after it leaks.
         if (request is null || string.IsNullOrWhiteSpace(request.Name))
             return new ApiTokenCreateResult { Status = ApiTokenCreateStatus.MissingName };
 
-        // Every log line and every listing identifies a token by its name, so a token without one
-        // is a credential nobody can talk about after it leaks.
+        string name = request.Name.Trim();
+        if (name.Length > MaxNameLength || name.Any(char.IsControl))
+            return new ApiTokenCreateResult { Status = ApiTokenCreateStatus.InvalidName };
+
         var scopes = new List<string>();
         foreach (var raw in request.Scopes)
         {
@@ -76,7 +87,7 @@ public sealed class ApiTokenService
         var token = new ApiToken
         {
             Id = ApiTokenSecret.NewId(),
-            Name = request.Name.Trim(),
+            Name = name,
             Hash = ApiTokenSecret.Hash(plaintext),
             Scopes = scopes,
             CreatedAtUnix = now,
