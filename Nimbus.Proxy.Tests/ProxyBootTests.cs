@@ -298,38 +298,112 @@ public class ProxyBootTests
         Assert.False(File.Exists(unreachable));
     }
 
+    /// <summary>Program.LoadConfig resolves its own paths from AppContext.BaseDirectory, which
+    /// under the test runner is this assembly's output folder, so driving the real loader means
+    /// working in it. This clears the three files it touches and puts them back afterwards.
+    /// Nothing else in the suite reads them.</summary>
+    private sealed class BaseDirectoryInstall : IDisposable
+    {
+        public string Toml { get; } = Path.Combine(AppContext.BaseDirectory, "nimbus.proxy.toml");
+        public string LegacyJson { get; } = Path.Combine(AppContext.BaseDirectory, "nimbus.proxy.json");
+        public string Obsolete => LegacyJson + ".obsolete";
+        public string Migrated => LegacyJson + ".migrated";
+
+        private readonly Dictionary<string, string> saved = new();
+
+        private string[] All => new[] { Toml, LegacyJson, Obsolete, Migrated };
+
+        public static BaseDirectoryInstall Clean()
+        {
+            var install = new BaseDirectoryInstall();
+            foreach (var p in install.All)
+            {
+                if (!File.Exists(p)) continue;
+                install.saved[p] = File.ReadAllText(p);
+                File.Delete(p);
+            }
+            return install;
+        }
+
+        public void Dispose()
+        {
+            foreach (var p in All)
+            {
+                try
+                {
+                    if (saved.TryGetValue(p, out var text)) File.WriteAllText(p, text);
+                    else File.Delete(p);
+                }
+                catch { /* the runner's output folder is rebuilt anyway */ }
+            }
+        }
+    }
+
     [Fact]
     public void TheLoaderTheProxyActuallyBootsWith_WritesOnceNextToTheBinaryAndRereadsIt()
     {
-        // Program.LoadConfig resolves its own path from AppContext.BaseDirectory, so this is the
-        // one place the whole first-run sequence runs as Main runs it. Under the test runner that
-        // directory is this assembly's output folder; nothing else in the suite reads the file and
-        // it is put back the way it was found.
-        string path = Path.Combine(AppContext.BaseDirectory, "nimbus.proxy.toml");
-        string? saved = File.Exists(path) ? File.ReadAllText(path) : null;
+        // The one place the whole first-run sequence runs as Main runs it.
+        using var install = BaseDirectoryInstall.Clean();
+
+        var first = Program.LoadConfig();
+
+        Assert.True(File.Exists(install.Toml), "the boot loader left no config file behind");
+        Assert.NotEqual("change-me-and-keep-secret", first.Registry.EmbeddedSharedSecret);
+        var validation = ProxyConfigValidator.Validate(first);
+        Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
+
+        // The second boot, and every `nimctl reload`, reads what the first one wrote.
+        Assert.Equal(first.Registry.EmbeddedSharedSecret,
+            Program.LoadConfig().Registry.EmbeddedSharedSecret);
+    }
+
+    [Fact]
+    public void ALegacyJsonNextToTheBinary_IsAMigrationAndMintsNoSecret()
+    {
+        using var install = BaseDirectoryInstall.Clean();
+
+        // The pre-Velocity config an upgrade finds. Its shape does not map onto the current schema,
+        // so LoadConfig moves it aside and the defaults are written instead. That reset predates
+        // this PR and is not what this test is about.
+        File.WriteAllText(install.LegacyJson, "{\"Bind\":\"0.0.0.0:42420\"}");
+
+        var cfg = Program.LoadConfig();
+
+        Assert.True(File.Exists(install.Obsolete), "the legacy config was not moved aside");
+        Assert.False(File.Exists(install.LegacyJson));
+
+        // The point. This is an existing network: its backends already hold a shared secret, and
+        // minting one here would hand the operator a fresh credential to go distribute, under a log
+        // line written for first-time installs. The skip used to be read from the .json path after
+        // the rename above had already deleted it, so it only ever fired when the rename threw.
+        Assert.Equal("change-me-and-keep-secret", cfg.Registry.EmbeddedSharedSecret);
+    }
+
+    [Fact]
+    public void ALegacyJsonThatCannotBeMovedAside_IsStillAMigrationAndMintsNoSecret()
+    {
+        using var install = BaseDirectoryInstall.Clean();
+
+        // The rename fails when the install directory is read-only. A directory sitting where the
+        // .obsolete file wants to go makes File.Move throw without needing the whole folder
+        // read-only. LoadOrCreate then finds the .json still there and takes its own migration
+        // branch, which carries the legacy values into the new TOML and leaves the original as
+        // .json.migrated. So this is the path where the network's real secret does survive, and
+        // minting over it would lock out every backend at once.
+        File.WriteAllText(install.LegacyJson,
+            "{\"Bind\":\"0.0.0.0:42420\",\"Registry\":{\"EmbeddedSharedSecret\":\"the-secret-this-network-runs-on\"}}");
+        Directory.CreateDirectory(install.Obsolete);
         try
         {
-            if (saved != null) File.Delete(path);
+            var cfg = Program.LoadConfig();
 
-            var first = Program.LoadConfig();
-
-            Assert.True(File.Exists(path), "the boot loader left no config file behind");
-            Assert.NotEqual("change-me-and-keep-secret", first.Registry.EmbeddedSharedSecret);
-            var validation = ProxyConfigValidator.Validate(first);
-            Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
-
-            // The second boot, and every `nimctl reload`, reads what the first one wrote.
-            Assert.Equal(first.Registry.EmbeddedSharedSecret,
-                Program.LoadConfig().Registry.EmbeddedSharedSecret);
+            Assert.True(File.Exists(install.Migrated), "the legacy config was not migrated");
+            Assert.Equal("the-secret-this-network-runs-on", cfg.Registry.EmbeddedSharedSecret);
+            Assert.Contains("the-secret-this-network-runs-on", File.ReadAllText(install.Toml), StringComparison.Ordinal);
         }
         finally
         {
-            try
-            {
-                if (saved != null) File.WriteAllText(path, saved);
-                else File.Delete(path);
-            }
-            catch { /* the runner's output folder is rebuilt anyway */ }
+            try { Directory.Delete(install.Obsolete, recursive: true); } catch { /* harmless */ }
         }
     }
 
