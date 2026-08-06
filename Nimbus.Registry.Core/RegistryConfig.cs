@@ -35,6 +35,10 @@ public sealed class RegistryConfig
     // .bad suffix rather than deleted or trusted.
     public string StateDir { get; set; } = ".";
 
+    // Scoped bearer credentials for third-party integrations. Off by default: a registry that
+    // nobody has issued a token from should not be answering bearer headers at all.
+    public ApiTokensConfig ApiTokens { get; set; } = new();
+
     // Identity advertised to the VS master server. The registry registers the whole
     // network as a single entry. Off by default.
     public ServerIdentityConfig Identity { get; set; } = new();
@@ -45,6 +49,27 @@ public sealed class RegistryConfig
         foreach (var s in AcceptedSecrets)
             if (!string.IsNullOrEmpty(s)) yield return s;
     }
+}
+
+// The [api_tokens] section. Scoped bearer tokens are the third-party path (#54); the components
+// Nimbus ships keep signing every call with HMAC and are unaffected by everything here.
+public sealed class ApiTokensConfig
+{
+    // Master switch. False refuses bearer authentication outright, whatever tokens exist, so a
+    // registry that has never been meant to answer integrations does not start doing so because
+    // somebody minted a token.
+    public bool Enabled { get; set; } = false;
+
+    // Per-token budget, on top of whatever per-IP limiting sits in front. A non-positive value is
+    // a config error and falls back to 60 rather than to no limit at all.
+    public int RateLimitPerMinute { get; set; } = 60;
+
+    // A bearer token is only as safe as the transport under it, so token auth is accepted on a
+    // loopback connection or on this registry's own TLS listener and nowhere else. Set this true
+    // only when a reverse proxy in front terminates TLS and is the sole route to this bind: it
+    // makes the registry believe an X-Forwarded-Proto header, and anything that can reach the
+    // bind directly can then write that header itself.
+    public bool TrustForwardedProto { get; set; } = false;
 }
 
 // Network identity published to the VS master server.

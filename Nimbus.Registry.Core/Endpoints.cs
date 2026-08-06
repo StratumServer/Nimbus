@@ -116,6 +116,7 @@ public static class Endpoints
             try { req = await ctx.Request.ReadFromJsonAsync<BanRequest>(); }
             catch { return Results.BadRequest(new { error = "malformed body" }); }
 
+            Attribute(ctx, req);
             var stamped = RegistryStamps.NewBan(req, clock.GetUtcNow().ToUnixTimeSeconds());
             if (stamped is null)
                 return Results.BadRequest(new BanResponse { Ok = false, Error = "PlayerUid required" });
@@ -160,6 +161,7 @@ public static class Endpoints
             try { req = await ctx.Request.ReadFromJsonAsync<WhitelistRequest>(); }
             catch { return Results.BadRequest(new { error = "malformed body" }); }
 
+            Attribute(ctx, req);
             var stamped = RegistryStamps.NewWhitelistEntry(req, clock.GetUtcNow().ToUnixTimeSeconds());
             if (stamped is null)
                 return Results.BadRequest(new WhitelistResponse { Ok = false, Error = "PlayerUid required" });
@@ -215,6 +217,75 @@ public static class Endpoints
             var taken = store.Drain();
             return Results.Ok(new TransferIntentDrainResponse { Ok = true, Intents = taken });
         });
+
+        // Token management. HMAC only, like every other internal endpoint: no scope reaches these
+        // three, so a leaked bot token cannot mint itself a better one. ApiTokenScopes maps them
+        // to no scope at all, which is what TokenAuthMiddleware turns into a 403.
+        app.MapPost("/api/tokens", async (HttpContext ctx, ApiTokenService tokens) =>
+        {
+            ApiTokenCreateRequest? req;
+            try { req = await ctx.Request.ReadFromJsonAsync<ApiTokenCreateRequest>(); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
+
+            var result = tokens.Create(req);
+            return result.Status switch
+            {
+                ApiTokenCreateStatus.MissingName
+                    => Results.BadRequest(new ApiTokenCreateResponse { Ok = false, Error = "name required" }),
+                ApiTokenCreateStatus.NoScopes
+                    => Results.BadRequest(new ApiTokenCreateResponse { Ok = false, Error = "at least one scope required" }),
+                ApiTokenCreateStatus.UnknownScope
+                    => Results.BadRequest(new ApiTokenCreateResponse
+                    {
+                        Ok = false,
+                        Error = $"unknown scope '{result.UnknownScope}'; known scopes are {string.Join(", ", ApiTokenScopes.All)}",
+                    }),
+                // The only response that ever carries the plaintext. The record next to it is
+                // redacted like every other listing: the caller gets the secret once and the
+                // metadata for as long as the token exists.
+                _ => Results.Ok(new ApiTokenCreateResponse
+                {
+                    Ok = true,
+                    Token = result.Plaintext,
+                    Record = result.Token!.Redacted(),
+                }),
+            };
+        });
+
+        app.MapPost("/api/tokens/revoke", async (HttpContext ctx, ApiTokenService tokens) =>
+        {
+            ApiTokenRevokeRequest? req;
+            try { req = await ctx.Request.ReadFromJsonAsync<ApiTokenRevokeRequest>(); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
+
+            if (req is null || string.IsNullOrWhiteSpace(req.Id))
+                return Results.BadRequest(new ApiTokenResponse { Ok = false, Error = "Id required" });
+
+            if (!tokens.Revoke(req.Id))
+                return Results.NotFound(new ApiTokenResponse { Ok = false, Error = "no matching token, or already revoked" });
+            return Results.Ok(new ApiTokenResponse { Ok = true });
+        });
+
+        // Records only. The store holds a hash and never the secret, and even the hash is left
+        // out of the answer.
+        app.MapGet("/api/tokens", (ApiTokenService tokens)
+            => Results.Ok(new ApiTokenListResponse { Ok = true, Tokens = tokens.List() }));
+    }
+
+    // A write made with a scoped token is attributed to that token, not to whoever the body says.
+    // Overwriting rather than defaulting is the point: the credential names its holder, and a
+    // caller must not be able to sign somebody else's name to a ban by filling in the field.
+    // HMAC-authenticated callers are untouched and keep attributing themselves.
+    private static void Attribute(HttpContext ctx, BanRequest? req)
+    {
+        var attribution = ApiTokenIdentity.Attribution(ctx);
+        if (attribution is not null && req is not null) req.BannedBy = attribution;
+    }
+
+    private static void Attribute(HttpContext ctx, WhitelistRequest? req)
+    {
+        var attribution = ApiTokenIdentity.Attribution(ctx);
+        if (attribution is not null && req is not null) req.AddedBy = attribution;
     }
 
     // Reads a body that a caller is allowed to leave out entirely. An absent body is not an
