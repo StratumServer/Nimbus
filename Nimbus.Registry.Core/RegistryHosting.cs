@@ -26,6 +26,7 @@ public static class RegistryHosting
         builder.Services.AddSingleton<NonceCache>();
         builder.Services.AddSingleton<BanStore>();
         builder.Services.AddSingleton<WhitelistStore>();
+        builder.Services.AddSingleton<ReservationService>();
         builder.Services.AddHostedService<RegistrySweeper>();
         if (withMasterServer) builder.Services.AddHostedService<MasterServerBroadcaster>();
     }
