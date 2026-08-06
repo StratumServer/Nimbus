@@ -43,7 +43,8 @@ public class MasterServerBroadcasterTests
     /// what triggers the unregister. The body is handed the broadcaster's log, because a request
     /// arriving at the master server is not the same as the broadcaster having read the answer to
     /// it, and a test that stops in between sees neither.</summary>
-    private static async Task RunAsync(RegistryConfig cfg, BackendRegistry backends, Func<RecordingLogger, Task> body)
+    private static async Task<RecordingLogger> RunAsync(RegistryConfig cfg, BackendRegistry backends,
+        Func<RecordingLogger, Task> body)
     {
         var log = new RecordingLogger();
         var broadcaster = new MasterServerBroadcaster(cfg, backends, log);
@@ -53,6 +54,7 @@ public class MasterServerBroadcasterTests
         // A background service that faulted would leave the registry running with no advertising
         // and nothing said about it, so the task itself is part of the contract.
         Assert.False(broadcaster.ExecuteTask?.IsFaulted, broadcaster.ExecuteTask?.Exception?.ToString());
+        return log;
     }
 
     private static BackendRegistry RegistryWith(params BackendHeartbeat[] backends)
@@ -481,8 +483,13 @@ public class MasterServerBroadcasterTests
         // the registry is what keeps a private network working while it is down.
         var cfg = Advertising(FakeMasterServer.DeadUrl());
 
-        await RunAsync(cfg, RegistryWith(Backend("hub", 10)), async _ => await Task.Delay(500));
-        // RunAsync asserts the background service did not fault, which is the whole claim here.
+        var log = await RunAsync(cfg, RegistryWith(Backend("hub", 10)),
+            async l => await l.WaitForAsync("master server register failed"));
+
+        // It tried, it failed, and it neither faulted (RunAsync checks that) nor came away
+        // thinking it was registered.
+        Assert.Contains(log.Lines, l => l.Contains("master server register failed"));
+        Assert.DoesNotContain(log.Lines, l => l.Contains("registered ok"));
     }
 
     [Fact]
