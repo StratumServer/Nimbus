@@ -1,5 +1,8 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -54,19 +57,45 @@ public class RegistryEndpointsTests
         }
     }
 
+    /// <summary>
+    /// A JSON payload that refuses to say how long it is. HttpClient answers unknown content
+    /// length on HTTP/1.1 by framing the request with Transfer-Encoding: chunked, which is the
+    /// shape third-party clients hit in #91 and the one ByteArrayContent can never produce.
+    /// </summary>
+    private sealed class ChunkedJsonContent : HttpContent
+    {
+        private readonly byte[] _bytes;
+
+        public ChunkedJsonContent(byte[] bytes)
+        {
+            _bytes = bytes;
+            Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            => stream.WriteAsync(_bytes, 0, _bytes.Length);
+    }
+
     /// <summary>Builds a request carrying the four X-Nimbus-* headers. Every knob can be
     /// bent out of shape to probe a specific middleware rejection.</summary>
     private static HttpRequestMessage Signed(
         HttpMethod method, string baseUrl, string pathAndQuery,
         string secret = Secret, object? body = null,
-        long? timestamp = null, string? nonce = null, int? protocol = null, string? signature = null)
+        long? timestamp = null, string? nonce = null, int? protocol = null, string? signature = null,
+        bool chunked = false)
     {
         byte[] bytes = body is null ? Array.Empty<byte>() : JsonSerializer.SerializeToUtf8Bytes(body);
         var msg = new HttpRequestMessage(method, baseUrl.TrimEnd('/') + pathAndQuery);
         if (body is not null)
         {
-            msg.Content = new ByteArrayContent(bytes);
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            msg.Content = chunked ? new ChunkedJsonContent(bytes) : new ByteArrayContent(bytes);
+            msg.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         }
 
         long ts = timestamp ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -81,6 +110,35 @@ public class RegistryEndpointsTests
         msg.Headers.Add(NimbusProtocol.NonceHeader, n);
         msg.Headers.Add(NimbusProtocol.ProtocolHeader, proto.ToString());
         return msg;
+    }
+
+    /// <summary>Writes a hand-built request straight onto the socket and hands back what came
+    /// out, for the framings HttpClient will not produce.</summary>
+    private static async Task<string> SendRawAsync(string baseUrl, string request)
+    {
+        var uri = new Uri(baseUrl);
+        using var conn = new TcpClient();
+        await conn.ConnectAsync(uri.Host, uri.Port);
+        using var stream = conn.GetStream();
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(request));
+        var buffer = new byte[4096];
+        int read = await stream.ReadAsync(buffer);
+        return Encoding.ASCII.GetString(buffer, 0, read);
+    }
+
+    /// <summary>The four X-Nimbus-* header lines for a bodyless request, ready to paste into a
+    /// raw request.</summary>
+    private static string SignedHeaderLines(string method, string path)
+    {
+        long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        string nonce = HmacSigner.NewNonce();
+        int proto = NimbusProtocol.ProtocolVersion;
+        string sig = HmacSigner.Sign(Secret,
+            HmacSigner.CanonicalString(method, path, proto, ts, nonce, Array.Empty<byte>()));
+        return $"{NimbusProtocol.SignatureHeader}: {sig}\r\n"
+            + $"{NimbusProtocol.TimestampHeader}: {ts}\r\n"
+            + $"{NimbusProtocol.NonceHeader}: {nonce}\r\n"
+            + $"{NimbusProtocol.ProtocolHeader}: {proto}\r\n";
     }
 
     private static BackendHeartbeat Heartbeat(string id = "backend-1") => new()
@@ -331,6 +389,112 @@ public class RegistryEndpointsTests
         Assert.Equal("uid-tampered", left.PlayerUid);
     }
 
+    // The other side of the same decision, and the one the fallback exists for: a request that
+    // announces no body by any means is still answered from the query. Hand-built because
+    // HttpClient always writes a zero Content-Length on a bodyless POST and so cannot leave
+    // both headers out.
+    [Fact]
+    public async Task BanLift_WithNeitherALengthNorChunking_StillFallsBackToTheQuery()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-b7", ServerId = "creative" }));
+
+        var uri = new Uri(host.BaseUrl);
+        string response = await SendRawAsync(host.BaseUrl,
+            "POST /api/bans/lift?uid=uid-b7&server=creative HTTP/1.1\r\n"
+            + $"Host: {uri.Host}:{uri.Port}\r\n"
+            + SignedHeaderLines("POST", "/api/bans/lift")
+            + "Connection: close\r\n\r\n");
+
+        Assert.StartsWith("HTTP/1.1 200 OK", response, StringComparison.Ordinal);
+    }
+
+    // Proof, before anything is read into the two tests below, that ChunkedJsonContent really
+    // does put chunked framing on the wire. A bare socket stands in for the registry and keeps
+    // the bytes HttpClient wrote, so the framing is observed rather than assumed.
+    [Fact]
+    public async Task ChunkedJsonContent_PutsChunkedFramingOnTheWire()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        var capture = Task.Run(async () =>
+        {
+            using var conn = await listener.AcceptTcpClientAsync();
+            using var stream = conn.GetStream();
+            var buffer = new byte[4096];
+            var raw = new StringBuilder();
+            // The terminating zero-length chunk closes the request; no header line can be a
+            // lone "0", so this never trips on the header block.
+            while (!raw.ToString().Contains("\r\n0\r\n\r\n", StringComparison.Ordinal))
+            {
+                int read = await stream.ReadAsync(buffer);
+                if (read == 0) break;
+                raw.Append(Encoding.ASCII.GetString(buffer, 0, read));
+            }
+
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
+            return raw.ToString();
+        });
+
+        string payload = JsonSerializer.Serialize(new { PlayerUid = "uid-wire" });
+        using var client = new HttpClient();
+        var msg = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/api/bans/lift")
+        {
+            Content = new ChunkedJsonContent(Encoding.UTF8.GetBytes(payload)),
+        };
+        await client.SendAsync(msg);
+
+        string request = await capture;
+
+        Assert.Contains("Transfer-Encoding: chunked", request, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Content-Length", request, StringComparison.OrdinalIgnoreCase);
+        // Size line in hex, payload, terminating chunk: the body only exists as chunks.
+        Assert.Contains($"\r\n{payload.Length:x}\r\n{payload}\r\n0\r\n\r\n", request, StringComparison.Ordinal);
+    }
+
+    // #91: a client whose HTTP stack chunks announces no Content-Length, and the registry used
+    // to read that as "no body at all" and answer from the query instead, losing the arguments.
+    // Also the proof that a chunked body survives HmacAuthMiddleware: the signature covers those
+    // bytes, so anything other than an exact read would come back 401 rather than 200.
+    [Fact]
+    public async Task BanLift_WithAChunkedBody_LiftsTheBan()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-b6", ServerId = "creative" }));
+
+        var lifted = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans/lift",
+            body: new { PlayerUid = "uid-b6", ServerId = "creative" }, chunked: true));
+        Assert.Equal(HttpStatusCode.OK, lifted.StatusCode);
+
+        var empty = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/bans"));
+        Assert.Empty((await empty.Content.ReadFromJsonAsync<BanListResponse>())!.Bans);
+    }
+
+    // The body still settles both arguments when it arrives in chunks: were it dropped, the
+    // contradictory query would take over and lift the wrong ban.
+    [Fact]
+    public async Task BanLift_WithAChunkedBody_IgnoresAQueryThatContradictsIt()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-asked" }));
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/bans",
+            body: new { PlayerUid = "uid-tampered" }));
+
+        var lifted = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl,
+            "/api/bans/lift?uid=uid-tampered", body: new { PlayerUid = "uid-asked" }, chunked: true));
+        Assert.Equal(HttpStatusCode.OK, lifted.StatusCode);
+
+        var listed = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/bans"));
+        var left = Assert.Single((await listed.Content.ReadFromJsonAsync<BanListResponse>())!.Bans);
+        Assert.Equal("uid-tampered", left.PlayerUid);
+    }
+
     [Fact]
     public async Task Ban_WithoutAPlayerUid_Is400()
     {
@@ -452,6 +616,23 @@ public class RegistryEndpointsTests
         var listed = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/whitelist"));
         var left = Assert.Single((await listed.Content.ReadFromJsonAsync<WhitelistListResponse>())!.Entries);
         Assert.Equal("uid-tampered", left.PlayerUid);
+    }
+
+    // The other half of #91: same chunked framing, same scoped argument in the body, against
+    // the second endpoint that accepts an optional body.
+    [Fact]
+    public async Task WhitelistRemove_WithAChunkedBody_RemovesTheEntry()
+    {
+        await using var host = await Host.StartAsync();
+        await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist",
+            body: new { PlayerUid = "uid-w6", ServerId = "staff" }));
+
+        var removed = await host.Client.SendAsync(Signed(HttpMethod.Post, host.BaseUrl, "/api/whitelist/remove",
+            body: new { PlayerUid = "uid-w6", ServerId = "staff" }, chunked: true));
+        Assert.Equal(HttpStatusCode.OK, removed.StatusCode);
+
+        var empty = await host.Client.SendAsync(Signed(HttpMethod.Get, host.BaseUrl, "/api/whitelist"));
+        Assert.Empty((await empty.Content.ReadFromJsonAsync<WhitelistListResponse>())!.Entries);
     }
 
     [Fact]
