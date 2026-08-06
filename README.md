@@ -50,7 +50,15 @@ The short version:
 That first run picks its own `registry.embedded_shared_secret`, so no two installs share one and
 nothing published in these docs opens yours. It is the credential every backend authenticates to
 the registry with, and copying it into each `nimbus-server.json` is what step 3 above is mostly
-about. Nothing regenerates it afterwards.
+about. Nothing regenerates it afterwards. A standalone `Nimbus.Registry` does the same on its own
+first run, generating the `shared_secret` in `nimbus.registry.toml` and telling you where the
+copies go.
+
+Step 3 is not optional. The backend mod cannot generate a secret of its own, since a value minted
+there would match nothing, so the `nimbus-server.json` it writes for you carries a placeholder
+naming the file to copy the real one out of. A backend still holding that placeholder, or any of
+the older documented ones, logs what is missing and stays off the network rather than heartbeating
+with a string anyone can read here.
 
 The rest of the defaults assume one machine: the embedded registry listens on
 `registry.embedded_bind = "http://127.0.0.1:8765"`, which nothing off the box can reach. If your
@@ -58,7 +66,9 @@ backends run elsewhere, widen that to `http://0.0.0.0:8765`. The proxy refuses t
 other hosts can reach while the secret is still the documented placeholder, since anyone able to
 reach the registry could otherwise mint themselves a reservation onto any backend. The Pterodactyl
 eggs write both lines from panel variables, so a panel install starts from the wide bind and the
-panel's own `NIMBUS_SHARED_SECRET`.
+panel's own `NIMBUS_SHARED_SECRET`. A panel cannot generate that one, because every container
+would mint a different value and none of them would authenticate, so the eggs ship a placeholder
+and their install scripts refuse to finish while it is still there.
 
 ## Shortcut commands
 

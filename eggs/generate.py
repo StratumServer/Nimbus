@@ -52,11 +52,17 @@ def egg(name, description, startup, done, install_script, install_container, var
         "variables": variables,
     }
 
+# Kept in step with Nimbus.Shared.SecretPlaceholders.Egg, which is what the proxy validator,
+# the standalone registry and the backend mod all refuse. A panel cannot generate this value:
+# each container would mint a different one and nothing on the network would authenticate, so
+# the admin sets it once and the same string goes on every Nimbus server.
+SHARED_SECRET_PLACEHOLDER = "REPLACE-ME-THE-INSTALL-REFUSES-THIS-VALUE"
+
 def shared_secret_var(note):
     return var(
         "Nimbus shared secret",
-        "HMAC secret of the Nimbus network; every proxy, registry and backend must use the same value. REQUIRED: replace the default with a long random string. " + note,
-        "NIMBUS_SHARED_SECRET", "change-me-and-keep-secret", "required|string|max:128")
+        "HMAC secret of the Nimbus network; every proxy, registry and backend must use the same value. REQUIRED: the install refuses to finish while this is still the placeholder. Use the registry.embedded_shared_secret your proxy generated on its first run, or a fresh `openssl rand -hex 32` if this is the first server of the network. " + note,
+        "NIMBUS_SHARED_SECRET", SHARED_SECRET_PLACEHOLDER, "required|string|max:128")
 
 eggs = {
     "egg-vintage-story-nimbus-backend.json": {

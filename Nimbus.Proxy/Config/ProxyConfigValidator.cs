@@ -331,8 +331,11 @@ internal static class ProxyConfigValidator
         return IPAddress.TryParse(host, out var address) && IsLoopback(address);
     }
 
+    // The list lives in Nimbus.Shared so the standalone registry and the backend mod refuse the
+    // same values this does. A literal the proxy rejects and a backend accepts is a network held
+    // together by a secret one of its three components considers unset.
     private static bool IsDefaultSecret(string secret)
-        => secret is "" or "change-me-and-keep-secret" or "REPLACE_ME_WITH_A_LONG_RANDOM_STRING";
+        => Nimbus.Shared.SecretPlaceholders.IsPlaceholder(secret);
 
     private static bool IsPluginId(string value)
     {

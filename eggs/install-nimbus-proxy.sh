@@ -7,6 +7,19 @@ apt-get update -qq && apt-get install -y -qq curl unzip > /dev/null
 
 NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.4.0/Nimbus-v0.4.0.zip}"
 
+# The panel hands this install the variable the admin was shown at creation time, which makes
+# this the last moment where a network authenticating with a value published in the Nimbus
+# repository costs one form field instead of a network-wide rotation (#40). Checked before the
+# download so a refusal costs nothing. Nothing here can generate the value: the same string has
+# to be on every proxy, registry and backend, and one minted per container matches nobody.
+case "${NIMBUS_SHARED_SECRET:-}" in
+  ""|"REPLACE-ME-THE-INSTALL-REFUSES-THIS-VALUE"|"change-me-and-keep-secret"|"REPLACE_ME_WITH_A_LONG_RANDOM_STRING")
+    echo "Nimbus: the shared secret variable is still a placeholder, so this install would put a publicly known credential on the network." >&2
+    echo "Set NIMBUS_SHARED_SECRET in the panel to the value the rest of your network already uses, or to a fresh 'openssl rand -hex 32' if this is its first server, then reinstall." >&2
+    exit 1
+    ;;
+esac
+
 # Every download goes through here: https only, redirects included, so a panel
 # variable pointing at plain http fails the install rather than fetching over it.
 fetch() {
@@ -44,8 +57,10 @@ default = "${NIMBUS_DEFAULT_BACKEND:-127.0.0.1:42421}"
 mode = "embedded"
 # Backends heartbeat here; keep it reachable from your backend containers.
 embedded_bind = "${NIMBUS_EMBEDDED_REGISTRY_BIND:-http://0.0.0.0:8765}"
-# The proxy refuses to start on a non-loopback registry bind until this is changed.
-embedded_shared_secret = "${NIMBUS_SHARED_SECRET:-change-me-and-keep-secret}"
+# The same value every backend puts in "SharedSecret" in its nimbus-server.json. The install
+# above refuses to reach this line while it is a placeholder, and the proxy refuses to start on
+# a non-loopback registry bind if one gets in here another way.
+embedded_shared_secret = "${NIMBUS_SHARED_SECRET}"
 
 [metrics]
 enabled = true

@@ -64,6 +64,16 @@ own container, so how that URL resolves depends on your networking:
 The standalone registry egg does not have this concern: its bind uses the panel's
 primary allocation, so it is already reachable via the node address.
 
+## The shared secret
+
+All three eggs expose `NIMBUS_SHARED_SECRET` and none of them can generate it: every proxy,
+registry and backend on a network signs with the same value, so a container that minted its own
+would authenticate with nobody. The default is a placeholder, and each install script refuses to
+finish while it is still there, before the download rather than after, so the cost of leaving it
+is one form field instead of a network running on a value published in this repository. Take the
+`registry.embedded_shared_secret` the proxy generated on its first run, or `openssl rand -hex 32`
+for the first server of a new network, and put the same string in every Nimbus server's variable.
+
 ## Maintaining
 
 The `install-*.sh` files are the readable sources of each egg's embedded install
