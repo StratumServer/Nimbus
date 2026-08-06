@@ -397,6 +397,86 @@ public class HttpRegistryClientTests
         Assert.Empty(second);
     }
 
+    // ---- api tokens ----
+
+    [Fact]
+    public async Task ATokenIsMintedAndComesBackWithItsSecretExactlyOnce()
+    {
+        await using var registry = await Registry.StartAsync();
+        using var client = ClientFor(registry);
+
+        var created = await client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        {
+            Name = "discord-bot",
+            Scopes = new List<string> { "whitelist:write" },
+            CreatedBy = "admin",
+        }, Ct);
+
+        Assert.NotNull(created);
+        Assert.True(created!.Ok);
+        Assert.StartsWith("nsk_", created.Token);
+        Assert.Equal("discord-bot", created.Record!.Name);
+
+        // The listing that follows carries the record and nothing else, which is the whole point:
+        // the secret existed in that one response and nowhere afterwards.
+        var listed = await client.GetApiTokensAsync(Ct);
+        var record = Assert.Single(listed!);
+        Assert.Equal(created.Record.Id, record.Id);
+        Assert.Equal("", record.Hash);
+    }
+
+    [Fact]
+    public async Task ATokenTheRegistryRefuses_ComesBackAsANullRatherThanAThrow()
+    {
+        await using var registry = await Registry.StartAsync();
+        using var client = ClientFor(registry);
+
+        Assert.Null(await client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        { Name = "bot", Scopes = new List<string> { "bans:destroy" } }, Ct));
+        Assert.Null(await client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        { Scopes = new List<string> { "bans:read" } }, Ct));
+        Assert.Empty((await client.GetApiTokensAsync(Ct))!);
+    }
+
+    [Fact]
+    public async Task RevokingATokenAnswersTrueOnceAndFalseAfterwards()
+    {
+        await using var registry = await Registry.StartAsync();
+        using var client = ClientFor(registry);
+        var created = await client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        { Name = "bot", Scopes = new List<string> { "bans:read" } }, Ct);
+
+        Assert.True(await client.RevokeApiTokenAsync(created!.Record!.Id, Ct));
+        Assert.False(await client.RevokeApiTokenAsync(created.Record.Id, Ct));
+        Assert.False(await client.RevokeApiTokenAsync("no-such-id", Ct));
+
+        // Still listed, and now marked: the record is the audit trail.
+        Assert.True(Assert.Single((await client.GetApiTokensAsync(Ct))!).Revoked);
+    }
+
+    [Fact]
+    public async Task AMintedTokenAuthenticatesAgainstTheSameRegistry()
+    {
+        await using var registry = await Registry.StartAsync(cfg => cfg.ApiTokens.Enabled = true);
+        using var client = ClientFor(registry);
+        var created = await client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        { Name = "discord-bot", Scopes = new List<string> { "whitelist:write", "whitelist:read" } }, Ct);
+
+        // The two-line integration a bot author actually writes: one header, no signing.
+        using var bot = new HttpClient();
+        var add = new HttpRequestMessage(HttpMethod.Post, registry.BaseUrl.TrimEnd('/') + "/api/whitelist")
+        {
+            Content = JsonContent.Create(new WhitelistRequest { PlayerUid = "uid-1", Note = "invited" }),
+        };
+        add.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", created!.Token);
+        var resp = await bot.SendAsync(add, Ct);
+
+        Assert.True(resp.IsSuccessStatusCode);
+        // And the proxy, reading the same list over HMAC, sees the token's name on the entry.
+        var entries = await client.GetWhitelistAsync(Ct);
+        Assert.Equal("token:discord-bot", Assert.Single(entries!).AddedBy);
+    }
+
     // ---- what happens when the answer is not a 200 ----
 
     [Fact]
@@ -418,6 +498,10 @@ public class HttpRegistryClientTests
         Assert.Null(await client.AddWhitelistAsync(new WhitelistRequest { PlayerUid = "uid-1" }, Ct));
         Assert.False(await client.RemoveWhitelistAsync("uid-1", null, Ct));
         Assert.Empty(await client.DrainTransferIntentsAsync(Ct));
+        Assert.Null(await client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        { Name = "bot", Scopes = new List<string> { "bans:read" } }, Ct));
+        Assert.Null(await client.GetApiTokensAsync(Ct));
+        Assert.False(await client.RevokeApiTokenAsync("a1b2c3", Ct));
 
         // And nothing it tried got through: the registry is exactly as it was.
         using var honest = ClientFor(registry);
@@ -447,6 +531,10 @@ public class HttpRegistryClientTests
         Assert.Null(await client.AddWhitelistAsync(new WhitelistRequest { PlayerUid = "uid-1" }, Ct));
         Assert.False(await client.RemoveWhitelistAsync("uid-1", null, Ct));
         Assert.Empty(await client.DrainTransferIntentsAsync(Ct));
+        Assert.Null(await client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        { Name = "bot", Scopes = new List<string> { "bans:read" } }, Ct));
+        Assert.Null(await client.GetApiTokensAsync(Ct));
+        Assert.False(await client.RevokeApiTokenAsync("a1b2c3", Ct));
     }
 
     [Fact]

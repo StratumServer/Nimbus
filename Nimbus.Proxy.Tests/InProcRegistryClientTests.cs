@@ -493,4 +493,66 @@ public class InProcRegistryClientTests
         // that survived its own drain would move the player again on the next tick.
         Assert.Empty(await e.Client.DrainTransferIntentsAsync(Ct));
     }
+
+    // ---- api tokens ----
+
+    [Fact]
+    public async Task AMintedToken_LandsInTheStoreTheMiddlewareWillReadItFrom()
+    {
+        var e = Embedded.Create();
+
+        var created = await e.Client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        {
+            Name = "discord-bot",
+            Scopes = new List<string> { ApiTokenScopes.WhitelistWrite },
+            CreatedBy = "admin",
+        }, Ct);
+
+        Assert.NotNull(created);
+        Assert.StartsWith(ApiTokenSecret.Prefix, created!.Token);
+        // Found by the hash, which is the only lookup the auth path does.
+        var held = e.Tokens.FindByHash(ApiTokenSecret.Hash(created.Token));
+        Assert.NotNull(held);
+        Assert.Equal("discord-bot", held!.Name);
+        Assert.Equal(e.Clock.NowUnix + ApiTokenService.DefaultDurationSeconds, held.ExpiresAtUnix);
+        // The record handed back is redacted, the stored one is not.
+        Assert.Equal("", created.Record!.Hash);
+        Assert.NotEqual("", held.Hash);
+    }
+
+    [Theory]
+    [InlineData("", "whitelist:write")]
+    [InlineData("bot", "")]
+    [InlineData("bot", "bans:destroy")]
+    public async Task ATokenTheRulesRefuse_IsANullHereAndA400OverHttp(string name, string scope)
+    {
+        var e = Embedded.Create();
+
+        var created = await e.Client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        {
+            Name = name,
+            Scopes = scope.Length == 0 ? new List<string>() : new List<string> { scope },
+        }, Ct);
+
+        // Same rules as POST /api/tokens, from the same service, so embedded and remote modes
+        // cannot end up issuing differently shaped credentials.
+        Assert.Null(created);
+        Assert.Equal(0, e.Tokens.Count);
+    }
+
+    [Fact]
+    public async Task ARevokedToken_StaysListedAndStopsBeingUsable()
+    {
+        var e = Embedded.Create();
+        var created = await e.Client.CreateApiTokenAsync(new ApiTokenCreateRequest
+        { Name = "bot", Scopes = new List<string> { ApiTokenScopes.BansRead } }, Ct);
+
+        Assert.True(await e.Client.RevokeApiTokenAsync(created!.Record!.Id, Ct));
+        Assert.False(await e.Client.RevokeApiTokenAsync(created.Record.Id, Ct));
+
+        var listed = Assert.Single((await e.Client.GetApiTokensAsync(Ct))!);
+        Assert.True(listed.Revoked);
+        Assert.False(listed.IsUsableAt(e.Clock.NowUnix));
+        Assert.Equal("", listed.Hash);
+    }
 }

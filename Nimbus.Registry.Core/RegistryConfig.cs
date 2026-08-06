@@ -72,6 +72,33 @@ public sealed class ApiTokensConfig
     public bool TrustForwardedProto { get; set; } = false;
 }
 
+// The configurations that are accepted, start cleanly and then quietly do nothing. The standalone
+// registry has no validator of its own, so this is where its complaints live; the proxy carries
+// the same two checks for the embedded registry in ProxyConfigValidator, worded the same way.
+public static class RegistryConfigWarnings
+{
+    public static List<string> ApiTokens(RegistryConfig cfg)
+    {
+        var complaints = new List<string>();
+        if (!cfg.ApiTokens.Enabled) return complaints;
+
+        if (cfg.ApiTokens.RateLimitPerMinute <= 0)
+            complaints.Add($"api_tokens.rate_limit_per_minute is {cfg.ApiTokens.RateLimitPerMinute}, which is not a rate. Falling back to 60 per token per minute.");
+
+        // A bind that cannot be reached from outside, or one this registry serves TLS on itself,
+        // is a bind tokens work over. Anything else is the configuration where bearer auth refuses
+        // every request it is given, with no other signal an operator would ever see.
+        if (!Uri.TryCreate(cfg.BindUrl, UriKind.Absolute, out var uri)) return complaints;
+        // 0.0.0.0 is not loopback: it is every interface, loopback included.
+        if (uri.Scheme == "https" || uri.IsLoopback) return complaints;
+
+        complaints.Add(cfg.ApiTokens.TrustForwardedProto
+            ? "api_tokens.trust_forwarded_proto = true makes the registry believe an X-Forwarded-Proto header on a plain-HTTP bind. Only set it when a TLS-terminating proxy is the sole route to bind_url."
+            : "api_tokens.enabled = true on a non-loopback plain-HTTP bind_url: bearer auth will refuse every request, because a token is only as safe as the transport under it. Serve https, bind loopback, or set api_tokens.trust_forwarded_proto behind a TLS-terminating proxy.");
+        return complaints;
+    }
+}
+
 // Network identity published to the VS master server.
 public sealed class ServerIdentityConfig
 {
