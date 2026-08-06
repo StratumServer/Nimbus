@@ -14,6 +14,14 @@
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <!-- Test input, not product code: keeps it out of Sonar's coverage denominator. -->
     <SonarQubeTestProject>true</SonarQubeTestProject>
+    <!--
+      One output path whatever the configuration. This project is not in Nimbus.slnx, so a
+      solution build has no configuration mapping for it and it falls back to Debug while the
+      test project that stages its dll is building Release. Pinning the path is what keeps the
+      two agreeing on where the file is.
+    -->
+    <OutputPath>$(MSBuildThisFileDirectory)bin\fixture\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
 
   <ItemGroup>

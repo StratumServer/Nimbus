@@ -52,8 +52,8 @@
     <ItemGroup>
       <PluginFixture Include="..\Nimbus.SamplePlugin\bin\$(Configuration)\$(TargetFramework)\Nimbus.SamplePlugin.dll" />
       <PluginFixture Include="..\Nimbus.SamplePlugin\bin\$(Configuration)\$(TargetFramework)\Nimbus.SamplePlugin.plugin.json" />
-      <PluginFixture Include="fixtures\Nimbus.BrokenPlugin\bin\$(Configuration)\$(TargetFramework)\Nimbus.BrokenPlugin.dll" />
-      <PluginFixture Include="fixtures\Nimbus.ShutdownPlugin\bin\$(Configuration)\$(TargetFramework)\Nimbus.ShutdownPlugin.dll" />
+      <PluginFixture Include="fixtures\Nimbus.BrokenPlugin\bin\fixture\Nimbus.BrokenPlugin.dll" />
+      <PluginFixture Include="fixtures\Nimbus.ShutdownPlugin\bin\fixture\Nimbus.ShutdownPlugin.dll" />
     </ItemGroup>
     <Copy SourceFiles="@(PluginFixture)" DestinationFolder="$(OutDir)plugin-fixtures" SkipUnchangedFiles="true" />
   </Target>
