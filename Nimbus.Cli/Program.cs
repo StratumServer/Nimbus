@@ -24,29 +24,7 @@ internal static class Program
 
         try
         {
-            string cmd = NormalizeCommand(rest[0]);
-            object payload = cmd switch
-            {
-                "ping"    => new { cmd = "ping" },
-                "help"    => new { cmd = "help" },
-                "list"    => new { cmd = "list" },
-                "status"  => BuildStatus(rest),
-                "plugins" => new { cmd = "plugins" },
-                "kick"    => BuildKick(rest),
-                "servers" => BuildServers(rest),
-                "swap"    => BuildSwap(rest),
-                "sticky"  => new { cmd = "sticky" },
-                "route"   => new { cmd = "route" },
-                "drain"   => BuildDrain(rest, "drain"),
-                "undrain" => BuildDrain(rest, "undrain"),
-                "ban"     => BuildBan(rest),
-                "unban"   => BuildUnban(rest),
-                "bans"    => new { cmd = "bans" },
-                "whitelist" => BuildWhitelist(rest),
-                "reload"  => new { cmd = "reload" },
-                "raw"     => BuildRaw(rest),
-                _ => throw new ArgumentException($"unknown command: {cmd}"),
-            };
+            object payload = BuildPayload(rest);
 
             string response = SendAsync(host, port, secret, payload).GetAwaiter().GetResult();
             Console.WriteLine(PrettyPrint(response));
@@ -58,6 +36,40 @@ internal static class Program
             return 1;
         }
     }
+
+    // The admin frame a command line turns into, before it reaches a socket. Kept apart from
+    // Main so the mapping can be read, and tested, without a proxy on the other end.
+    internal static object BuildPayload(List<string> args)
+    {
+        string cmd = NormalizeCommand(args[0]);
+        return cmd switch
+        {
+            "ping"    => new { cmd = "ping" },
+            "help"    => new { cmd = "help" },
+            "list"    => new { cmd = "list" },
+            "status"  => BuildStatus(args),
+            "plugins" => new { cmd = "plugins" },
+            "kick"    => BuildKick(args),
+            "servers" => BuildServers(args),
+            "swap"    => BuildSwap(args),
+            "sticky"  => new { cmd = "sticky" },
+            "route"   => new { cmd = "route" },
+            "drain"   => BuildDrain(args, "drain"),
+            "undrain" => BuildDrain(args, "undrain"),
+            "ban"     => BuildBan(args),
+            "unban"   => BuildUnban(args),
+            "bans"    => new { cmd = "bans" },
+            "whitelist" => BuildWhitelist(args),
+            "reload"  => new { cmd = "reload" },
+            "raw"     => BuildRaw(args),
+            _ => throw new ArgumentException($"unknown command: {cmd}"),
+        };
+    }
+
+    // The exact line body that goes on the wire. A payload built by `raw` is already a parsed
+    // JSON document and is passed through verbatim rather than reserialized.
+    internal static string Serialize(object payload)
+        => payload is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(payload);
 
     private static object BuildStatus(List<string> args)
     {
@@ -230,8 +242,7 @@ internal static class Program
                 throw new InvalidOperationException($"auth failed: {authResp ?? "(no response)"}");
         }
 
-        string json = payload is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(payload);
-        var bytes = Encoding.UTF8.GetBytes(json + "\n");
+        var bytes = Encoding.UTF8.GetBytes(Serialize(payload) + "\n");
         await stream.WriteAsync(bytes).ConfigureAwait(false);
         await stream.FlushAsync().ConfigureAwait(false);
 
@@ -239,14 +250,33 @@ internal static class Program
         return line ?? "";
     }
 
-    private static (string host, int port, string? secret, List<string> rest) ParseGlobalOptions(string[] args)
+    internal static (string host, int port, string? secret, List<string> rest) ParseGlobalOptions(string[] args)
     {
         string host = Environment.GetEnvironmentVariable("NIMCTL_HOST") ?? DefaultHost;
         int port = int.TryParse(Environment.GetEnvironmentVariable("NIMCTL_PORT"), out var ep) ? ep : DefaultPort;
         string? secret = Environment.GetEnvironmentVariable("NIMCTL_SECRET");
 
-        // nimctl.json in CWD or exe dir. { "Host": "...", "Port": ..., "Secret": "..." }
-        foreach (var dir in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        (host, port, secret) = ApplyConfigFile(
+            new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory }, host, port, secret);
+
+        var rest = new List<string>(args.Length);
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--host" && i + 1 < args.Length) { host = args[++i]; continue; }
+            if (args[i] == "--port" && i + 1 < args.Length) { port = int.Parse(args[++i]); continue; }
+            if (args[i] == "--secret" && i + 1 < args.Length) { secret = args[++i]; continue; }
+            rest.Add(args[i]);
+        }
+        return (host, port, secret, rest);
+    }
+
+    // nimctl.json from the first of `dirs` that has one. { "Host": "...", "Port": ..., "Secret": "..." }
+    // Only the first file found is read, and a malformed one is ignored rather than fatal: a
+    // stray config in a working directory must not stop the CLI from running.
+    internal static (string Host, int Port, string? Secret) ApplyConfigFile(
+        IEnumerable<string> dirs, string host, int port, string? secret)
+    {
+        foreach (var dir in dirs)
         {
             var path = Path.Combine(dir, "nimctl.json");
             if (!File.Exists(path)) continue;
@@ -260,21 +290,12 @@ internal static class Program
             catch { /* ignore malformed config */ }
             break;
         }
-
-        var rest = new List<string>(args.Length);
-        for (int i = 0; i < args.Length; i++)
-        {
-            if (args[i] == "--host" && i + 1 < args.Length) { host = args[++i]; continue; }
-            if (args[i] == "--port" && i + 1 < args.Length) { port = int.Parse(args[++i]); continue; }
-            if (args[i] == "--secret" && i + 1 < args.Length) { secret = args[++i]; continue; }
-            rest.Add(args[i]);
-        }
-        return (host, port, secret, rest);
+        return (host, port, secret);
     }
 
-    private static bool IsHelp(string s) => s is "-h" or "--help" or "help";
+    internal static bool IsHelp(string s) => s is "-h" or "--help" or "help";
 
-    private static string NormalizeCommand(string cmd) => cmd switch
+    internal static string NormalizeCommand(string cmd) => cmd switch
     {
         "?" => "help",
         "ls" or "players" => "list",
@@ -304,7 +325,7 @@ internal static class Program
         return null;
     }
 
-    private static string PrettyPrint(string raw)
+    internal static string PrettyPrint(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "(no response)";
         try
@@ -315,7 +336,7 @@ internal static class Program
         catch { return raw; }
     }
 
-    private static int ExitCodeFromResponse(string raw)
+    internal static int ExitCodeFromResponse(string raw)
     {
         try
         {

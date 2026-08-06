@@ -62,7 +62,10 @@ internal sealed class InProcRegistryClient : IRegistryClient
         if (ttl <= 0) ttl = 60;
         if (ttl > cfg.MaxReservationTtlSeconds) ttl = cfg.MaxReservationTtlSeconds;
 
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        // The injected clock, like AddBanAsync and AddWhitelistAsync: ReservationStore judges
+        // expiry on that same clock, so stamping from DateTimeOffset.UtcNow here put the mint
+        // and the read of it on two different timelines.
+        var now = clock.GetUtcNow().ToUnixTimeSeconds();
         var r = new TransferReservation
         {
             Id = NewId(),
