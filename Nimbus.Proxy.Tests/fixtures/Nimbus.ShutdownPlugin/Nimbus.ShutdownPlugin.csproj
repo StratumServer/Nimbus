@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    A plugin that loads cleanly and then throws on the way out. Its own assembly rather than a
+    second type in Nimbus.BrokenPlugin, because the manifest id is per file: two concrete plugin
+    types in one dll make the second a duplicate of the first.
+
+    Not referenced by the test assembly: it is an input file, not a dependency.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- Test input, not product code: keeps it out of Sonar's coverage denominator. -->
+    <SonarQubeTestProject>true</SonarQubeTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Nimbus.Api\Nimbus.Api.csproj" Private="false" />
+  </ItemGroup>
+</Project>

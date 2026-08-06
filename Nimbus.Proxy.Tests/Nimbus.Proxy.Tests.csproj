@@ -4,6 +4,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
+    <!--
+      fixtures/ holds plugin projects of its own. Without this the test assembly would glob their
+      sources and their obj/ output in as if they were its own files.
+    -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);fixtures\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,4 +28,33 @@
     <ProjectReference Include="..\Nimbus.Proxy\Nimbus.Proxy.csproj" />
     <ProjectReference Include="..\Nimbus.Registry.Core\Nimbus.Registry.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Plugin dlls PluginLoaderTests loads for real through the collectible load context. Built
+      before the tests but deliberately not referenced: the loader has to resolve their types
+      by reflection, which it cannot do honestly if the test host has already got them loaded.
+    -->
+    <ProjectReference Include="..\Nimbus.SamplePlugin\Nimbus.SamplePlugin.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="fixtures\Nimbus.BrokenPlugin\Nimbus.BrokenPlugin.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="fixtures\Nimbus.ShutdownPlugin\Nimbus.ShutdownPlugin.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+  </ItemGroup>
+
+  <!--
+    Drops those three dlls (and the sample's manifest) into a folder beside the test binaries.
+    PluginLoaderTests copies out of it into a scratch directory per test, so a test that rewrites
+    a manifest cannot disturb the next one.
+  -->
+  <Target Name="StagePluginFixtures" AfterTargets="Build">
+    <ItemGroup>
+      <PluginFixture Include="..\Nimbus.SamplePlugin\bin\$(Configuration)\$(TargetFramework)\Nimbus.SamplePlugin.dll" />
+      <PluginFixture Include="..\Nimbus.SamplePlugin\bin\$(Configuration)\$(TargetFramework)\Nimbus.SamplePlugin.plugin.json" />
+      <PluginFixture Include="fixtures\Nimbus.BrokenPlugin\bin\$(Configuration)\$(TargetFramework)\Nimbus.BrokenPlugin.dll" />
+      <PluginFixture Include="fixtures\Nimbus.ShutdownPlugin\bin\$(Configuration)\$(TargetFramework)\Nimbus.ShutdownPlugin.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PluginFixture)" DestinationFolder="$(OutDir)plugin-fixtures" SkipUnchangedFiles="true" />
+  </Target>
 </Project>
