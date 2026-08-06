@@ -2,8 +2,21 @@ using System.Text.Json;
 
 namespace Nimbus.Proxy;
 
+// Remembers which backends an operator drained so a proxy restart does not put them back into
+// rotation. The file is written on every drain/undrain and read once, when BackendRouter is built.
 internal sealed class PersistentDrainStore
 {
+    // Releases up to v0.4.0 serialized with the default naming policy, so every file on disk
+    // today carries "Drained"/"UpdatedAtUnix" while Load only ever looked for "drained": the
+    // flags were written faithfully and never read back. The writer now emits camelCase, which
+    // the readers on both sides of that fix accept, and the reader below takes either spelling
+    // so files from any version still load.
+    private static readonly JsonSerializerOptions SaveOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+    };
+
     private readonly string path;
     private readonly object gate = new();
 
@@ -20,7 +33,7 @@ internal sealed class PersistentDrainStore
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            if (!doc.RootElement.TryGetProperty("drained", out var arr) || arr.ValueKind != JsonValueKind.Array)
+            if (!TryGetDrained(doc.RootElement, out var arr) || arr.ValueKind != JsonValueKind.Array)
                 return Array.Empty<string>();
 
             var result = new List<string>();
@@ -34,9 +47,23 @@ internal sealed class PersistentDrainStore
         }
         catch (Exception ex)
         {
+            // A drain file we cannot read must not stop the proxy from booting: warn and route
+            // as if nothing was drained, which is the same outcome as no file at all.
             Log.Warn($"drain store load failed from '{path}': {ex.Message}");
             return Array.Empty<string>();
         }
+    }
+
+    // TryGetProperty is case-sensitive, so the two spellings have to be asked for by name.
+    // camelCase first because that is what the current writer produces.
+    private static bool TryGetDrained(JsonElement root, out JsonElement arr)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            arr = default;
+            return false;
+        }
+        return root.TryGetProperty("drained", out arr) || root.TryGetProperty("Drained", out arr);
     }
 
     public void Save(IEnumerable<string> drained)
@@ -60,8 +87,9 @@ internal sealed class PersistentDrainStore
                     UpdatedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 };
 
+                // Write beside the target and move into place so a reader never sees a half file.
                 var tmp = path + ".tmp";
-                File.WriteAllText(tmp, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+                File.WriteAllText(tmp, JsonSerializer.Serialize(payload, SaveOptions));
                 File.Move(tmp, path, overwrite: true);
             }
             catch (Exception ex)
