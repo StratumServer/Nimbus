@@ -93,23 +93,29 @@ internal sealed class BackendRouter
     private IReadOnlyList<BackendEndpoint> BuildOrderedSource()
     {
         var backends = cfg.Backends();
-        if (cfg.Try.Count > 0)
+        var fromTry = ResolveTryList(backends);
+        return fromTry.Count > 0 ? fromTry : backends;
+    }
+
+    // Resolves the top-level `try` list into backends in the order it names them, skipping blanks
+    // and names that match no configured backend (with a warn). Returns an empty list when `try`
+    // is unset or resolves to nothing, which is the caller's signal to fall back to declared order.
+    private IReadOnlyList<BackendEndpoint> ResolveTryList(IReadOnlyList<BackendEndpoint> backends)
+    {
+        if (cfg.Try.Count == 0) return Array.Empty<BackendEndpoint>();
+        var ordered = new List<BackendEndpoint>(cfg.Try.Count);
+        foreach (var name in cfg.Try)
         {
-            var ordered = new List<BackendEndpoint>(cfg.Try.Count);
-            foreach (var name in cfg.Try)
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            var hit = backends.FirstOrDefault(b => string.Equals(b.ServerId, name, StringComparison.OrdinalIgnoreCase));
+            if (hit == null)
             {
-                if (string.IsNullOrWhiteSpace(name)) continue;
-                var hit = backends.FirstOrDefault(b => string.Equals(b.ServerId, name, StringComparison.OrdinalIgnoreCase));
-                if (hit == null)
-                {
-                    Log.Warn($"router: try references unknown server '{name}', skipping");
-                    continue;
-                }
-                ordered.Add(hit);
+                Log.Warn($"router: try references unknown server '{name}', skipping");
+                continue;
             }
-            if (ordered.Count > 0) return ordered;
+            ordered.Add(hit);
         }
-        return backends;
+        return ordered;
     }
 
     public bool Drain(string serverId)
