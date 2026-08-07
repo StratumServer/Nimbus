@@ -63,12 +63,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(req);
             const string path = "/api/reservations";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..])
-            {
-                Content = new ByteArrayContent(body)
-            };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
-            Sign(msg, "POST", path, body);
+            using var msg = SignedPost(path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
@@ -111,8 +106,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         try
         {
             const string path = "/api/servers";
-            using var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
-            Sign(msg, "GET", path, Array.Empty<byte>());
+            using var msg = SignedGet(path);
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
@@ -150,9 +144,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         {
             const string path = "/api/transfer-intents/drain";
             byte[] body = Array.Empty<byte>();
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
-            Sign(msg, "POST", path, body);
+            using var msg = SignedPost(path, body);
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode) return new List<TransferIntent>();
             var parsed = await resp.Content.ReadFromJsonAsync<TransferIntentDrainResponse>(cancellationToken: ct).ConfigureAwait(false);
@@ -167,8 +159,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         try
         {
             const string path = "/api/bans";
-            using var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
-            Sign(msg, "GET", path, Array.Empty<byte>());
+            using var msg = SignedGet(path);
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
@@ -191,9 +182,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
             const string path = "/api/bans";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
-            Sign(msg, "POST", path, body);
+            using var msg = SignedPost(path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
@@ -219,9 +208,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(
                 new BanLiftRequest { PlayerUid = playerUid, ServerId = serverId ?? "" });
             const string path = "/api/bans/lift";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
-            Sign(msg, "POST", path, body);
+            using var msg = SignedPost(path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;
@@ -238,8 +225,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         try
         {
             const string path = "/api/whitelist";
-            using var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
-            Sign(msg, "GET", path, Array.Empty<byte>());
+            using var msg = SignedGet(path);
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
@@ -262,9 +248,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
             const string path = "/api/whitelist";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
-            Sign(msg, "POST", path, body);
+            using var msg = SignedPost(path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
@@ -290,9 +274,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(
                 new WhitelistRemoveRequest { PlayerUid = playerUid, ServerId = serverId ?? "" });
             const string path = "/api/whitelist/remove";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
-            Sign(msg, "POST", path, body);
+            using var msg = SignedPost(path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;
@@ -314,9 +296,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
             const string path = "/api/tokens";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
-            Sign(msg, "POST", path, body);
+            using var msg = SignedPost(path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
@@ -344,8 +324,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         try
         {
             const string path = "/api/tokens";
-            using var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
-            Sign(msg, "GET", path, Array.Empty<byte>());
+            using var msg = SignedGet(path);
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
@@ -368,9 +347,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(new ApiTokenRevokeRequest { Id = id });
             const string path = "/api/tokens/revoke";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
-            Sign(msg, "POST", path, body);
+            using var msg = SignedPost(path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;
@@ -380,6 +357,25 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             Log.Warn($"registry token revoke failed: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
+    }
+
+    // The one place that knows the convention: `path` carries its leading slash because that is
+    // what the signature covers and what the registry rebuilds from HttpRequest.Path, while the
+    // request URI is handed path[1..] so it stays relative to BaseAddress. Every endpoint above
+    // used to repeat those three lines, which is how the two halves could drift apart.
+    private HttpRequestMessage SignedGet(string path)
+    {
+        var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
+        Sign(msg, "GET", path, Array.Empty<byte>());
+        return msg;
+    }
+
+    private HttpRequestMessage SignedPost(string path, byte[] body)
+    {
+        var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
+        msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
+        Sign(msg, "POST", path, body);
+        return msg;
     }
 
     private void Sign(HttpRequestMessage msg, string method, string canonicalPath, byte[] body)
