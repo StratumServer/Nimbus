@@ -171,30 +171,18 @@ internal static class Program
         }
     }
 
-    // Tomlyn serializes a POCO, so the only way a comment reaches the file is to put it there
-    // afterwards. Best effort by design: a missing key leaves the file exactly as written, since a
-    // valid config without a comment beats a mangled one.
+    // ConfigAnnotations.InsertAbove does the insertion, shared with the standalone registry's
+    // first run; this only supplies the key it wrote and the note that belongs over a proxy's
+    // embedded secret, which points at the backends alone.
     //
     // CA1861 wants the note hoisted to a static readonly field, and its own wording is conditional
     // on the method being "called repeatedly": this one runs once, when an install writes its first
-    // config. Hoisting it was tried and made things worse rather than better, because the twin of
-    // this method in RegistryFirstRun differs only in the key it looks for, and moving both notes
-    // out of the bodies left two methods identical enough to register as duplicated code that was
-    // not there before. The note stays where it is inserted.
+    // config, so the note stays inline where it reads with the key it annotates.
 #pragma warning disable CA1861
     private static void AnnotateSharedSecret(string path)
-    {
-        const string key = "embedded_shared_secret = ";
-        var lines = File.ReadAllLines(path).ToList();
-        int at = lines.FindIndex(l => l.StartsWith(key, StringComparison.Ordinal));
-        if (at < 0) return;
-        lines.InsertRange(at, new[]
-        {
+        => ConfigAnnotations.InsertAbove(path, "embedded_shared_secret = ",
             "# Generated for this install. Every backend authenticates to the registry with it:",
             "# copy this exact value into \"SharedSecret\" in each backend's nimbus-server.json.",
-            "# Changing it here means changing it on every backend in the same pass.",
-        });
-        File.WriteAllLines(path, lines, new System.Text.UTF8Encoding(false));
-    }
+            "# Changing it here means changing it on every backend in the same pass.");
 #pragma warning restore CA1861
 }
