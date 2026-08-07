@@ -126,6 +126,11 @@ internal sealed partial class ProxySession : IPlayer
 
     public string? PlayerUid => capturedPlayerUid;
     public string? PlayerName => capturedPlayerName;
+
+    // The backend this session is pumped to right now, or null before the first upstream is up.
+    // Read by the evacuate command to find the sessions sitting on the backend being emptied.
+    public BackendEndpoint? CurrentBackend => currentBackend;
+
     public bool HasIdentification => capturedIdentification != null;
     public bool SupportsSeamlessTransfers => seamlessCapable;
     public string ClientRemote => clientRemote;

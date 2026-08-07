@@ -29,7 +29,7 @@ internal static class Program
             RejectMisplacedConnectionFlags(rest);
             object payload = BuildPayload(rest);
 
-            string response = SendAsync(host, port, secret, payload).GetAwaiter().GetResult();
+            string response = SendAsync(host, port, secret, payload, ReadTimeout(rest)).GetAwaiter().GetResult();
             Console.WriteLine(PrettyPrint(response));
             return ExitCodeFromResponse(response);
         }
@@ -59,6 +59,7 @@ internal static class Program
             "route"   => new { cmd = "route" },
             "drain"   => BuildDrain(args, "drain"),
             "undrain" => BuildDrain(args, "undrain"),
+            "evacuate" => BuildEvacuate(args),
             "ban"     => BuildBan(args),
             "unban"   => BuildUnban(args),
             "bans"    => new { cmd = "bans" },
@@ -266,6 +267,35 @@ internal static class Program
         return new { cmd, serverId };
     }
 
+    // `evacuate` is the eviction half of what kubernetes calls a drain, and reads the same way as
+    // `drain`: the backend positionally or under --server. Whether --to names the source, and
+    // whether the pace is one the proxy will accept, are the proxy's calls rather than nimctl's,
+    // so both go on the wire as typed and come back refused in the proxy's own words.
+    private static object BuildEvacuate(List<string> args)
+    {
+        string? serverId = args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : (GetOpt(args, "--server") ?? GetOpt(args, "--serverId"));
+        if (string.IsNullOrEmpty(serverId)) throw new ArgumentException("evacuate requires <serverId> or --server <id>");
+
+        var d = new Dictionary<string, object?> { ["cmd"] = "evacuate", ["serverId"] = serverId };
+
+        string? to = GetOpt(args, "--to") ?? GetOpt(args, "--target");
+        if (!string.IsNullOrEmpty(to)) d["to"] = to;
+
+        string? paceStr = GetOpt(args, "--pace-ms") ?? GetOpt(args, "--paceMs");
+        if (!string.IsNullOrEmpty(paceStr))
+        {
+            // A pace sent as a string is a field the proxy reads as absent, so it would silently
+            // fall back to the default instead of running at the pace that was asked for.
+            if (!int.TryParse(paceStr, out int paceMs))
+                throw new ArgumentException("--pace-ms takes a number of milliseconds");
+            d["paceMs"] = paceMs;
+        }
+
+        string? reason = GetOpt(args, "--reason");
+        if (!string.IsNullOrEmpty(reason)) d["reason"] = reason;
+        return d;
+    }
+
     // Send arbitrary JSON straight to the admin endpoint.
     private static object BuildRaw(List<string> args)
     {
@@ -275,7 +305,13 @@ internal static class Program
         return JsonSerializer.Deserialize<JsonElement>(args[1]);
     }
 
-    private static async Task<string> SendAsync(string host, int port, string? secret, object payload)
+    // How long to wait for the proxy's answer. Every command answers straight away except
+    // `evacuate`, which walks a backend's sessions at a pace the operator sets and replies with
+    // the summary once the sweep is done, so it gets a budget the proxy's own sweep fits inside.
+    internal static TimeSpan ReadTimeout(List<string> args)
+        => NormalizeCommand(args[0]) == "evacuate" ? TimeSpan.FromSeconds(120) : TimeSpan.FromSeconds(15);
+
+    private static async Task<string> SendAsync(string host, int port, string? secret, object payload, TimeSpan readTimeout)
     {
         using var tcp = new TcpClient { NoDelay = true };
         using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
@@ -283,7 +319,7 @@ internal static class Program
         var stream = tcp.GetStream();
 
         using var reader = new StreamReader(stream, Encoding.UTF8);
-        using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var readCts = new CancellationTokenSource(readTimeout);
 
         // Only send auth when the proxy expects it.
         if (!string.IsNullOrEmpty(secret))
@@ -409,6 +445,7 @@ internal static class Program
         "stickies" => "sticky",
         "routes" => "route",
         "resume" => "undrain",
+        "evac" => "evacuate",
         "wl" => "whitelist",
         "tokens" => "token",
         _ => cmd,
@@ -479,6 +516,13 @@ internal static class Program
         Console.WriteLine("  route                                   show backend pool + health + drain state");
         Console.WriteLine("  drain <serverId>                        stop routing new sessions to <serverId>");
         Console.WriteLine("  undrain <serverId>                      resume routing new sessions to <serverId>");
+        Console.WriteLine("  evacuate <serverId> [--to <id>] [--pace-ms <n>] [--reason \"...\"]");
+        Console.WriteLine("      move every player already on <serverId> somewhere else. drain stops new arrivals");
+        Console.WriteLine("      and evacuate moves the ones already there, so `drain hub` then `evacuate hub`:");
+        Console.WriteLine("      on its own, evacuate leaves hub open and new joins can land on it mid-sweep.");
+        Console.WriteLine("      --to omitted lets the router pick per player; --pace-ms is the gap between");
+        Console.WriteLine("      transfers (250 default, 0 for none). Refused players stay put and are named");
+        Console.WriteLine("      in the answer, so evacuate is safe to run again.");
         Console.WriteLine("  ban (--uid <uid> | --player <name>) [--server <id>] [--duration <s>] [--reason \"...\"]");
         Console.WriteLine("      no --server bans across the whole network; --duration 0 or omitted is permanent.");
         Console.WriteLine("  unban <uid> [--server <id>]             lift a ban");
