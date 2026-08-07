@@ -47,29 +47,20 @@ public static class RegistryFirstRun
         }
     }
 
-    // Tomlyn serializes a POCO, so the only way a comment reaches the file is to put it there
-    // afterwards. Best effort by design: a missing key leaves the file exactly as written, since a
-    // valid config without a comment beats a mangled one.
+    // ConfigAnnotations.InsertAbove does the insertion, shared with the proxy's first run; this
+    // only supplies the key it wrote and the note that belongs over a registry's secret, which
+    // points at both the backends and the remote proxies.
     //
-    // CA1861 is refused here for the reason its twin in Nimbus.Proxy/Program.cs spells out: the
-    // method runs once per install, and hoisting the note out of both bodies left the two methods
-    // duplicating each other where they had not before.
+    // CA1861 is refused here for the reason it is in Nimbus.Proxy/Program.cs: the method runs once
+    // per install, so the note stays inline with the key it annotates rather than hoisted to a
+    // static field.
 #pragma warning disable CA1861
     private static void AnnotateSharedSecret(string path)
-    {
-        const string key = "shared_secret = ";
-        var lines = File.ReadAllLines(path).ToList();
-        int at = lines.FindIndex(l => l.StartsWith(key, StringComparison.Ordinal));
-        if (at < 0) return;
-        lines.InsertRange(at, new[]
-        {
+        => ConfigAnnotations.InsertAbove(path, "shared_secret = ",
             "# Generated for this install. Everything that talks to this registry authenticates",
             "# with it: copy this exact value into \"SharedSecret\" in each backend's",
             "# nimbus-server.json, and into registry.shared_secret in the nimbus.proxy.toml of",
             "# every proxy running registry.mode = \"remote\" against this registry.",
-            "# Changing it here means changing it everywhere else in the same pass.",
-        });
-        File.WriteAllLines(path, lines, new System.Text.UTF8Encoding(false));
-    }
+            "# Changing it here means changing it everywhere else in the same pass.");
 #pragma warning restore CA1861
 }

@@ -2,7 +2,7 @@ namespace Nimbus.Shared.Models;
 
 // A ban held by the registry so it applies across the whole network instead of one savegame.
 // Keyed on PlayerUid: names change, uids do not.
-public sealed class NetworkBan
+public sealed class NetworkBan : IScopedEntry
 {
     public string PlayerUid { get; set; } = "";
 
@@ -29,6 +29,9 @@ public sealed class NetworkBan
     // a scoped ban only its own. An empty serverId asks whether the network itself is blocked.
     public bool Blocks(string? serverId)
         => IsNetworkWide || string.Equals(ServerId, serverId, StringComparison.OrdinalIgnoreCase);
+
+    // The IScopedEntry reading of the same test: a ban matches the scope it blocks.
+    public bool Matches(string? serverId) => Blocks(serverId);
 }
 
 public sealed class BanRequest

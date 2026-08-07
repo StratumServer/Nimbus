@@ -15,75 +15,29 @@ namespace Nimbus.Proxy;
 // apart from "we have never managed to read it".
 internal sealed class WhitelistCache
 {
-    private readonly IRegistryClient? registry;
-    private readonly CancellationToken stopToken;
-    private readonly TimeProvider clock;
-    private readonly TimeSpan refreshPeriod;
-
-    private volatile WhitelistEntry[] entries = Array.Empty<WhitelistEntry>();
-    private volatile bool synced;
+    private readonly RegistryEntryCache<WhitelistEntry> cache;
 
     public WhitelistCache(IRegistryClient? registry, CancellationToken stopToken,
         TimeSpan? refreshPeriod = null, TimeProvider? clock = null)
-    {
-        this.registry = registry;
-        this.stopToken = stopToken;
-        this.clock = clock ?? TimeProvider.System;
-        this.refreshPeriod = refreshPeriod ?? TimeSpan.FromSeconds(15);
-    }
+        => cache = new RegistryEntryCache<WhitelistEntry>(registry,
+            static (r, ct) => r.GetWhitelistAsync(ct), "whitelist", stopToken, refreshPeriod, clock);
 
-    public int Count => entries.Length;
+    public int Count => cache.Count;
 
     // True once the registry has answered at least once since boot. False means the list below
     // is a guess, not an answer: nobody has ever been listed as far as this proxy knows.
-    public bool HasSynced => synced;
+    public bool HasSynced => cache.HasSynced;
 
     // The entry covering this player on `serverId`, or null. A network-wide entry matches
     // whatever is asked; a scoped one only its own backend. Pass no serverId to ask about the
     // network alone, which is all a backend configured as host:port can be asked about.
     public WhitelistEntry? FindCovering(string? playerUid, string? serverId = null)
-    {
-        if (string.IsNullOrEmpty(playerUid)) return null;
-        var snapshot = entries;
-        if (snapshot.Length == 0) return null;
-
-        long now = clock.GetUtcNow().ToUnixTimeSeconds();
-        foreach (var entry in snapshot)
-        {
-            if (!string.Equals(entry.PlayerUid, playerUid, StringComparison.OrdinalIgnoreCase)) continue;
-            // Expiry is checked here too: a timed entry must stop covering even if the next
-            // refresh has not landed yet.
-            if (!entry.IsActiveAt(now)) continue;
-            if (entry.Covers(serverId)) return entry;
-        }
-        return null;
-    }
+        => cache.Find(playerUid, serverId);
 
     // True when the registry answered and this list is now its answer. False means the list below
     // is whatever it was before, which matters to callers that just changed the registry and are
     // about to act on the result: see WhitelistRemoveCommand.
-    public async Task<bool> RefreshAsync()
-    {
-        if (registry == null) return false;
-        var fetched = await registry.GetWhitelistAsync(stopToken).ConfigureAwait(false);
-        if (fetched == null) return false;  // registry error: keep the previous list
-        entries = fetched.ToArray();
-        synced = true;
-        return true;
-    }
+    public Task<bool> RefreshAsync() => cache.RefreshAsync();
 
-    public async Task RunAsync()
-    {
-        if (registry == null) return;
-
-        while (!stopToken.IsCancellationRequested)
-        {
-            try { await RefreshAsync().ConfigureAwait(false); }
-            catch (OperationCanceledException) { break; }
-            catch (Exception ex) { Log.Warn($"whitelist refresh failed: {ex.GetType().Name}: {ex.Message}"); }
-
-            try { await Task.Delay(refreshPeriod, stopToken).ConfigureAwait(false); }
-            catch (OperationCanceledException) { break; }
-        }
-    }
+    public Task RunAsync() => cache.RunAsync();
 }

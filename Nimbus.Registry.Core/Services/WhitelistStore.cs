@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Nimbus.Shared.Models;
 
 namespace Nimbus.Registry.Services;
@@ -16,87 +15,23 @@ namespace Nimbus.Registry.Services;
 // stores get the same treatment for opposite reasons.
 public sealed class WhitelistStore
 {
-    private readonly ConcurrentDictionary<string, WhitelistEntry> _entries = new(StringComparer.Ordinal);
-    private readonly TimeProvider _clock;
-    private readonly RegistryStateFile<WhitelistEntry>? _state;
+    private readonly RegistryEntryStore<WhitelistEntry> _store;
 
     public WhitelistStore(TimeProvider? clock = null, RegistryStateFile<WhitelistEntry>? state = null)
-    {
-        _clock = clock ?? TimeProvider.System;
-        _state = state;
-        if (_state is null) return;
-
-        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
-        bool dropped = false;
-        foreach (var entry in _state.Load())
-        {
-            // A day pass that ran out while the registry was down has run out.
-            if (string.IsNullOrEmpty(entry.PlayerUid) || !entry.IsActiveAt(now)) { dropped = true; continue; }
-            _entries[Key(entry.PlayerUid, entry.ServerId)] = entry;
-        }
-        if (dropped) Persist(now);
-    }
-
-    private static string Key(string playerUid, string? serverId)
-        => (playerUid ?? "").ToLowerInvariant() + "|" + (serverId ?? "").ToLowerInvariant();
+        => _store = new RegistryEntryStore<WhitelistEntry>(clock, state);
 
     // Adds or replaces the entry for this (uid, scope). Re-adding an already-listed player
     // updates the note and duration rather than stacking entries.
-    public WhitelistEntry Add(WhitelistEntry entry)
-    {
-        _entries[Key(entry.PlayerUid, entry.ServerId)] = entry;
-        Persist();
-        return entry;
-    }
+    public WhitelistEntry Add(WhitelistEntry entry) => _store.Add(entry);
 
-    public bool Remove(string playerUid, string? serverId)
-    {
-        if (!_entries.TryRemove(Key(playerUid, serverId), out _)) return false;
-        // Write-through on the removal too, or somebody taken off the list walks back onto it
-        // at the next restart.
-        Persist();
-        return true;
-    }
+    public bool Remove(string playerUid, string? serverId) => _store.Remove(playerUid, serverId);
 
     // The entry covering this player on `serverId`, or null. Pass an empty serverId to ask only
     // about network-wide coverage. Expired entries are skipped.
     public WhitelistEntry? FindCovering(string playerUid, string? serverId = null)
-    {
-        if (string.IsNullOrEmpty(playerUid)) return null;
-        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
-        // Kept as a walk rather than the Where/FirstOrDefault the analyser asks for, for the reason
-        // BanStore.FindBlocking spells out: this is the join gate, and the LINQ form would copy the
-        // whole table or allocate a closure per call where this exits on the first match.
-        foreach (var kv in _entries) // NOSONAR
-        {
-            var entry = kv.Value;
-            if (!string.Equals(entry.PlayerUid, playerUid, StringComparison.OrdinalIgnoreCase)) continue;
-            if (!entry.IsActiveAt(now)) continue;
-            if (entry.Covers(serverId)) return entry;
-        }
-        return null;
-    }
+        => _store.Find(playerUid, serverId);
 
-    public List<WhitelistEntry> Active()
-    {
-        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
-        return _entries.Values.Where(entry => entry.IsActiveAt(now)).ToList();
-    }
+    public List<WhitelistEntry> Active() => _store.Active();
 
-    public int Prune()
-    {
-        long now = _clock.GetUtcNow().ToUnixTimeSeconds();
-        int dropped = 0;
-        foreach (var kv in _entries)
-        {
-            if (!kv.Value.IsActiveAt(now) && _entries.TryRemove(kv.Key, out _))
-                dropped++;
-        }
-        if (dropped > 0) Persist(now);
-        return dropped;
-    }
-
-    private void Persist() => Persist(_clock.GetUtcNow().ToUnixTimeSeconds());
-
-    private void Persist(long nowUnix) => _state?.Save(_entries.Values, nowUnix);
+    public int Prune() => _store.Prune();
 }
