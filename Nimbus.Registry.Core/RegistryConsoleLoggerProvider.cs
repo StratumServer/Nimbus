@@ -8,7 +8,11 @@ namespace Nimbus.Registry;
 // infrastructure logs are replaced with silence (or this where appropriate).
 public sealed class RegistryConsoleLoggerProvider : ILoggerProvider
 {
-    private static readonly RegistryConsoleLogger _shared = new();
+    // Not renamed to _log despite the naming rule, which is written for the logger a class writes
+    // through. This is the instance the provider hands out, and the name is the thing worth saying
+    // about it: CreateLogger returns the same one for every category, because the format below
+    // carries no category and there is nothing to vary per caller.
+    private static readonly RegistryConsoleLogger _shared = new(); // NOSONAR
     public ILogger CreateLogger(string categoryName) => _shared;
     public void Dispose() { }
 

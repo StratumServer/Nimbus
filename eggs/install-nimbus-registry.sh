@@ -20,6 +20,11 @@ case "${NIMBUS_SHARED_SECRET:-}" in
     echo "Set NIMBUS_SHARED_SECRET in the panel to the value the rest of your network already uses, or to a fresh 'openssl rand -hex 32' if this is its first server, then reinstall." >&2
     exit 1
     ;;
+  *)
+    # Anything else is the operator's own secret, which this script has no way to check and no
+    # business rewriting. Spelled out rather than left to the implicit fall-through so the guard
+    # reads as a list of refusals plus an explicit accept.
+    ;;
 esac
 
 # Every download goes through here: https only, redirects included, so a panel

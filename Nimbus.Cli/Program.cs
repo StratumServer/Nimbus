@@ -104,7 +104,7 @@ internal static class Program
         return new { cmd = "servers", refresh };
     }
 
-    private static object BuildSwap(List<string> args)
+    private static Dictionary<string, object?> BuildSwap(List<string> args)
     {
         long id = RequiredLong(args, 1, "<id>");
         string? serverId = ServerIdOpt(args);
@@ -130,7 +130,7 @@ internal static class Program
 
     // The admin socket has had ban, unban and bans since network bans landed, but nimctl
     // never grew the verbs, so the documented invocations only worked through `nimctl raw`.
-    private static object BuildBan(List<string> args)
+    private static Dictionary<string, object?> BuildBan(List<string> args)
     {
         string? uid = GetOpt(args, "--uid");
         string? player = GetOpt(args, "--player") ?? GetOpt(args, "--name");
@@ -155,7 +155,7 @@ internal static class Program
         return d;
     }
 
-    private static object BuildUnban(List<string> args)
+    private static Dictionary<string, object?> BuildUnban(List<string> args)
     {
         string? uid = GetOpt(args, "--uid") ?? (args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : null);
         if (string.IsNullOrEmpty(uid)) throw new ArgumentException("unban requires --uid <uid>");
@@ -169,7 +169,14 @@ internal static class Program
     // `whitelist` takes a sub-verb rather than three top-level names, because add/remove/list all
     // read the same list and reading `whitelist list` out loud is what an operator expects. Bare
     // `whitelist` lists, which is the harmless one.
+    //
+    // CA1859 asks for Dictionary<string, object?> here as it does for the builders around it. It
+    // does not compile: the `list` arm has no arguments to carry and returns the same anonymous
+    // one-field object every no-argument verb in BuildPayload returns, so object is the only type
+    // this signature can have.
+#pragma warning disable CA1859
     private static object BuildWhitelist(List<string> args)
+#pragma warning restore CA1859
     {
         string sub = args.Count >= 2 && !args[1].StartsWith('-') ? args[1].ToLowerInvariant() : "list";
         switch (sub)
@@ -281,7 +288,7 @@ internal static class Program
     // `drain`: the backend positionally or under --server. Whether --to names the source, and
     // whether the pace is one the proxy will accept, are the proxy's calls rather than nimctl's,
     // so both go on the wire as typed and come back refused in the proxy's own words.
-    private static object BuildEvacuate(List<string> args)
+    private static Dictionary<string, object?> BuildEvacuate(List<string> args)
     {
         string? serverId = args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : ServerIdOpt(args);
         if (string.IsNullOrEmpty(serverId)) throw new ArgumentException("evacuate requires <serverId> or --server <id>");
@@ -307,7 +314,7 @@ internal static class Program
     }
 
     // Send arbitrary JSON straight to the admin endpoint.
-    private static object BuildRaw(List<string> args)
+    private static JsonElement BuildRaw(List<string> args)
     {
         if (args.Count < 2) throw new ArgumentException("raw requires a JSON argument");
         // Validate by re-parsing.

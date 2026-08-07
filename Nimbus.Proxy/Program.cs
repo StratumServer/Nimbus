@@ -171,6 +171,15 @@ internal static class Program
         }
     }
 
+    // The lines AnnotateSharedSecret puts above the generated secret, held once rather than rebuilt
+    // as an array argument on every call.
+    private static readonly string[] SharedSecretNote =
+    {
+        "# Generated for this install. Every backend authenticates to the registry with it:",
+        "# copy this exact value into \"SharedSecret\" in each backend's nimbus-server.json.",
+        "# Changing it here means changing it on every backend in the same pass.",
+    };
+
     // Tomlyn serializes a POCO, so the only way a comment reaches the file is to put it there
     // afterwards. Best effort by design: a missing key leaves the file exactly as written, since a
     // valid config without a comment beats a mangled one.
@@ -180,12 +189,7 @@ internal static class Program
         var lines = File.ReadAllLines(path).ToList();
         int at = lines.FindIndex(l => l.StartsWith(key, StringComparison.Ordinal));
         if (at < 0) return;
-        lines.InsertRange(at, new[]
-        {
-            "# Generated for this install. Every backend authenticates to the registry with it:",
-            "# copy this exact value into \"SharedSecret\" in each backend's nimbus-server.json.",
-            "# Changing it here means changing it on every backend in the same pass.",
-        });
+        lines.InsertRange(at, SharedSecretNote);
         File.WriteAllLines(path, lines, new System.Text.UTF8Encoding(false));
     }
 }

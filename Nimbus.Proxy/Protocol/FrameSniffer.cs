@@ -87,7 +87,11 @@ internal sealed class FrameSniffer
     {
         while (Buffered >= 4)
         {
-            VsWire.TryParseHeader(buf.AsSpan(start, 4), out bool compressed, out int payloadLen);
+            // Discarded rather than checked, and the discard is the point: TryParseHeader fails on
+            // one condition only, a span shorter than four bytes, and the loop condition above
+            // hands it a span of exactly four. Turning that into an if would put a branch that can
+            // never be taken in the middle of the per-frame path.
+            _ = VsWire.TryParseHeader(buf.AsSpan(start, 4), out bool compressed, out int payloadLen);
 
             if (payloadLen == 0)
             {
