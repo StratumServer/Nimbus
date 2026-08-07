@@ -21,7 +21,7 @@ A [Velocity](https://papermc.io/software/velocity)-style proxy for [Vintage Stor
 | **Nimbus.Proxy** | The proxy process. Fronts all backends on a single address. Handles routing, transfers, admin, plugins, metrics, and the embedded registry. |
 | **Nimbus.ServerMod** | VS server-side mod. Installed on each backend. Sends heartbeats, enforces forwarding, and exposes player transfer commands. |
 | **Nimbus.Registry** | Standalone registry exe for multi-proxy deployments. For single-proxy setups the registry runs embedded inside the proxy. |
-| **nimctl** | CLI for the proxy admin socket. List players, transfer sessions, drain backends, reload config. |
+| **nimctl** | CLI for the proxy admin socket. List players, transfer sessions, drain and evacuate backends, reload config. |
 
 ## Download
 
@@ -112,6 +112,25 @@ exchange, snapshot age, and the last seamless handshake it completed as a transf
 That last line is worth knowing about, because a seamless transfer that fails is otherwise
 invisible from the receiving side, which is where you look when a player reports a stuck
 transfer screen.
+
+## Taking a backend out of service
+
+Stopping new arrivals and moving the players already there are two decisions, and neither implies
+the other. `drain` is the cordon, `evacuate` is the eviction:
+
+```shell
+nimctl drain hub                 # stop routing new sessions to hub
+nimctl evacuate hub              # move the players already on it somewhere else
+nimctl undrain hub               # back in the pool
+```
+
+In that order, because evacuate on its own leaves the backend open and new joins can land on it
+while the sweep is still walking it. Every player goes through the same transfer path a hand-typed
+`swap` does, so bans, whitelists and the redirect-or-seamless choice per client are decided
+exactly as they would be there. `--to` pins one destination and `--pace-ms` sets the gap between
+transfers; left alone the router picks per player, 250ms apart. A player whose transfer is refused
+stays where they are and is named in the answer, so evacuate never disconnects anyone and is safe
+to run again once the cause is fixed.
 
 ## Network bans
 
