@@ -44,17 +44,33 @@ internal sealed class MasterServerBroadcaster : BackgroundService
         if (_log.IsEnabled(LogLevel.Information))
             _log.LogInformation("master server advertising as '{Name}' at {Host}:{Port}", id.ServerName, id.PublicHost, id.PublicPort);
 
-        // Wait up to 30s for at least one backend to heartbeat so the first register
-        // packet carries a real maxPlayers and mod list.
+        if (!await WaitForFirstBackend(id, stoppingToken)) return;
+
+        await RunAdvertiseLoop(id, stoppingToken);
+        await UnregisterAtShutdown();
+    }
+
+    // Waits up to 30s for at least one backend to heartbeat so the first register packet carries a
+    // real maxPlayers and mod list. Returns false if cancellation cut the wait short, which tells
+    // ExecuteAsync to stop before it ever registers; true once a backend appears or the wait
+    // elapses (registering with whatever we have is better than never advertising).
+    private async Task<bool> WaitForFirstBackend(ServerIdentityConfig id, CancellationToken stoppingToken)
+    {
         var waitUntil = DateTime.UtcNow.AddSeconds(30);
         while (!stoppingToken.IsCancellationRequested && DateTime.UtcNow < waitUntil)
         {
             var snap = _backends.Snapshot();
             if (snap.Backends.Any(b => !b.Stale) && (id.MaxPlayersOverride > 0 || snap.TotalCapacity > 0))
                 break;
-            try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken); } catch (TaskCanceledException) { return; }
+            try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken); } catch (TaskCanceledException) { return false; }
         }
+        return true;
+    }
 
+    // Registers, re-registers on a capacity change, or heartbeats once per interval until the host
+    // stops. A failed tick is logged and retried on the next pass rather than ending advertising.
+    private async Task RunAdvertiseLoop(ServerIdentityConfig id, CancellationToken stoppingToken)
+    {
         var heartbeatInterval = TimeSpan.FromSeconds(Math.Max(60, id.HeartbeatIntervalSeconds));
 
         while (!stoppingToken.IsCancellationRequested)
@@ -86,19 +102,25 @@ internal sealed class MasterServerBroadcaster : BackgroundService
             try { await Task.Delay(heartbeatInterval, stoppingToken); }
             catch (TaskCanceledException) { break; }
         }
+    }
 
-        if (!string.IsNullOrEmpty(_token))
+    // Best-effort unregister on shutdown, on its own short deadline so a hung master server cannot
+    // stall the host. Skipped when there is no live token, and failures are swallowed: the entry
+    // ages out on its own if this does not land.
+    private async Task UnregisterAtShutdown()
+    {
+        if (string.IsNullOrEmpty(_token)) return;
+        try
         {
-            try
-            {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await _client.UnregisterAsync(new UnregisterPacket { token = _token }, cts.Token);
-                _log.LogInformation("master server unregistered");
-            }
-            catch (Exception ex)
-            {
-                _log.LogDebug(ex, "master server unregister failed (ignored at shutdown)");
-            }
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            // Load-bearing for the reason TryRegister spells out: _client is a nullable field and
+            // this method does not assign it, so ExecuteAsync's flow state does not reach here.
+            await _client!.UnregisterAsync(new UnregisterPacket { token = _token }, cts.Token); // NOSONAR
+            _log.LogInformation("master server unregistered");
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "master server unregister failed (ignored at shutdown)");
         }
     }
 
