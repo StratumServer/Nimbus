@@ -64,9 +64,12 @@ public class SessionStatePhaseRaceTests
     }
 
     // Companion to the invariant above: while the two pumps drive full handshakes, a third thread
-    // reads Current the way the admin and plugin transfer gate does. Every value it observes must
-    // be a defined Phase, never a torn or out-of-range read. This covers the cross-thread
-    // visibility half of the fix (the volatile read) rather than the lost-update half.
+    // reads Current the way the admin and plugin transfer gate does, and every value it observes
+    // is a defined Phase. This is a non-regression guard on the read path, not proof of the
+    // visibility fix: an aligned 32-bit enum read never tears on the CLR regardless of volatile,
+    // so this assertion holds with or without the keyword. Memory visibility is close to
+    // untestable here; volatile stays correct and load-bearing for Current's lock-free readers,
+    // and the lost-update half is what the racing test above actually proves.
     [Fact]
     public async Task Current_ReadWhileBothPumpsDrive_IsAlwaysADefinedPhase()
     {
