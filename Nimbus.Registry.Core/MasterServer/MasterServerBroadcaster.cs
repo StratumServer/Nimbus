@@ -201,7 +201,14 @@ internal sealed class MasterServerBroadcaster : BackgroundService
             if (backend == null) return Array.Empty<ModPacket>();
             return backend.RequiredClientMods.Select(m => new ModPacket { id = m.Id, version = m.Version }).ToArray();
         }
-        // Aggregate: union by id across non-stale backends, keep highest version string.
+        return AggregateModList(snap);
+    }
+
+    // Union of required client mods by id across the non-stale backends, keeping the highest
+    // version string for each id. This is the default when Identity.ModSource names neither an
+    // explicit list nor a single backend.
+    private static ModPacket[] AggregateModList(NetworkSnapshot snap)
+    {
         var union = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var b in snap.Backends)
         {
