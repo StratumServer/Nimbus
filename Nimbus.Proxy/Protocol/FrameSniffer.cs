@@ -107,37 +107,7 @@ internal sealed class FrameSniffer
             }
             if (Buffered < 4 + payloadLen) break; // wait for more bytes
 
-            frameCount++;
-            string name;
-            if (compressed)
-            {
-                // Compressed payload uses zlib (per VS TcpNetConnection). We don't inflate here
-                // because the sniffer is best-effort and most handshake-relevant packets are uncompressed.
-                name = "<zlib>";
-            }
-            else
-            {
-                name = PacketDispatch.Describe(clientToServer, new ReadOnlySpan<byte>(buf, start + 4, payloadLen));
-                state?.OnFrame(clientToServer, name);
-            }
-
-            // Trace chatty packets. Keep handshake-shaped packets visible.
-            bool interesting = !compressed && IsHandshakePacket(name);
-            if (Verbose || interesting)
-            {
-                string preview = HexPreview(buf, start + 4, payloadLen, 12);
-                string msg = $"[s{sessionId} {label}] frame #{frameCount} {name} len={payloadLen} comp={(compressed ? 1 : 0)} bytes={preview}";
-                if (interesting) Log.Info(msg); else Log.Trace(msg);
-            }
-
-            // Hand the raw frame to any listener. They get a copy so we can recycle buf.
-            if (OnRawFrame != null)
-            {
-                var copy = new byte[4 + payloadLen];
-                Buffer.BlockCopy(buf, start, copy, 0, 4 + payloadLen);
-                try { OnRawFrame(name, copy); } catch (Exception ex) { Log.Warn($"[s{sessionId} {label}] OnRawFrame threw: {ex.Message}"); }
-            }
-
+            ReportFrame(compressed, payloadLen);
             start += 4 + payloadLen;
         }
 
@@ -146,6 +116,43 @@ internal sealed class FrameSniffer
             // Fully drained: reset so the next read starts at the front without a compact.
             start = 0;
             head = 0;
+        }
+    }
+
+    // Observes one complete frame sitting at `start` (header plus payloadLen payload bytes): names
+    // it, feeds SessionState, logs it when asked, and copies it to any raw-frame listener. Advancing
+    // past it stays with the DrainFrames loop; this only reports what is already framed.
+    private void ReportFrame(bool compressed, int payloadLen)
+    {
+        frameCount++;
+        string name;
+        if (compressed)
+        {
+            // Compressed payload uses zlib (per VS TcpNetConnection). We don't inflate here
+            // because the sniffer is best-effort and most handshake-relevant packets are uncompressed.
+            name = "<zlib>";
+        }
+        else
+        {
+            name = PacketDispatch.Describe(clientToServer, new ReadOnlySpan<byte>(buf, start + 4, payloadLen));
+            state?.OnFrame(clientToServer, name);
+        }
+
+        // Trace chatty packets. Keep handshake-shaped packets visible.
+        bool interesting = !compressed && IsHandshakePacket(name);
+        if (Verbose || interesting)
+        {
+            string preview = HexPreview(buf, start + 4, payloadLen, 12);
+            string msg = $"[s{sessionId} {label}] frame #{frameCount} {name} len={payloadLen} comp={(compressed ? 1 : 0)} bytes={preview}";
+            if (interesting) Log.Info(msg); else Log.Trace(msg);
+        }
+
+        // Hand the raw frame to any listener. They get a copy so we can recycle buf.
+        if (OnRawFrame != null)
+        {
+            var copy = new byte[4 + payloadLen];
+            Buffer.BlockCopy(buf, start, copy, 0, 4 + payloadLen);
+            try { OnRawFrame(name, copy); } catch (Exception ex) { Log.Warn($"[s{sessionId} {label}] OnRawFrame threw: {ex.Message}"); }
         }
     }
 
