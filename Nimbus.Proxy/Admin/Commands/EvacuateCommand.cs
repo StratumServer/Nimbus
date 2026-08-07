@@ -224,11 +224,8 @@ internal sealed class EvacuateCommand : IAdminCommand
         cts.CancelAfter(TimeSpan.FromSeconds(5));
         var (ordered, noneReason) = await ctx.Proxy.Router.SelectOrderedAsync(cts.Token).ConfigureAwait(false);
 
-        foreach (var candidate in ordered)
-        {
-            if (!string.Equals(candidate.ServerId, source, StringComparison.OrdinalIgnoreCase))
-                return (candidate, null);
-        }
+        var candidate = ordered.FirstOrDefault(c => !string.Equals(c.ServerId, source, StringComparison.OrdinalIgnoreCase));
+        if (candidate != null) return (candidate, null);
 
         return (null, ordered.Count == 0
             ? $"the router has no healthy backend ({noneReason})"

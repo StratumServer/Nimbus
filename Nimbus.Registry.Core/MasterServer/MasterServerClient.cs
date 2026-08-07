@@ -23,7 +23,9 @@ internal sealed class MasterServerClient
 
     public MasterServerClient(string baseUrl, ILogger log)
     {
-        _baseUrl = baseUrl.EndsWith('/') ? baseUrl : baseUrl + "/";
+        // A URL separator, not a filesystem one: PostAsync below concatenates a relative endpoint
+        // name onto this, and Path.Combine would put a backslash there on Windows.
+        _baseUrl = baseUrl.EndsWith('/') ? baseUrl : baseUrl + "/"; // NOSONAR
         _log = log;
     }
 

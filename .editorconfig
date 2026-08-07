@@ -4,5 +4,15 @@ root = true
 # the right trade on a hot path called in a loop. In a test it puts the expected value in a
 # different place from the assertion that reads it, and an assertion you have to scroll to
 # understand is worse than an allocation nobody is timing.
+#
+# CA1859 wants the concrete type on a return, which in a test helper means naming the enumerator
+# a LINQ call happens to hand back. The helper exists so the assertions below it read as English,
+# and IEnumerable<T> is the type that says what it is for.
+#
+# CA1816 wants Dispose() to call GC.SuppressFinalize so that a derived type introducing a
+# finalizer still gets collected properly. Nothing derives from an xUnit fixture and none of them
+# has a finalizer, so the call would be a line that does nothing.
 [*.Tests/**.cs]
 dotnet_diagnostic.CA1861.severity = none
+dotnet_diagnostic.CA1859.severity = none
+dotnet_diagnostic.CA1816.severity = none

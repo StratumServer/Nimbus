@@ -174,6 +174,14 @@ internal static class Program
     // Tomlyn serializes a POCO, so the only way a comment reaches the file is to put it there
     // afterwards. Best effort by design: a missing key leaves the file exactly as written, since a
     // valid config without a comment beats a mangled one.
+    //
+    // CA1861 wants the note hoisted to a static readonly field, and its own wording is conditional
+    // on the method being "called repeatedly": this one runs once, when an install writes its first
+    // config. Hoisting it was tried and made things worse rather than better, because the twin of
+    // this method in RegistryFirstRun differs only in the key it looks for, and moving both notes
+    // out of the bodies left two methods identical enough to register as duplicated code that was
+    // not there before. The note stays where it is inserted.
+#pragma warning disable CA1861
     private static void AnnotateSharedSecret(string path)
     {
         const string key = "embedded_shared_secret = ";
@@ -188,4 +196,5 @@ internal static class Program
         });
         File.WriteAllLines(path, lines, new System.Text.UTF8Encoding(false));
     }
+#pragma warning restore CA1861
 }

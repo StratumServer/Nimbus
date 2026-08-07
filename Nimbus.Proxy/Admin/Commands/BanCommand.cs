@@ -30,7 +30,7 @@ internal sealed class BanCommand : IAdminCommand
             online = FindByName(ctx, name);
             if (online?.PlayerUid == null)
                 return new { ok = false, reason = $"no live session for player '{name}'; ban by uid instead" };
-            uid = online.PlayerUid!;
+            uid = online.PlayerUid;
         }
         else
         {
@@ -77,9 +77,8 @@ internal sealed class BanCommand : IAdminCommand
             : $"You are banned from {kickScope}: {reason}";
 
         int kicked = 0;
-        foreach (var kv in ctx.Proxy.Sessions)
+        foreach (var session in ctx.Proxy.Sessions.Values)
         {
-            var session = kv.Value;
             if (!string.Equals(session.PlayerUid, uid, StringComparison.OrdinalIgnoreCase)) continue;
             // A session with no backend yet reports a null serverId, which only a network-wide
             // ban blocks.
@@ -100,20 +99,10 @@ internal sealed class BanCommand : IAdminCommand
     }
 
     private static ProxySession? FindByName(AdminContext ctx, string name)
-    {
-        foreach (var kv in ctx.Proxy.Sessions)
-            if (string.Equals(kv.Value.PlayerName, name, StringComparison.OrdinalIgnoreCase))
-                return kv.Value;
-        return null;
-    }
+        => ctx.Proxy.Sessions.Values.FirstOrDefault(s => string.Equals(s.PlayerName, name, StringComparison.OrdinalIgnoreCase));
 
     private static ProxySession? FindByUid(AdminContext ctx, string uid)
-    {
-        foreach (var kv in ctx.Proxy.Sessions)
-            if (string.Equals(kv.Value.PlayerUid, uid, StringComparison.OrdinalIgnoreCase))
-                return kv.Value;
-        return null;
-    }
+        => ctx.Proxy.Sessions.Values.FirstOrDefault(s => string.Equals(s.PlayerUid, uid, StringComparison.OrdinalIgnoreCase));
 }
 
 internal sealed class UnbanCommand : IAdminCommand

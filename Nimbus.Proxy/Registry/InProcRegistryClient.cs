@@ -77,10 +77,8 @@ internal sealed class InProcRegistryClient : IRegistryClient
     {
         if (string.IsNullOrEmpty(serverId)) return Task.FromResult<BackendSnapshot?>(null);
         var snap = backends.Snapshot();
-        foreach (var b in snap.Backends)
-            if (string.Equals(b.ServerId, serverId, StringComparison.OrdinalIgnoreCase))
-                return Task.FromResult<BackendSnapshot?>(b);
-        return Task.FromResult<BackendSnapshot?>(null);
+        return Task.FromResult<BackendSnapshot?>(
+            snap.Backends.FirstOrDefault(b => string.Equals(b.ServerId, serverId, StringComparison.OrdinalIgnoreCase)));
     }
 
     public Task<List<TransferIntent>> DrainTransferIntentsAsync(CancellationToken ct)

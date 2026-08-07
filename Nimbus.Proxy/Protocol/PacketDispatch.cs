@@ -7,6 +7,12 @@ internal static class PacketDispatch
 {
     // Client -> Server. Tag 8 ('Id') is the bare-discriminator used by simple packets with no body.
     // For those, the next bytes decode to one of Packet_ClientIdEnum (PingReply, RequestJoin, etc).
+    //
+    // The names below repeat across the four tables in this file because the same packet has a
+    // client tag, a server tag and an id in each direction. They are transcribed rows of somebody
+    // else's wire format, not a value this code chose, so they stay literals: naming one of the
+    // forty would make that row read differently from its neighbours and make the table harder to
+    // check against VintagestoryLib, which is the only thing this file is ever verified against.
     public static readonly Dictionary<int, string> ClientTags = new()
     {
         { 8,   "Id" },                  // varint, next = Packet_ClientIdEnum value
@@ -37,7 +43,7 @@ internal static class PacketDispatch
         { 242, "InvOpenedClosed" },     // field 30
         { 250, "EntityPacket" },        // field 31
         { 258, "RuntimeSetting" },      // field 32
-        { 274, "UdpPacket" },           // field 34
+        { 274, "UdpPacket" },           // field 34, see the note above on why this stays a literal // NOSONAR
     };
 
     // Server -> Client.

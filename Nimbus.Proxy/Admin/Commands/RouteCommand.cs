@@ -25,10 +25,7 @@ internal sealed class RouteCommand : IAdminCommand
         {
             BackendSnapshot? b = null;
             if (snap != null && !string.IsNullOrEmpty(c.ServerId))
-            {
-                foreach (var x in snap.Backends)
-                    if (string.Equals(x.ServerId, c.ServerId, StringComparison.OrdinalIgnoreCase)) { b = x; break; }
-            }
+                b = snap.Backends.FirstOrDefault(x => string.Equals(x.ServerId, c.ServerId, StringComparison.OrdinalIgnoreCase));
             return new
             {
                 serverId = c.ServerId,

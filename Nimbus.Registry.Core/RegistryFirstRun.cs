@@ -50,6 +50,11 @@ public static class RegistryFirstRun
     // Tomlyn serializes a POCO, so the only way a comment reaches the file is to put it there
     // afterwards. Best effort by design: a missing key leaves the file exactly as written, since a
     // valid config without a comment beats a mangled one.
+    //
+    // CA1861 is refused here for the reason its twin in Nimbus.Proxy/Program.cs spells out: the
+    // method runs once per install, and hoisting the note out of both bodies left the two methods
+    // duplicating each other where they had not before.
+#pragma warning disable CA1861
     private static void AnnotateSharedSecret(string path)
     {
         const string key = "shared_secret = ";
@@ -66,4 +71,5 @@ public static class RegistryFirstRun
         });
         File.WriteAllLines(path, lines, new System.Text.UTF8Encoding(false));
     }
+#pragma warning restore CA1861
 }

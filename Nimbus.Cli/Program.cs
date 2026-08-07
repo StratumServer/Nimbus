@@ -12,6 +12,16 @@ internal static class Program
     private const string DefaultHost = "127.0.0.1";
     private const int DefaultPort = 42499;
 
+    // Named because three places have to agree on it and only one of them looks like it does:
+    // BuildPayload dispatches on it, NormalizeCommand maps the `evac` alias onto it, and
+    // ReadTimeout gives it the long budget. A rename that missed the third would leave evacuate
+    // timing out at fifteen seconds with nothing to say why.
+    private const string EvacuateCommandName = "evacuate";
+
+    // One instance rather than one per call: JsonSerializerOptions freezes itself on first use and
+    // building a fresh one each time rebuilds the converter cache behind it.
+    private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+
     private static int Main(string[] args)
     {
         // Parsing is inside the try because a bad --port is now a usage error with a message on
@@ -59,7 +69,7 @@ internal static class Program
             "route"   => new { cmd = "route" },
             "drain"   => BuildDrain(args, "drain"),
             "undrain" => BuildDrain(args, "undrain"),
-            "evacuate" => BuildEvacuate(args),
+            EvacuateCommandName => BuildEvacuate(args),
             "ban"     => BuildBan(args),
             "unban"   => BuildUnban(args),
             "bans"    => new { cmd = "bans" },
@@ -94,10 +104,10 @@ internal static class Program
         return new { cmd = "servers", refresh };
     }
 
-    private static object BuildSwap(List<string> args)
+    private static Dictionary<string, object?> BuildSwap(List<string> args)
     {
         long id = RequiredLong(args, 1, "<id>");
-        string? serverId = GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
+        string? serverId = ServerIdOpt(args);
         string? host = GetOpt(args, "--host");
         string? portStr = GetOpt(args, "--port");
         string? reason = GetOpt(args, "--reason");
@@ -120,14 +130,14 @@ internal static class Program
 
     // The admin socket has had ban, unban and bans since network bans landed, but nimctl
     // never grew the verbs, so the documented invocations only worked through `nimctl raw`.
-    private static object BuildBan(List<string> args)
+    private static Dictionary<string, object?> BuildBan(List<string> args)
     {
         string? uid = GetOpt(args, "--uid");
         string? player = GetOpt(args, "--player") ?? GetOpt(args, "--name");
         if (string.IsNullOrEmpty(uid) && string.IsNullOrEmpty(player))
             throw new ArgumentException("ban requires --uid <uid> or --player <name>");
 
-        string? serverId = GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
+        string? serverId = ServerIdOpt(args);
         string? reason = GetOpt(args, "--reason");
         string? durationStr = GetOpt(args, "--duration");
 
@@ -145,12 +155,12 @@ internal static class Program
         return d;
     }
 
-    private static object BuildUnban(List<string> args)
+    private static Dictionary<string, object?> BuildUnban(List<string> args)
     {
-        string? uid = GetOpt(args, "--uid") ?? (args.Count >= 2 && !args[1].StartsWith("-") ? args[1] : null);
+        string? uid = GetOpt(args, "--uid") ?? (args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : null);
         if (string.IsNullOrEmpty(uid)) throw new ArgumentException("unban requires --uid <uid>");
 
-        string? serverId = GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
+        string? serverId = ServerIdOpt(args);
         var d = new Dictionary<string, object?> { ["cmd"] = "unban", ["uid"] = uid };
         if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
         return d;
@@ -159,9 +169,16 @@ internal static class Program
     // `whitelist` takes a sub-verb rather than three top-level names, because add/remove/list all
     // read the same list and reading `whitelist list` out loud is what an operator expects. Bare
     // `whitelist` lists, which is the harmless one.
+    //
+    // CA1859 asks for Dictionary<string, object?> here as it does for the builders around it. It
+    // does not compile: the `list` arm has no arguments to carry and returns the same anonymous
+    // one-field object every no-argument verb in BuildPayload returns, so object is the only type
+    // this signature can have.
+#pragma warning disable CA1859
     private static object BuildWhitelist(List<string> args)
+#pragma warning restore CA1859
     {
-        string sub = args.Count >= 2 && !args[1].StartsWith("-") ? args[1].ToLowerInvariant() : "list";
+        string sub = args.Count >= 2 && !args[1].StartsWith('-') ? args[1].ToLowerInvariant() : "list";
         switch (sub)
         {
             case "list" or "ls":
@@ -178,7 +195,7 @@ internal static class Program
                 if (!string.IsNullOrEmpty(uid))    d["uid"] = uid;
                 if (!string.IsNullOrEmpty(player)) d["player"] = player;
 
-                string? serverId = GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
+                string? serverId = ServerIdOpt(args);
                 if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
                 string? note = GetOpt(args, "--note") ?? GetOpt(args, "--reason");
                 if (!string.IsNullOrEmpty(note)) d["note"] = note;
@@ -195,11 +212,11 @@ internal static class Program
 
             case "remove" or "rm" or "del":
             {
-                string? uid = GetOpt(args, "--uid") ?? (args.Count >= 3 && !args[2].StartsWith("-") ? args[2] : null);
+                string? uid = GetOpt(args, "--uid") ?? (args.Count >= 3 && !args[2].StartsWith('-') ? args[2] : null);
                 if (string.IsNullOrEmpty(uid)) throw new ArgumentException("whitelist remove requires --uid <uid>");
 
                 var d = new Dictionary<string, object?> { ["cmd"] = "whitelist-remove", ["uid"] = uid };
-                string? serverId = GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
+                string? serverId = ServerIdOpt(args);
                 if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
                 return d;
             }
@@ -262,7 +279,7 @@ internal static class Program
 
     private static object BuildDrain(List<string> args, string cmd)
     {
-        string? serverId = args.Count >= 2 && !args[1].StartsWith("-") ? args[1] : (GetOpt(args, "--server") ?? GetOpt(args, "--serverId"));
+        string? serverId = args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : ServerIdOpt(args);
         if (string.IsNullOrEmpty(serverId)) throw new ArgumentException($"{cmd} requires <serverId> or --server <id>");
         return new { cmd, serverId };
     }
@@ -271,9 +288,9 @@ internal static class Program
     // `drain`: the backend positionally or under --server. Whether --to names the source, and
     // whether the pace is one the proxy will accept, are the proxy's calls rather than nimctl's,
     // so both go on the wire as typed and come back refused in the proxy's own words.
-    private static object BuildEvacuate(List<string> args)
+    private static Dictionary<string, object?> BuildEvacuate(List<string> args)
     {
-        string? serverId = args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : (GetOpt(args, "--server") ?? GetOpt(args, "--serverId"));
+        string? serverId = args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : ServerIdOpt(args);
         if (string.IsNullOrEmpty(serverId)) throw new ArgumentException("evacuate requires <serverId> or --server <id>");
 
         var d = new Dictionary<string, object?> { ["cmd"] = "evacuate", ["serverId"] = serverId };
@@ -297,7 +314,7 @@ internal static class Program
     }
 
     // Send arbitrary JSON straight to the admin endpoint.
-    private static object BuildRaw(List<string> args)
+    private static JsonElement BuildRaw(List<string> args)
     {
         if (args.Count < 2) throw new ArgumentException("raw requires a JSON argument");
         // Validate by re-parsing.
@@ -309,7 +326,7 @@ internal static class Program
     // `evacuate`, which walks a backend's sessions at a pace the operator sets and replies with
     // the summary once the sweep is done, so it gets a budget the proxy's own sweep fits inside.
     internal static TimeSpan ReadTimeout(List<string> args)
-        => NormalizeCommand(args[0]) == "evacuate" ? TimeSpan.FromSeconds(120) : TimeSpan.FromSeconds(15);
+        => NormalizeCommand(args[0]) == EvacuateCommandName ? TimeSpan.FromSeconds(120) : TimeSpan.FromSeconds(15);
 
     private static async Task<string> SendAsync(string host, int port, string? secret, object payload, TimeSpan readTimeout)
     {
@@ -445,7 +462,7 @@ internal static class Program
         "stickies" => "sticky",
         "routes" => "route",
         "resume" => "undrain",
-        "evac" => "evacuate",
+        "evac" => EvacuateCommandName,
         "wl" => "whitelist",
         "tokens" => "token",
         _ => cmd,
@@ -457,6 +474,11 @@ internal static class Program
         if (!long.TryParse(args[idx], out var v)) throw new ArgumentException($"invalid {label}: {args[idx]}");
         return v;
     }
+
+    // Both spellings have been accepted since these verbs existed, and every verb that names a
+    // backend accepts both, so the pair is one option rather than two.
+    private static string? ServerIdOpt(List<string> args)
+        => GetOpt(args, "--server") ?? GetOpt(args, "--serverId");
 
     private static string? GetOpt(List<string> args, string name)
     {
@@ -471,7 +493,7 @@ internal static class Program
         try
         {
             using var doc = JsonDocument.Parse(raw);
-            return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+            return JsonSerializer.Serialize(doc.RootElement, IndentedJson);
         }
         catch { return raw; }
     }

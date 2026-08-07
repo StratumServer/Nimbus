@@ -264,9 +264,8 @@ public sealed class NimbusServerModSystem : ModSystem
         if (api == null) return Array.Empty<BackendModInfo>();
 
         var result = new List<BackendModInfo>();
-        foreach (var mod in api.ModLoader.Mods)
+        foreach (var info in api.ModLoader.Mods.Select(mod => mod.Info))
         {
-            var info = mod.Info;
             if (info == null || !info.RequiredOnClient) continue;
             if (info.Side != EnumAppSide.Universal) continue;
             result.Add(new BackendModInfo { Id = info.ModID ?? "", Version = info.Version ?? "" });
@@ -341,7 +340,10 @@ public sealed class NimbusServerModSystem : ModSystem
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(config.RegistryHttpTimeoutSeconds + 1));
-            var reservation = await registry!.ConsumeReservationByUidAsync(playerUid, config.ServerId, cts.Token)
+            // Load-bearing despite the analyser: registry is a nullable field with no assignment
+            // in this method, so removing it is a CS8602. The caller only reaches here once
+            // StartServerSide has constructed it.
+            var reservation = await registry!.ConsumeReservationByUidAsync(playerUid, config.ServerId, cts.Token) // NOSONAR
                 .ConfigureAwait(false);
 
             if (reservation != null)

@@ -26,7 +26,10 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[Nimbus] failed to load config '{configPath}': {ex.Message}");
+            // Left synchronous. Main writes a dozen console lines and every other one of them is a
+            // sync Console.Write, so awaiting this one would make the method read two ways to save
+            // nothing: it is a single line on a fatal path that returns immediately afterwards.
+            Console.Error.WriteLine($"[Nimbus] failed to load config '{configPath}': {ex.Message}"); // NOSONAR
             return 2;
         }
 

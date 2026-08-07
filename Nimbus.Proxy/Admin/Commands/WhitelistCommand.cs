@@ -33,7 +33,7 @@ internal sealed class WhitelistAddCommand : IAdminCommand
             online = WhitelistLookup.ByName(ctx, name);
             if (online?.PlayerUid == null)
                 return new { ok = false, reason = $"no live session for player '{name}'; whitelist by uid instead" };
-            uid = online.PlayerUid!;
+            uid = online.PlayerUid;
         }
         else
         {
@@ -123,9 +123,8 @@ internal sealed class WhitelistRemoveCommand : IAdminCommand
         // their sessions that is depends on the backend each one sits on and on what coverage is
         // left, so this walks the session table rather than reasoning from the removed entry.
         int kicked = 0;
-        foreach (var kv in ctx.Proxy.Sessions)
+        foreach (var session in ctx.Proxy.Sessions.Values)
         {
-            var session = kv.Value;
             if (!string.Equals(session.PlayerUid, uid, StringComparison.OrdinalIgnoreCase)) continue;
 
             // A session with no backend yet reports a null serverId, which only whitelist.network
@@ -204,18 +203,8 @@ internal sealed class WhitelistListCommand : IAdminCommand
 internal static class WhitelistLookup
 {
     public static ProxySession? ByName(AdminContext ctx, string name)
-    {
-        foreach (var kv in ctx.Proxy.Sessions)
-            if (string.Equals(kv.Value.PlayerName, name, StringComparison.OrdinalIgnoreCase))
-                return kv.Value;
-        return null;
-    }
+        => ctx.Proxy.Sessions.Values.FirstOrDefault(s => string.Equals(s.PlayerName, name, StringComparison.OrdinalIgnoreCase));
 
     public static ProxySession? ByUid(AdminContext ctx, string uid)
-    {
-        foreach (var kv in ctx.Proxy.Sessions)
-            if (string.Equals(kv.Value.PlayerUid, uid, StringComparison.OrdinalIgnoreCase))
-                return kv.Value;
-        return null;
-    }
+        => ctx.Proxy.Sessions.Values.FirstOrDefault(s => string.Equals(s.PlayerUid, uid, StringComparison.OrdinalIgnoreCase));
 }

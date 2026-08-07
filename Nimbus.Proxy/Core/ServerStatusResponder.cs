@@ -79,12 +79,5 @@ internal sealed class ServerStatusResponder
     }
 
     private static string FindVersion(NetworkSnapshot snap)
-    {
-        foreach (var backend in snap.Backends)
-        {
-            if (!string.IsNullOrWhiteSpace(backend.GameVersion))
-                return backend.GameVersion;
-        }
-        return "";
-    }
+        => snap.Backends.FirstOrDefault(b => !string.IsNullOrWhiteSpace(b.GameVersion))?.GameVersion ?? "";
 }

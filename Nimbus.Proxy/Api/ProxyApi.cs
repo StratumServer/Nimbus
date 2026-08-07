@@ -19,18 +19,10 @@ internal sealed class ProxyApi : IProxyApi
     }
 
     public IPlayer? FindPlayerByUid(string uid)
-    {
-        foreach (var s in proxy.Sessions.Values)
-            if (string.Equals(s.PlayerUid, uid, StringComparison.OrdinalIgnoreCase)) return s;
-        return null;
-    }
+        => proxy.Sessions.Values.FirstOrDefault(s => string.Equals(s.PlayerUid, uid, StringComparison.OrdinalIgnoreCase));
 
     public IPlayer? FindPlayerByName(string name)
-    {
-        foreach (var s in proxy.Sessions.Values)
-            if (string.Equals(s.PlayerName, name, StringComparison.OrdinalIgnoreCase)) return s;
-        return null;
-    }
+        => proxy.Sessions.Values.FirstOrDefault(s => string.Equals(s.PlayerName, name, StringComparison.OrdinalIgnoreCase));
 
     public async Task<IServerInfo?> ResolveServerAsync(string serverId, CancellationToken ct)
     {
@@ -41,10 +33,9 @@ internal sealed class ProxyApi : IProxyApi
             if (b != null) return new ServerInfo { ServerId = serverId, Host = b.PublicHost, Port = b.PublicPort };
         }
         // Fall back to the static config pool so plugins still work without Nimbus enabled.
-        foreach (var ep in proxy.Cfg.Backends())
-            if (string.Equals(ep.ServerId, serverId, StringComparison.OrdinalIgnoreCase))
-                return ep.ToServerInfo();
-        return null;
+        var ep = proxy.Cfg.Backends()
+            .FirstOrDefault(x => string.Equals(x.ServerId, serverId, StringComparison.OrdinalIgnoreCase));
+        return ep?.ToServerInfo();
     }
 
     public void LogInfo(string pluginName, string message) => Log.Info($"[plugin {pluginName}] {message}");

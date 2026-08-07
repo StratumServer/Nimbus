@@ -147,23 +147,28 @@ internal sealed partial class ProxySession : IPlayer
     async Task<string?> IPlayer.TransferAsync(IServerInfo target, string mode, string? reason)
         => (await RequestTransferAsync(target.ToEndpoint(), mode, registry, reason, cfg.Registry.FailOnError).ConfigureAwait(false)).failReason;
 
+    // The mode name every branch below reports back, and the one ProxyConfigValidator accepts in
+    // transfers.default_mode. It is the tuple's first element on six paths that each return a
+    // different failure, so it is written once rather than six times.
+    private const string SeamlessMode = "seamless";
+
     internal async Task<(string modeUsed, string? failReason)> RequestTransferAsync(BackendEndpoint target, string mode,
         IRegistryClient? registry = null, string? reason = null, bool failOnRegistryError = true,
         string? clientTransferId = null)
     {
-        string normalized = string.Equals(mode, "splice", StringComparison.OrdinalIgnoreCase) ? "seamless" : mode;
-        if (string.Equals(normalized, "seamless", StringComparison.OrdinalIgnoreCase))
+        string normalized = string.Equals(mode, "splice", StringComparison.OrdinalIgnoreCase) ? SeamlessMode : mode;
+        if (string.Equals(normalized, SeamlessMode, StringComparison.OrdinalIgnoreCase))
         {
             if (!cfg.Transfers.AllowSeamless)
-                return ("seamless", "seamless transfers disabled in config");
+                return (SeamlessMode, "seamless transfers disabled in config");
 
             if (Phase != SessionState.Phase.Ready)
-                return ("seamless", $"seamless requires a fully joined session (phase=Ready). current phase={Phase}");
+                return (SeamlessMode, $"seamless requires a fully joined session (phase=Ready). current phase={Phase}");
 
             if (cfg.Transfers.RequireSeamlessCapability && !SupportsSeamlessTransfers)
             {
                 if (!cfg.Transfers.FallbackToRedirectWhenSeamlessUnavailable)
-                    return ("seamless", "client has not advertised Nimbus seamless capability");
+                    return (SeamlessMode, "client has not advertised Nimbus seamless capability");
 
                 Log.Warn($"[s{Id}] seamless requested but client has no Nimbus capability; falling back to redirect");
                 var redirectFail = await RequestRedirectAsync(target, registry,
@@ -175,10 +180,10 @@ internal sealed partial class ProxySession : IPlayer
             {
                 var redirectFail = await RequestRedirectAsync(target, registry,
                     reason ?? "seamless visual redirect", failOnRegistryError, clientTransferId).ConfigureAwait(false);
-                return ("seamless", redirectFail);
+                return (SeamlessMode, redirectFail);
             }
 
-            return ("seamless", await RequestSeamlessAsync(target, registry, reason, failOnRegistryError, clientTransferId).ConfigureAwait(false));
+            return (SeamlessMode, await RequestSeamlessAsync(target, registry, reason, failOnRegistryError, clientTransferId).ConfigureAwait(false));
         }
         if (string.Equals(normalized, "redirect", StringComparison.OrdinalIgnoreCase))
             return ("redirect", await RequestRedirectAsync(target, registry, reason, failOnRegistryError, clientTransferId).ConfigureAwait(false));
@@ -810,7 +815,7 @@ internal sealed partial class ProxySession : IPlayer
     {
         pumpCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
         pumpC2S = PumpAsync("c->s", clientStream, upstream!.GetStream(), sniffC2S, isC2S: true, pumpCts.Token);
-        pumpS2C = PumpAsync("s->c", upstream!.GetStream(), clientStream, sniffS2C, isC2S: false, pumpCts.Token);
+        pumpS2C = PumpAsync("s->c", upstream.GetStream(), clientStream, sniffS2C, isC2S: false, pumpCts.Token);
     }
 
     private async Task PumpAsync(string label, NetworkStream from, NetworkStream to, FrameSniffer? sniffer, bool isC2S, CancellationToken token)

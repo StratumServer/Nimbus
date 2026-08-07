@@ -118,7 +118,7 @@ internal sealed class AdminPermissions
         int dot = permission.Length;
         while ((dot = permission.LastIndexOf('.', dot - 1)) > 0)
         {
-            if (granted.Contains(permission.Substring(0, dot) + ".*"))
+            if (granted.Contains(string.Concat(permission.AsSpan(0, dot), ".*")))
                 return true;
         }
         return false;

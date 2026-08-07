@@ -9,6 +9,10 @@ internal sealed class PluginLoader
 {
     public const string CurrentApiVersion = "0.1";
 
+    // One instance for every manifest read: JsonSerializerOptions builds a converter cache on
+    // first use, and a fresh one per plugin throws that away each time.
+    private static readonly JsonSerializerOptions ManifestJson = new() { PropertyNameCaseInsensitive = true };
+
     private readonly List<LoadedPlugin> loaded = new();
     private readonly HashSet<string> loadedIds = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> disabledIds;
@@ -85,7 +89,7 @@ internal sealed class PluginLoader
         }
     }
 
-    private PluginMetadata ReadMetadata(string dllPath, Type pluginType)
+    private static PluginMetadata ReadMetadata(string dllPath, Type pluginType)
     {
         var manifestPath = Path.ChangeExtension(dllPath, ".plugin.json");
         if (!File.Exists(manifestPath))
@@ -97,10 +101,7 @@ internal sealed class PluginLoader
         try
         {
             using var fs = File.OpenRead(manifestPath);
-            var manifest = JsonSerializer.Deserialize<PluginManifest>(fs, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-            }) ?? new PluginManifest();
+            var manifest = JsonSerializer.Deserialize<PluginManifest>(fs, ManifestJson) ?? new PluginManifest();
 
             var id = Clean(manifest.Id, Path.GetFileNameWithoutExtension(dllPath));
             return new PluginMetadata(
@@ -140,13 +141,11 @@ internal sealed class PluginLoader
             Log.Warn($"plugins: skipping {metadata.Id} from {Path.GetFileName(dllPath)}, it asks for api {metadata.ApiVersion} and this build offers {CurrentApiVersion}");
             return false;
         }
-        foreach (var dep in metadata.Dependencies)
+        var missing = metadata.Dependencies.FirstOrDefault(dep => !loadedIds.Contains(dep));
+        if (missing != null)
         {
-            if (!loadedIds.Contains(dep))
-            {
-                Log.Warn($"plugins: skipping {metadata.Id}, missing dependency '{dep}'");
-                return false;
-            }
+            Log.Warn($"plugins: skipping {metadata.Id}, missing dependency '{missing}'");
+            return false;
         }
         return true;
     }
@@ -196,10 +195,10 @@ internal sealed class PluginLoader
 
     public void ShutdownAll()
     {
-        foreach (var lp in loaded)
+        foreach (var instance in loaded.Select(lp => lp.Instance))
         {
-            try { lp.Instance.Shutdown(); }
-            catch (Exception ex) { Log.Warn($"plugins: Shutdown() threw for {lp.Instance.Name}: {ex.Message}"); }
+            try { instance.Shutdown(); }
+            catch (Exception ex) { Log.Warn($"plugins: Shutdown() threw for {instance.Name}: {ex.Message}"); }
         }
     }
 

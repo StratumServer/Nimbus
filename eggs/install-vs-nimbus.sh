@@ -21,6 +21,11 @@ case "${NIMBUS_SHARED_SECRET:-}" in
     echo "Set NIMBUS_SHARED_SECRET in the panel to the registry.embedded_shared_secret your proxy generated on its first run (or the shared_secret of your standalone registry), then reinstall." >&2
     exit 1
     ;;
+  *)
+    # Anything else is the operator's own secret, which this script has no way to check and no
+    # business rewriting. Spelled out rather than left to the implicit fall-through so the guard
+    # reads as a list of refusals plus an explicit accept.
+    ;;
 esac
 
 # Every download goes through here: https only, redirects included, so a panel

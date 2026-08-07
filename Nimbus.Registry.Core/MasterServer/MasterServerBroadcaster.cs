@@ -39,7 +39,10 @@ internal sealed class MasterServerBroadcaster : BackgroundService
         }
 
         _client = new MasterServerClient(id.MasterServerUrl, _log);
-        _log.LogInformation("master server advertising as '{Name}' at {Host}:{Port}", id.ServerName, id.PublicHost, id.PublicPort);
+        // Guarded like the two below it: the registry's own sink starts at Warning, so an
+        // Information line is formatted and boxed on its way to being dropped.
+        if (_log.IsEnabled(LogLevel.Information))
+            _log.LogInformation("master server advertising as '{Name}' at {Host}:{Port}", id.ServerName, id.PublicHost, id.PublicPort);
 
         // Wait up to 30s for at least one backend to heartbeat so the first register
         // packet carries a real maxPlayers and mod list.
@@ -89,7 +92,7 @@ internal sealed class MasterServerBroadcaster : BackgroundService
             try
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await _client!.UnregisterAsync(new UnregisterPacket { token = _token }, cts.Token);
+                await _client.UnregisterAsync(new UnregisterPacket { token = _token }, cts.Token);
                 _log.LogInformation("master server unregistered");
             }
             catch (Exception ex)
@@ -102,13 +105,18 @@ internal sealed class MasterServerBroadcaster : BackgroundService
     private async Task TryRegister(CancellationToken ct)
     {
         var packet = BuildRegisterPacket();
-        var resp = await _client!.RegisterAsync(packet, ct);
+        // The operator is load-bearing here even though the analyser calls it redundant: _client
+        // is a nullable field and this method has no assignment to it, so the flow state that
+        // makes it unnecessary in ExecuteAsync does not reach across the call. Removing it is a
+        // CS8602. ExecuteAsync only ever calls this after assigning _client.
+        var resp = await _client!.RegisterAsync(packet, ct); // NOSONAR
         if (resp == null) return;
         if (resp.status == "ok")
         {
             _token = resp.data;
             _lastRegisteredMaxPlayers = packet.maxPlayers;
-            _log.LogInformation("master server registered ok (maxPlayers={Max})", packet.maxPlayers);
+            if (_log.IsEnabled(LogLevel.Information))
+                _log.LogInformation("master server registered ok (maxPlayers={Max})", packet.maxPlayers);
         }
         else if (resp.status == "blacklisted")
         {
@@ -124,7 +132,8 @@ internal sealed class MasterServerBroadcaster : BackgroundService
 
     private async Task TryHeartbeat(CancellationToken ct)
     {
-        var resp = await _client!.HeartbeatAsync(new HeartbeatPacket
+        // Load-bearing for the reason TryRegister above spells out: removing it is a CS8602.
+        var resp = await _client!.HeartbeatAsync(new HeartbeatPacket // NOSONAR
         {
             token = _token!,
             players = CurrentPlayerCount()
@@ -132,7 +141,8 @@ internal sealed class MasterServerBroadcaster : BackgroundService
         if (resp == null) return;
         if (resp.status == "invalid" || resp.status == "timeout")
         {
-            _log.LogInformation("master server heartbeat says {Status}, will re-register", resp.status);
+            if (_log.IsEnabled(LogLevel.Information))
+                _log.LogInformation("master server heartbeat says {Status}, will re-register", resp.status);
             _token = null;
         }
     }

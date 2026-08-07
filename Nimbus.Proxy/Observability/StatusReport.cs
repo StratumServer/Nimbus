@@ -46,13 +46,7 @@ internal sealed class StatusReport
         {
             BackendSnapshot? b = null;
             if (snap != null && !string.IsNullOrEmpty(candidate.ServerId))
-            {
-                foreach (var x in snap.Backends)
-                {
-                    if (string.Equals(x.ServerId, candidate.ServerId, StringComparison.OrdinalIgnoreCase))
-                    { b = x; break; }
-                }
-            }
+                b = snap.Backends.FirstOrDefault(x => string.Equals(x.ServerId, candidate.ServerId, StringComparison.OrdinalIgnoreCase));
 
             report.Backends.Add(new StatusBackend
             {

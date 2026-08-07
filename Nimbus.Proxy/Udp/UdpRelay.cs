@@ -136,11 +136,8 @@ internal sealed class UdpRelay
             var now = DateTime.UtcNow;
             foreach (var kv in sessions)
             {
-                if (now - kv.Value.LastActivityUtc > IdleTimeout)
-                {
-                    if (sessions.TryRemove(kv.Key, out var dead))
-                        dead.Dispose();
-                }
+                if (now - kv.Value.LastActivityUtc > IdleTimeout && sessions.TryRemove(kv.Key, out var dead))
+                    dead.Dispose();
             }
         }
     }
