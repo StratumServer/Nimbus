@@ -2,6 +2,7 @@ namespace Nimbus.ServerMod;
 
 using System.Collections.Concurrent;
 using System.Text;
+using Nimbus.Shared;
 using Nimbus.Shared.Models;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
@@ -61,7 +62,7 @@ public sealed class NimbusServerModSystem : ModSystem
         if (!IsConfigured(config))
         {
             LastStatus = "misconfigured";
-            api.Logger.Warning("Nimbus server mod is enabled but server id, registry url, public host, or shared secret is missing");
+            WarnUnconfigured();
             return;
         }
 
@@ -76,7 +77,7 @@ public sealed class NimbusServerModSystem : ModSystem
 
     public override void Dispose()
     {
-        try { stop?.Cancel(); } catch { }
+        try { stop?.Cancel(); } catch { /* already disposed by an earlier Dispose */ }
         // No token on the drain: stop is already cancelled above, and the 2s deadline is
         // the only bound this wait may have. Cancelling it would skip the loop's teardown.
         try { heartbeatTask?.Wait(TimeSpan.FromSeconds(2), CancellationToken.None); }
@@ -111,11 +112,40 @@ public sealed class NimbusServerModSystem : ModSystem
             ?? new TransferIntentResponse { Ok = false, Error = "no response from registry" };
     }
 
-    private static bool IsConfigured(NimbusServerConfig cfg)
-        => !string.IsNullOrWhiteSpace(cfg.ServerId)
-        && !string.IsNullOrWhiteSpace(cfg.RegistryUrl)
-        && !string.IsNullOrWhiteSpace(cfg.PublicHost)
-        && !string.IsNullOrWhiteSpace(cfg.SharedSecret);
+    private static bool IsConfigured(NimbusServerConfig cfg) => MissingSettings(cfg).Count == 0;
+
+    // The settings without which this backend cannot join a network, by the name they carry in
+    // nimbus-server.json so the log line points at something the operator can find.
+    //
+    // SharedSecret is the one that is not simply about emptiness: the documented placeholders are
+    // in this repository, in the wiki and on every panel egg's variable screen, so a backend
+    // holding one is a backend authenticating with a value anybody can read. Treating them as
+    // unset is what the proxy's validator already does for its own copy of the same secret.
+    private static List<string> MissingSettings(NimbusServerConfig cfg)
+    {
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(cfg.ServerId)) missing.Add("ServerId");
+        if (string.IsNullOrWhiteSpace(cfg.RegistryUrl)) missing.Add("RegistryUrl");
+        if (string.IsNullOrWhiteSpace(cfg.PublicHost)) missing.Add("PublicHost");
+        if (SecretPlaceholders.IsPlaceholder(cfg.SharedSecret)) missing.Add("SharedSecret");
+        return missing;
+    }
+
+    // Reached at boot and again on every /nimbus reload that does not wire the mod up, which is
+    // where an operator is watching after editing the file.
+    private void WarnUnconfigured()
+    {
+        var missing = MissingSettings(config);
+        if (missing.Count == 0 || api == null) return;
+
+        var message = new StringBuilder()
+            .Append("Nimbus server mod is enabled but ").Append(ConfigFileName)
+            .Append(" still needs: ").Append(string.Join(", ", missing))
+            .Append(". Heartbeats are off until it does.");
+        if (missing.Contains("SharedSecret"))
+            message.Append(" SharedSecret is not generated here: copy the value the network already runs on, which is registry.embedded_shared_secret in the proxy's nimbus.proxy.toml, or shared_secret in a standalone nimbus.registry.toml. A secret invented on this side matches nothing.");
+        api.Logger.Warning(message.ToString());
+    }
 
     private static NimbusServerConfig LoadConfig(ICoreServerAPI api)
     {
@@ -285,6 +315,10 @@ public sealed class NimbusServerModSystem : ModSystem
         {
             registry = null;
             LastStatus = config.Enabled ? "misconfigured" : "disabled";
+            // A reload that leaves the mod unwired used to say nothing at all: the command's own
+            // reply repeats the config back, which reads like success. This is the operator who
+            // just edited the file, so it is the best moment to name what is still missing.
+            if (config.Enabled) WarnUnconfigured();
         }
         old?.Dispose();
     }
@@ -364,12 +398,15 @@ public sealed class NimbusServerModSystem : ModSystem
     private void KickForReservation(IServerPlayer player)
     {
         const string reason = "Direct connections are not permitted. Please connect via the Nimbus proxy.";
-        // CheckForwardingAsync resumes on a thread-pool thread (Task.Run + ConfigureAwait(false));
-        // the server API is not safe to call off the game thread, so hand the kick back.
+        // CheckForwardingAsync resumes on a thread-pool thread, since it runs under Task.Run and
+        // awaits with ConfigureAwait false. The server API is not safe to call off the game
+        // thread, so hand the kick back.
         api?.Event.EnqueueMainThreadTask(() =>
         {
-            try { player.SendMessage(0, reason, EnumChatType.Notification); } catch { }
-            try { player.Disconnect(reason); } catch { }
+            // The player may have quit on their own between the check and this callback, in which
+            // case both calls throw on a half-cleaned player object and the kick is moot.
+            try { player.SendMessage(0, reason, EnumChatType.Notification); } catch { /* already gone */ }
+            try { player.Disconnect(reason); } catch { /* already gone */ }
         }, "nimbus-reservation-kick");
     }
 

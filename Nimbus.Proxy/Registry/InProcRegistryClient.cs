@@ -1,82 +1,73 @@
-using System.Security.Cryptography;
 using Nimbus.Registry.Services;
 using Nimbus.Shared.Models;
 
 namespace Nimbus.Proxy;
 
 // Direct in-process bridge to the embedded registry services. Bypasses HTTP + HMAC because
-// both sides are the same OS process. Mirrors the request handling in Nimbus.Registry.Core
-// Endpoints (reservation mint, snapshot get, intent drain) to keep behavior identical
-// between embedded and remote modes.
+// both sides are the same OS process. The decisions it makes are not written here: reservation
+// minting goes through the same ReservationService the HTTP endpoint uses and the moderation
+// entries are shaped by the same RegistryStamps, so embedded and remote deployments cannot
+// drift apart on a rule that was only added to one of them (#65).
 internal sealed class InProcRegistryClient : IRegistryClient
 {
     private readonly BackendRegistry backends;
-    private readonly ReservationStore reservations;
+    private readonly ReservationService reservations;
     private readonly TransferIntentStore intents;
     private readonly BanStore bans;
     private readonly WhitelistStore whitelist;
+    private readonly ApiTokenService tokens;
     private readonly RegistryConfig cfg;
     private readonly TimeProvider clock;
 
-    public InProcRegistryClient(BackendRegistry backends, ReservationStore reservations,
-        TransferIntentStore intents, BanStore bans, WhitelistStore whitelist, RegistryConfig cfg,
-        TimeProvider? clock = null)
+    public InProcRegistryClient(RegistryStores stores, RegistryConfig cfg, TimeProvider? clock = null)
     {
-        this.backends = backends;
-        this.reservations = reservations;
-        this.intents = intents;
-        this.bans = bans;
-        this.whitelist = whitelist;
+        this.backends = stores.Backends;
+        this.intents = stores.Intents;
+        this.bans = stores.Bans;
+        this.whitelist = stores.Whitelist;
         this.cfg = cfg;
         this.clock = clock ?? TimeProvider.System;
+        // Built here rather than resolved: the embedded registry can run with no HTTP listener
+        // and therefore no container to resolve from. Both services hold no state of their own,
+        // only references to the stores above, so these are the same rules over the same data and
+        // not a second source of truth.
+        this.reservations = new ReservationService(stores.Backends, stores.Reservations, stores.Bans, this.clock);
+        this.tokens = new ApiTokenService(stores.Tokens, this.clock);
     }
 
     public Task<TransferReservation?> MintReservationAsync(
         string playerUid, string playerName, string targetServerId, string? reason, CancellationToken ct,
         string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null)
     {
-        if (string.IsNullOrEmpty(playerUid) || string.IsNullOrEmpty(targetServerId))
-            return Task.FromResult<TransferReservation?>(null);
-
-        // Target must exist (matches /api/reservations behavior). Unknown targets would just
-        // produce an unconsumable reservation, so fail fast.
-        if (backends.Get(targetServerId) == null)
+        // The TTL is the one difference in the inputs: over HTTP the caller names it in the
+        // request body, here it is proxy config, since the caller is the proxy itself.
+        var result = reservations.Mint(new ReservationMintRequest
         {
-            Log.Warn($"in-proc registry: unknown target server '{targetServerId}'");
-            return Task.FromResult<TransferReservation?>(null);
-        }
-
-        // Mirrors the ban check on /api/reservations so embedded and remote modes refuse the
-        // same mints.
-        if (bans.FindBlocking(playerUid, targetServerId) != null)
-        {
-            Log.Warn($"in-proc registry: refusing reservation, uid={playerUid} is banned from '{targetServerId}'");
-            return Task.FromResult<TransferReservation?>(null);
-        }
-
-        // No matching whitelist check here, on purpose: whether coverage is required at all is a
-        // proxy-side switch ([whitelist] in nimbus.proxy.toml) the registry never sees.
-
-        int ttl = cfg.ReservationTtlSeconds;
-        if (ttl <= 0) ttl = 60;
-        if (ttl > cfg.MaxReservationTtlSeconds) ttl = cfg.MaxReservationTtlSeconds;
-
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var r = new TransferReservation
-        {
-            Id = NewId(),
             PlayerUid = playerUid,
             PlayerName = playerName ?? "",
             SourceServerId = cfg.ProxyId,
             TargetServerId = targetServerId,
-            ExpiresAtUnix = now + ttl,
+            TtlSeconds = cfg.ReservationTtlSeconds,
+            MaxTtlSeconds = cfg.MaxReservationTtlSeconds,
             Reason = reason,
             RealRemoteIp = realRemoteIp ?? "",
             RealRemotePort = realRemotePort,
             ClientTransferId = clientTransferId ?? "",
-        };
-        reservations.Add(r);
-        return Task.FromResult<TransferReservation?>(r);
+        });
+
+        // A refusal is a null here where the endpoint would answer 400/404/403. There is no
+        // caller to report to in-process, so the reason goes to the log instead.
+        switch (result.Status)
+        {
+            case ReservationMintStatus.UnknownTarget:
+                Log.Warn($"in-proc registry: unknown target server '{targetServerId}'");
+                break;
+            case ReservationMintStatus.Banned:
+                Log.Warn($"in-proc registry: refusing reservation, uid={playerUid} is banned from '{targetServerId}'");
+                break;
+        }
+
+        return Task.FromResult(result.Reservation);
     }
 
     public Task<NetworkSnapshot?> GetServersAsync(CancellationToken ct, bool forceRefresh = false)
@@ -98,24 +89,12 @@ internal sealed class InProcRegistryClient : IRegistryClient
     public Task<List<NetworkBan>?> GetBansAsync(CancellationToken ct)
         => Task.FromResult<List<NetworkBan>?>(bans.Active());
 
-    // Mirrors POST /api/bans so embedded and remote modes stamp identical bans.
+    // Same stamping as POST /api/bans, from the same helper, so embedded and remote modes
+    // cannot end up with differently shaped bans.
     public Task<NetworkBan?> AddBanAsync(BanRequest request, CancellationToken ct)
     {
-        if (request == null || string.IsNullOrEmpty(request.PlayerUid))
-            return Task.FromResult<NetworkBan?>(null);
-
-        long now = clock.GetUtcNow().ToUnixTimeSeconds();
-        var ban = bans.Add(new NetworkBan
-        {
-            PlayerUid = request.PlayerUid,
-            PlayerName = request.PlayerName ?? "",
-            ServerId = request.ServerId ?? "",
-            Reason = request.Reason ?? "",
-            BannedBy = request.BannedBy ?? "",
-            CreatedAtUnix = now,
-            ExpiresAtUnix = request.DurationSeconds > 0 ? now + request.DurationSeconds : 0,
-        });
-        return Task.FromResult<NetworkBan?>(ban);
+        var ban = RegistryStamps.NewBan(request, clock.GetUtcNow().ToUnixTimeSeconds());
+        return Task.FromResult(ban is null ? null : bans.Add(ban));
     }
 
     public Task<bool> LiftBanAsync(string playerUid, string? serverId, CancellationToken ct)
@@ -124,33 +103,50 @@ internal sealed class InProcRegistryClient : IRegistryClient
     public Task<List<WhitelistEntry>?> GetWhitelistAsync(CancellationToken ct)
         => Task.FromResult<List<WhitelistEntry>?>(whitelist.Active());
 
-    // Mirrors POST /api/whitelist so embedded and remote modes stamp identical entries.
+    // Same stamping as POST /api/whitelist, from the same helper.
     public Task<WhitelistEntry?> AddWhitelistAsync(WhitelistRequest request, CancellationToken ct)
     {
-        if (request == null || string.IsNullOrEmpty(request.PlayerUid))
-            return Task.FromResult<WhitelistEntry?>(null);
-
-        long now = clock.GetUtcNow().ToUnixTimeSeconds();
-        var entry = whitelist.Add(new WhitelistEntry
-        {
-            PlayerUid = request.PlayerUid,
-            PlayerName = request.PlayerName ?? "",
-            ServerId = request.ServerId ?? "",
-            Note = request.Note ?? "",
-            AddedBy = request.AddedBy ?? "",
-            CreatedAtUnix = now,
-            ExpiresAtUnix = request.DurationSeconds > 0 ? now + request.DurationSeconds : 0,
-        });
-        return Task.FromResult<WhitelistEntry?>(entry);
+        var entry = RegistryStamps.NewWhitelistEntry(request, clock.GetUtcNow().ToUnixTimeSeconds());
+        return Task.FromResult(entry is null ? null : whitelist.Add(entry));
     }
 
+    // Lifts and removals are the store method and nothing else: there was never a second copy
+    // of them to extract, the endpoints delegate the same way.
     public Task<bool> RemoveWhitelistAsync(string playerUid, string? serverId, CancellationToken ct)
         => Task.FromResult(whitelist.Remove(playerUid, serverId));
 
-    private static string NewId()
+    // Same ApiTokenService the HTTP endpoints call, so the default-90-days rule, the scope
+    // vocabulary and the refusal reasons are the same object in embedded and remote mode. A
+    // refusal is a null here where the endpoint answers 400, with the reason in the log: there is
+    // no HTTP caller to hand a status code to.
+    public Task<ApiTokenCreateResponse?> CreateApiTokenAsync(ApiTokenCreateRequest request, CancellationToken ct)
     {
-        Span<byte> bytes = stackalloc byte[12];
-        RandomNumberGenerator.Fill(bytes);
-        return Convert.ToHexString(bytes);
+        var result = tokens.Create(request);
+        if (result.Status != ApiTokenCreateStatus.Ok)
+        {
+            Log.Warn($"in-proc registry: refusing to mint an api token, {Explain(result)}");
+            return Task.FromResult<ApiTokenCreateResponse?>(null);
+        }
+
+        return Task.FromResult<ApiTokenCreateResponse?>(new ApiTokenCreateResponse
+        {
+            Ok = true,
+            Token = result.Plaintext,
+            Record = result.Token!.Redacted(),
+        });
     }
+
+    private static string Explain(ApiTokenCreateResult result) => result.Status switch
+    {
+        ApiTokenCreateStatus.MissingName => "no name given",
+        ApiTokenCreateStatus.InvalidName => "the name is too long or carries control characters",
+        ApiTokenCreateStatus.NoScopes => "no scopes given",
+        _ => $"unknown scope '{result.UnknownScope}'",
+    };
+
+    public Task<List<ApiToken>?> GetApiTokensAsync(CancellationToken ct)
+        => Task.FromResult<List<ApiToken>?>(tokens.List());
+
+    public Task<bool> RevokeApiTokenAsync(string id, CancellationToken ct)
+        => Task.FromResult(tokens.Revoke(id));
 }

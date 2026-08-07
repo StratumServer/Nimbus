@@ -104,7 +104,9 @@ jobs:
             /d:sonar.token="$SONAR_TOKEN" \
             /d:sonar.host.url="https://sonarcloud.io" \
             /d:sonar.exclusions="**/bin/**,**/obj/**" \
-            /d:sonar.coverage.exclusions="eggs/**" \
+            /d:sonar.coverage.exclusions="eggs/**,Nimbus.ServerMod/**" \
+            /d:sonar.cpd.exclusions="eggs/**" \
+            /d:sonar.python.version="3.9" \
             /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
 
       - name: Build
@@ -112,11 +114,11 @@ jobs:
 
       # Has to run after the build and before the end step, so the reports exist by the
       # time the scanner uploads them. The opencover format comes from coverlet.collector,
-      # referenced by the three test projects.
+      # referenced by every test project.
       - name: Tests with coverage
         run: |
           set -e
-          for p in Nimbus.Registry.Core.Tests Nimbus.Proxy.Tests Nimbus.ServerMod.Tests; do
+          for p in Nimbus.Registry.Core.Tests Nimbus.Proxy.Tests Nimbus.Cli.Tests Nimbus.ServerMod.Tests; do
             dotnet test "$p/$p.csproj" -c Release --no-build \
               --collect:"XPlat Code Coverage;Format=opencover" \
               --results-directory TestResults

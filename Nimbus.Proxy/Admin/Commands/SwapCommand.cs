@@ -1,5 +1,3 @@
-using System.Net.Sockets;
-
 namespace Nimbus.Proxy;
 
 internal sealed class SwapCommand : IAdminCommand
@@ -46,7 +44,7 @@ internal sealed class SwapCommand : IAdminCommand
         }
 
         // Skip reservation work when the backend is already unreachable.
-        if (!await TcpProbeAsync(host, port, TimeSpan.FromMilliseconds(1000)).ConfigureAwait(false))
+        if (!await BackendProbe.ReachableAsync(host, port, BackendProbe.DefaultTimeout).ConfigureAwait(false))
             return new { ok = false, reason = $"target {host}:{port} unreachable (tcp probe)" };
 
         var target = new BackendEndpoint { Host = host, Port = port, ServerId = serverId };
@@ -59,17 +57,5 @@ internal sealed class SwapCommand : IAdminCommand
         return result.failReason == null
             ? (object)new { ok = true, requestedMode = mode, mode = result.modeUsed, target = new { host, port, serverId } }
             : new { ok = false, requestedMode = mode, mode = result.modeUsed, reason = result.failReason };
-    }
-
-    private static async Task<bool> TcpProbeAsync(string host, int port, TimeSpan timeout)
-    {
-        using var tcp = new TcpClient { NoDelay = true };
-        using var cts = new CancellationTokenSource(timeout);
-        try
-        {
-            await tcp.ConnectAsync(host, port, cts.Token).ConfigureAwait(false);
-            return tcp.Connected;
-        }
-        catch { return false; }
     }
 }

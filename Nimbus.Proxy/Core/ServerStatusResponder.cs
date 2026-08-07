@@ -31,11 +31,14 @@ internal sealed class ServerStatusResponder
             writeCts.CancelAfter(TimeSpan.FromSeconds(2));
             await client.GetStream().WriteAsync(answer, writeCts.Token).ConfigureAwait(false);
             await client.GetStream().FlushAsync(writeCts.Token).ConfigureAwait(false);
-            try { await Task.Delay(100, writeCts.Token).ConfigureAwait(false); } catch { }
+            // Let the answer reach the wire before the close cuts it off.
+            try { await Task.Delay(100, writeCts.Token).ConfigureAwait(false); } catch { /* 2s budget spent or proxy stopping */ }
         }
-        catch { }
+        catch { /* a server list ping that goes unanswered shows as an offline entry, which is
+                   as much as this path can do about it; nothing here is worth a log line per ping */ }
 
-        try { client.Close(); } catch { }
+        // The query is one request per connection: answered or not, the socket has no further use.
+        try { client.Close(); } catch { /* the pinger usually hangs up first */ }
         return true;
     }
 

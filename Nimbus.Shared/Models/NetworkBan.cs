@@ -25,8 +25,8 @@ public sealed class NetworkBan
     public bool IsActiveAt(long nowUnix)
         => ExpiresAtUnix <= 0 || nowUnix < ExpiresAtUnix;
 
-    // True when this ban blocks the given backend. A network-wide ban blocks every backend;
-    // a scoped ban only its own. An empty serverId asks "is the network itself blocked".
+    // True when this ban blocks the given backend. A network-wide ban blocks every backend,
+    // a scoped ban only its own. An empty serverId asks whether the network itself is blocked.
     public bool Blocks(string? serverId)
         => IsNetworkWide || string.Equals(ServerId, serverId, StringComparison.OrdinalIgnoreCase);
 }

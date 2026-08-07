@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Nimbus.Proxy;
 
@@ -90,7 +91,7 @@ internal sealed class PluginLoader
         if (!File.Exists(manifestPath))
         {
             var id = Path.GetFileNameWithoutExtension(dllPath);
-            return new PluginMetadata(id, pluginType.Name, "0.0.0", CurrentApiVersion, Array.Empty<string>());
+            return new PluginMetadata(id, pluginType.Name, "0.0.0", UndeclaredApiVersion(id), Array.Empty<string>());
         }
 
         try
@@ -101,11 +102,12 @@ internal sealed class PluginLoader
                 PropertyNameCaseInsensitive = true,
             }) ?? new PluginManifest();
 
+            var id = Clean(manifest.Id, Path.GetFileNameWithoutExtension(dllPath));
             return new PluginMetadata(
-                Clean(manifest.Id, Path.GetFileNameWithoutExtension(dllPath)),
+                id,
                 Clean(manifest.Name, pluginType.Name),
                 Clean(manifest.Version, "0.0.0"),
-                Clean(manifest.ApiVersion, CurrentApiVersion),
+                string.IsNullOrWhiteSpace(manifest.ApiVersion) ? UndeclaredApiVersion(id) : manifest.ApiVersion.Trim(),
                 manifest.Dependencies.Where(x => !string.IsNullOrWhiteSpace(x)).ToArray());
         }
         catch (Exception ex)
@@ -135,7 +137,7 @@ internal sealed class PluginLoader
         }
         if (!IsApiCompatible(metadata.ApiVersion))
         {
-            Log.Warn($"plugins: skipping {metadata.Id}, api {metadata.ApiVersion} is not compatible with {CurrentApiVersion}");
+            Log.Warn($"plugins: skipping {metadata.Id} from {Path.GetFileName(dllPath)}, it asks for api {metadata.ApiVersion} and this build offers {CurrentApiVersion}");
             return false;
         }
         foreach (var dep in metadata.Dependencies)
@@ -149,11 +151,33 @@ internal sealed class PluginLoader
         return true;
     }
 
+    /// <summary>
+    /// A plugin loads when it asks for the api major this build speaks. A different major means a
+    /// different set of types and signatures, so the plugin is refused here rather than left to
+    /// throw a MissingMethodException on its first event. Within the major, a plugin may ask for
+    /// an older minor but not a newer one: minors only add, so this build cannot supply what a
+    /// later one introduced.
+    /// </summary>
     private static bool IsApiCompatible(string apiVersion)
     {
         if (!Version.TryParse(apiVersion, out var requested)) return false;
         if (!Version.TryParse(CurrentApiVersion, out var current)) return false;
         return requested.Major == current.Major && requested.Minor <= current.Minor;
+    }
+
+    /// <summary>
+    /// What an absent <c>api_version</c> means. The key was never bound until now, so every plugin
+    /// already in the wild was written without the gate ever reading it, and a good number of them
+    /// do not carry the key at all. Refusing all of those the moment the gate starts working would
+    /// break working installs over a manifest field their authors were never told mattered, so an
+    /// undeclared version loads against whatever this build offers and says so once per plugin.
+    /// The warning is the notice: api_version becomes required in a later release, and this branch
+    /// becomes a refusal then.
+    /// </summary>
+    private static string UndeclaredApiVersion(string pluginId)
+    {
+        Log.Warn($"plugins: {pluginId} declares no api_version, assuming {CurrentApiVersion}; declare it in the manifest, it will be required in a future release");
+        return CurrentApiVersion;
     }
 
     private static bool IsPluginId(string value)
@@ -210,7 +234,16 @@ internal sealed class PluginManifest
     public string? Id { get; set; }
     public string? Name { get; set; }
     public string? Version { get; set; }
+
+    /// <summary>
+    /// The api version the plugin was built against. Spelled <c>api_version</c> on disk, which is
+    /// what the sample manifest has always taught and what every plugin in the wild therefore
+    /// writes. Nothing bound that key before, so the gate in <see cref="PluginLoader"/> compared a
+    /// default against itself and could refuse nothing.
+    /// </summary>
+    [JsonPropertyName("api_version")]
     public string? ApiVersion { get; set; }
+
     public string[] Dependencies { get; set; } = Array.Empty<string>();
 }
 

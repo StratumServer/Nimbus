@@ -43,12 +43,16 @@ internal sealed class AdminCommandRegistry
         new RouteCommand(),
         new DrainCommand(),
         new UndrainCommand(),
+        new EvacuateCommand(),
         new BanCommand(),
         new UnbanCommand(),
         new BansCommand(),
         new WhitelistAddCommand(),
         new WhitelistRemoveCommand(),
         new WhitelistListCommand(),
+        new TokenCreateCommand(),
+        new TokenRevokeCommand(),
+        new TokenListCommand(),
         new ReloadCommand(),
     });
 }

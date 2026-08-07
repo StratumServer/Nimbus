@@ -5,8 +5,8 @@ using System.Text.Json;
 namespace Nimbus.Cli;
 
 // CLI for the Nimbus.Proxy admin endpoint. One TCP connection per command.
-// Defaults: host=127.0.0.1, port=42499. Override with --host/--port, NIMCTL_HOST/NIMCTL_PORT,
-// or a nimctl.json file in CWD or next to the exe.
+// Defaults: host=127.0.0.1, port=42499. Override with --host/--port before the command, with
+// NIMCTL_HOST/NIMCTL_PORT, or with a nimctl.json file in CWD or next to the exe.
 internal static class Program
 {
     private const string DefaultHost = "127.0.0.1";
@@ -14,40 +14,22 @@ internal static class Program
 
     private static int Main(string[] args)
     {
-        var (host, port, secret, rest) = ParseGlobalOptions(args);
-
-        if (rest.Count == 0 || IsHelp(rest[0]))
-        {
-            PrintHelp();
-            return rest.Count == 0 ? 2 : 0;
-        }
-
+        // Parsing is inside the try because a bad --port is now a usage error with a message on
+        // stderr rather than a FormatException with a stack trace behind it.
         try
         {
-            string cmd = NormalizeCommand(rest[0]);
-            object payload = cmd switch
-            {
-                "ping"    => new { cmd = "ping" },
-                "help"    => new { cmd = "help" },
-                "list"    => new { cmd = "list" },
-                "status"  => BuildStatus(rest),
-                "plugins" => new { cmd = "plugins" },
-                "kick"    => BuildKick(rest),
-                "servers" => BuildServers(rest),
-                "swap"    => BuildSwap(rest),
-                "sticky"  => new { cmd = "sticky" },
-                "route"   => new { cmd = "route" },
-                "drain"   => BuildDrain(rest, "drain"),
-                "undrain" => BuildDrain(rest, "undrain"),
-                "ban"     => BuildBan(rest),
-                "unban"   => BuildUnban(rest),
-                "bans"    => new { cmd = "bans" },
-                "whitelist" => BuildWhitelist(rest),
-                "raw"     => BuildRaw(rest),
-                _ => throw new ArgumentException($"unknown command: {cmd}"),
-            };
+            var (host, port, secret, rest) = ParseGlobalOptions(args);
 
-            string response = SendAsync(host, port, secret, payload).GetAwaiter().GetResult();
+            if (rest.Count == 0 || IsHelp(rest[0]))
+            {
+                PrintHelp();
+                return rest.Count == 0 ? 2 : 0;
+            }
+
+            RejectMisplacedConnectionFlags(rest);
+            object payload = BuildPayload(rest);
+
+            string response = SendAsync(host, port, secret, payload, ReadTimeout(rest)).GetAwaiter().GetResult();
             Console.WriteLine(PrettyPrint(response));
             return ExitCodeFromResponse(response);
         }
@@ -57,6 +39,42 @@ internal static class Program
             return 1;
         }
     }
+
+    // The admin frame a command line turns into, before it reaches a socket. Kept apart from
+    // Main so the mapping can be read, and tested, without a proxy on the other end.
+    internal static object BuildPayload(List<string> args)
+    {
+        string cmd = NormalizeCommand(args[0]);
+        return cmd switch
+        {
+            "ping"    => new { cmd = "ping" },
+            "help"    => new { cmd = "help" },
+            "list"    => new { cmd = "list" },
+            "status"  => BuildStatus(args),
+            "plugins" => new { cmd = "plugins" },
+            "kick"    => BuildKick(args),
+            "servers" => BuildServers(args),
+            "swap"    => BuildSwap(args),
+            "sticky"  => new { cmd = "sticky" },
+            "route"   => new { cmd = "route" },
+            "drain"   => BuildDrain(args, "drain"),
+            "undrain" => BuildDrain(args, "undrain"),
+            "evacuate" => BuildEvacuate(args),
+            "ban"     => BuildBan(args),
+            "unban"   => BuildUnban(args),
+            "bans"    => new { cmd = "bans" },
+            "whitelist" => BuildWhitelist(args),
+            "token"   => BuildToken(args),
+            "reload"  => new { cmd = "reload" },
+            "raw"     => BuildRaw(args),
+            _ => throw new ArgumentException($"unknown command: {cmd}"),
+        };
+    }
+
+    // The exact line body that goes on the wire. A payload built by `raw` is already a parsed
+    // JSON document and is passed through verbatim rather than reserialized.
+    internal static string Serialize(object payload)
+        => payload is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(payload);
 
     private static object BuildStatus(List<string> args)
     {
@@ -93,7 +111,7 @@ internal static class Program
         var d = new Dictionary<string, object?> { ["cmd"] = "swap", ["id"] = id };
         if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
         if (!string.IsNullOrEmpty(host))     d["host"] = host;
-        if (!string.IsNullOrEmpty(portStr))  d["port"] = int.Parse(portStr);
+        if (!string.IsNullOrEmpty(portStr))  d["port"] = ParsePort(portStr);
         if (!string.IsNullOrEmpty(reason))   d["reason"] = reason;
         if (seamless) d["mode"] = "seamless";
         if (redirect) d["mode"] = "redirect";
@@ -191,11 +209,91 @@ internal static class Program
         }
     }
 
+    // `token` takes a sub-verb for the same reason `whitelist` does: create, revoke and list all
+    // read the one list. Bare `token` lists, which is the harmless one, and the only one that
+    // never puts a secret on a terminal.
+    private static object BuildToken(List<string> args)
+    {
+        string sub = args.Count >= 2 && !args[1].StartsWith('-') ? args[1].ToLowerInvariant() : "list";
+        return sub switch
+        {
+            "list" or "ls" => new { cmd = "token-list" },
+            "create" or "new" or "add" => BuildTokenCreate(args),
+            "revoke" or "rm" or "del" => BuildTokenRevoke(args),
+            _ => throw new ArgumentException($"unknown token sub-command: {sub} (create, revoke, list)"),
+        };
+    }
+
+    private static Dictionary<string, object?> BuildTokenCreate(List<string> args)
+    {
+        string? name = GetOpt(args, "--name");
+        if (string.IsNullOrEmpty(name))
+            throw new ArgumentException("token create requires --name <name>");
+
+        string? scopes = GetOpt(args, "--scopes") ?? GetOpt(args, "--scope");
+        if (string.IsNullOrEmpty(scopes))
+            throw new ArgumentException("token create requires --scopes <a,b> (bans:read, bans:write, whitelist:read, whitelist:write, servers:read)");
+
+        var d = new Dictionary<string, object?> { ["cmd"] = "token-create", ["name"] = name, ["scopes"] = scopes };
+
+        bool permanent = args.Contains("--permanent");
+        string? durationStr = GetOpt(args, "--duration");
+        // Refused rather than resolved in nimctl's favour: one of the two is being ignored
+        // whichever way it is settled, and the operator is the only one who knows which they
+        // meant.
+        if (permanent && !string.IsNullOrEmpty(durationStr))
+            throw new ArgumentException("--permanent and --duration are mutually exclusive");
+        if (permanent) d["permanent"] = true;
+        if (!string.IsNullOrEmpty(durationStr))
+        {
+            if (!int.TryParse(durationStr, out int duration))
+                throw new ArgumentException("--duration takes a number of seconds");
+            d["duration"] = duration;
+        }
+        return d;
+    }
+
+    private static object BuildTokenRevoke(List<string> args)
+    {
+        string? id = GetOpt(args, "--id") ?? (args.Count >= 3 && !args[2].StartsWith('-') ? args[2] : null);
+        if (string.IsNullOrEmpty(id)) throw new ArgumentException("token revoke requires <id>");
+        return new { cmd = "token-revoke", id };
+    }
+
     private static object BuildDrain(List<string> args, string cmd)
     {
         string? serverId = args.Count >= 2 && !args[1].StartsWith("-") ? args[1] : (GetOpt(args, "--server") ?? GetOpt(args, "--serverId"));
         if (string.IsNullOrEmpty(serverId)) throw new ArgumentException($"{cmd} requires <serverId> or --server <id>");
         return new { cmd, serverId };
+    }
+
+    // `evacuate` is the eviction half of what kubernetes calls a drain, and reads the same way as
+    // `drain`: the backend positionally or under --server. Whether --to names the source, and
+    // whether the pace is one the proxy will accept, are the proxy's calls rather than nimctl's,
+    // so both go on the wire as typed and come back refused in the proxy's own words.
+    private static object BuildEvacuate(List<string> args)
+    {
+        string? serverId = args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : (GetOpt(args, "--server") ?? GetOpt(args, "--serverId"));
+        if (string.IsNullOrEmpty(serverId)) throw new ArgumentException("evacuate requires <serverId> or --server <id>");
+
+        var d = new Dictionary<string, object?> { ["cmd"] = "evacuate", ["serverId"] = serverId };
+
+        string? to = GetOpt(args, "--to") ?? GetOpt(args, "--target");
+        if (!string.IsNullOrEmpty(to)) d["to"] = to;
+
+        string? paceStr = GetOpt(args, "--pace-ms") ?? GetOpt(args, "--paceMs");
+        if (!string.IsNullOrEmpty(paceStr))
+        {
+            // A pace sent as a string is a field the proxy reads as absent, so it would silently
+            // fall back to the default instead of running at the pace that was asked for.
+            if (!int.TryParse(paceStr, out int paceMs))
+                throw new ArgumentException("--pace-ms takes a number of milliseconds");
+            d["paceMs"] = paceMs;
+        }
+
+        string? reason = GetOpt(args, "--reason");
+        if (!string.IsNullOrEmpty(reason)) d["reason"] = reason;
+        return d;
     }
 
     // Send arbitrary JSON straight to the admin endpoint.
@@ -207,7 +305,13 @@ internal static class Program
         return JsonSerializer.Deserialize<JsonElement>(args[1]);
     }
 
-    private static async Task<string> SendAsync(string host, int port, string? secret, object payload)
+    // How long to wait for the proxy's answer. Every command answers straight away except
+    // `evacuate`, which walks a backend's sessions at a pace the operator sets and replies with
+    // the summary once the sweep is done, so it gets a budget the proxy's own sweep fits inside.
+    internal static TimeSpan ReadTimeout(List<string> args)
+        => NormalizeCommand(args[0]) == "evacuate" ? TimeSpan.FromSeconds(120) : TimeSpan.FromSeconds(15);
+
+    private static async Task<string> SendAsync(string host, int port, string? secret, object payload, TimeSpan readTimeout)
     {
         using var tcp = new TcpClient { NoDelay = true };
         using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
@@ -215,7 +319,7 @@ internal static class Program
         var stream = tcp.GetStream();
 
         using var reader = new StreamReader(stream, Encoding.UTF8);
-        using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var readCts = new CancellationTokenSource(readTimeout);
 
         // Only send auth when the proxy expects it.
         if (!string.IsNullOrEmpty(secret))
@@ -229,8 +333,7 @@ internal static class Program
                 throw new InvalidOperationException($"auth failed: {authResp ?? "(no response)"}");
         }
 
-        string json = payload is JsonElement je ? je.GetRawText() : JsonSerializer.Serialize(payload);
-        var bytes = Encoding.UTF8.GetBytes(json + "\n");
+        var bytes = Encoding.UTF8.GetBytes(Serialize(payload) + "\n");
         await stream.WriteAsync(bytes).ConfigureAwait(false);
         await stream.FlushAsync().ConfigureAwait(false);
 
@@ -238,14 +341,80 @@ internal static class Program
         return line ?? "";
     }
 
-    private static (string host, int port, string? secret, List<string> rest) ParseGlobalOptions(string[] args)
+    // Where nimctl itself connects, and what is left over for the verb. Parsing stops at the first
+    // token that is not one of these three name-value pairs, which is the verb: connection settings
+    // before the command, verb arguments after it, exactly as the help reads. Reading them wherever
+    // they appeared is what made the documented `swap <id> --host <h> --port <p>` repoint nimctl at
+    // the transfer target instead of sending the player there (issue #81).
+    internal static (string host, int port, string? secret, List<string> rest) ParseGlobalOptions(string[] args)
     {
         string host = Environment.GetEnvironmentVariable("NIMCTL_HOST") ?? DefaultHost;
         int port = int.TryParse(Environment.GetEnvironmentVariable("NIMCTL_PORT"), out var ep) ? ep : DefaultPort;
         string? secret = Environment.GetEnvironmentVariable("NIMCTL_SECRET");
 
-        // nimctl.json in CWD or exe dir. { "Host": "...", "Port": ..., "Secret": "..." }
-        foreach (var dir in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        (host, port, secret) = ApplyConfigFile(
+            new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory }, host, port, secret);
+
+        int i = 0;
+        // The loop ends on the last flag with nothing after it as well as on the verb: a flag with
+        // no value has none to take, so it stays in the command and comes back as an unknown
+        // command rather than moving where nimctl connects.
+        while (i + 1 < args.Length)
+        {
+            if (args[i] == "--host") host = args[i + 1];
+            else if (args[i] == "--port") port = ParsePort(args[i + 1]);
+            else if (args[i] == "--secret") secret = args[i + 1];
+            else break;
+            i += 2;
+        }
+        return (host, port, secret, new List<string>(args[i..]));
+    }
+
+    // --port is read on both sides of the verb and has to refuse a typo the same way in both,
+    // in the shape --duration already uses rather than as a raw FormatException.
+    private static int ParsePort(string value)
+    {
+        if (!int.TryParse(value, out int port)) throw new ArgumentException("--port takes a port number");
+        return port;
+    }
+
+    // Connection flags are read before the verb only, so one typed after it would now be ignored.
+    // `swap` is the only verb with a --host and --port of its own, and no verb has a --secret, so
+    // anything else found here is an operator using the spelling that used to work by accident.
+    // Saying so beats talking to the default proxy without a word about it.
+    internal static void RejectMisplacedConnectionFlags(List<string> args)
+    {
+        bool verbTakesHostAndPort = NormalizeCommand(args[0]) == "swap";
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var corrected = new List<string>();
+
+        // From 1: args[0] is the verb, and a verb is never one of these.
+        for (int i = 1; i < args.Count; i++)
+        {
+            string flag = args[i];
+            bool misplaced = flag == "--secret"
+                || ((flag == "--host" || flag == "--port") && !verbTakesHostAndPort);
+            if (!misplaced || !seen.Add(flag)) continue;
+
+            // The operator's own values go in the correction so it can be retyped as it stands,
+            // except the secret: this message reaches stderr, and from there scrollback and logs.
+            string value = flag != "--secret" && i + 1 < args.Count ? args[i + 1] : $"<{flag[2..]}>";
+            corrected.Add($"{flag} {value}");
+        }
+
+        if (corrected.Count == 0) return;
+        throw new ArgumentException(
+            "connection flags go before the command, not after it: "
+            + $"nimctl {string.Join(' ', corrected)} {args[0]} ...");
+    }
+
+    // nimctl.json from the first of `dirs` that has one. { "Host": "...", "Port": ..., "Secret": "..." }
+    // Only the first file found is read, and a malformed one is ignored rather than fatal: a
+    // stray config in a working directory must not stop the CLI from running.
+    internal static (string Host, int Port, string? Secret) ApplyConfigFile(
+        IEnumerable<string> dirs, string host, int port, string? secret)
+    {
+        foreach (var dir in dirs)
         {
             var path = Path.Combine(dir, "nimctl.json");
             if (!File.Exists(path)) continue;
@@ -259,21 +428,12 @@ internal static class Program
             catch { /* ignore malformed config */ }
             break;
         }
-
-        var rest = new List<string>(args.Length);
-        for (int i = 0; i < args.Length; i++)
-        {
-            if (args[i] == "--host" && i + 1 < args.Length) { host = args[++i]; continue; }
-            if (args[i] == "--port" && i + 1 < args.Length) { port = int.Parse(args[++i]); continue; }
-            if (args[i] == "--secret" && i + 1 < args.Length) { secret = args[++i]; continue; }
-            rest.Add(args[i]);
-        }
-        return (host, port, secret, rest);
+        return (host, port, secret);
     }
 
-    private static bool IsHelp(string s) => s is "-h" or "--help" or "help";
+    internal static bool IsHelp(string s) => s is "-h" or "--help" or "help";
 
-    private static string NormalizeCommand(string cmd) => cmd switch
+    internal static string NormalizeCommand(string cmd) => cmd switch
     {
         "?" => "help",
         "ls" or "players" => "list",
@@ -285,7 +445,9 @@ internal static class Program
         "stickies" => "sticky",
         "routes" => "route",
         "resume" => "undrain",
+        "evac" => "evacuate",
         "wl" => "whitelist",
+        "tokens" => "token",
         _ => cmd,
     };
 
@@ -303,7 +465,7 @@ internal static class Program
         return null;
     }
 
-    private static string PrettyPrint(string raw)
+    internal static string PrettyPrint(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "(no response)";
         try
@@ -314,7 +476,7 @@ internal static class Program
         catch { return raw; }
     }
 
-    private static int ExitCodeFromResponse(string raw)
+    internal static int ExitCodeFromResponse(string raw)
     {
         try
         {
@@ -331,7 +493,11 @@ internal static class Program
         Console.WriteLine("nimctl - Nimbus.Proxy admin client");
         Console.WriteLine();
         Console.WriteLine("Usage:");
-        Console.WriteLine("  nimctl [--host H] [--port P] <command> [args]");
+        Console.WriteLine("  nimctl [--host H] [--port P] [--secret S] <command> [args]");
+        Console.WriteLine();
+        Console.WriteLine("  --host, --port and --secret say where nimctl connects and go before the command.");
+        Console.WriteLine("  Everything after the command belongs to it, which is how the --host and --port of");
+        Console.WriteLine("  `swap` name the backend a player is sent to rather than the proxy being asked.");
         Console.WriteLine();
         Console.WriteLine("Commands:");
         Console.WriteLine("  ping                                    health check");
@@ -350,6 +516,13 @@ internal static class Program
         Console.WriteLine("  route                                   show backend pool + health + drain state");
         Console.WriteLine("  drain <serverId>                        stop routing new sessions to <serverId>");
         Console.WriteLine("  undrain <serverId>                      resume routing new sessions to <serverId>");
+        Console.WriteLine("  evacuate <serverId> [--to <id>] [--pace-ms <n>] [--reason \"...\"]");
+        Console.WriteLine("      move every player already on <serverId> somewhere else. drain stops new arrivals");
+        Console.WriteLine("      and evacuate moves the ones already there, so `drain hub` then `evacuate hub`:");
+        Console.WriteLine("      on its own, evacuate leaves hub open and new joins can land on it mid-sweep.");
+        Console.WriteLine("      --to omitted lets the router pick per player; --pace-ms is the gap between");
+        Console.WriteLine("      transfers (250 default, 0 for none). Refused players stay put and are named");
+        Console.WriteLine("      in the answer, so evacuate is safe to run again.");
         Console.WriteLine("  ban (--uid <uid> | --player <name>) [--server <id>] [--duration <s>] [--reason \"...\"]");
         Console.WriteLine("      no --server bans across the whole network; --duration 0 or omitted is permanent.");
         Console.WriteLine("  unban <uid> [--server <id>]             lift a ban");
@@ -359,12 +532,21 @@ internal static class Program
         Console.WriteLine("  whitelist remove <uid> [--server <id>]  drop an entry, disconnecting whoever loses access");
         Console.WriteLine("  whitelist list                          list entries and where they are enforced");
         Console.WriteLine("      enforcement is [whitelist] in nimbus.proxy.toml, never the list being non-empty.");
+        Console.WriteLine("  token create --name <n> --scopes <a,b> [--duration <s> | --permanent]");
+        Console.WriteLine("      scopes: bans:read, bans:write, whitelist:read, whitelist:write, servers:read.");
+        Console.WriteLine("      default expiry is 90 days; --permanent is the explicit opt-out.");
+        Console.WriteLine("      the secret is printed once and cannot be recovered afterwards.");
+        Console.WriteLine("  token revoke <id>                       revoke a token by the id `token list` shows");
+        Console.WriteLine("  token list                              list issued tokens, scopes, expiry and last use");
+        Console.WriteLine("      tokens authenticate over loopback or TLS only, and only when the registry has");
+        Console.WriteLine("      api_tokens.enabled = true.");
+        Console.WriteLine("  reload                                  reload nimbus.proxy.toml and all plugins");
         Console.WriteLine("  raw '<json>'                            send a raw JSON line (for new commands)");
         Console.WriteLine();
         Console.WriteLine("Defaults: host=127.0.0.1 port=42499.");
         Console.WriteLine();
-        Console.WriteLine("Auth: pass --secret <s>, set NIMCTL_SECRET, or add \"Secret\" to nimctl.json when the");
-        Console.WriteLine("      proxy is configured with admin.secret.");
+        Console.WriteLine("Auth: pass --secret <s> before the command, set NIMCTL_SECRET, or add \"Secret\" to");
+        Console.WriteLine("      nimctl.json when the proxy is configured with admin.secret.");
         Console.WriteLine("Overrides (highest wins): CLI flags > nimctl.json > NIMCTL_HOST/PORT env > built-in.");
         Console.WriteLine();
         Console.WriteLine("Exit codes: 0=ok, 1=error, 2=usage, 3=server replied ok:false.");

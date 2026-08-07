@@ -215,6 +215,44 @@ public class WhitelistEnforcementTests
         Assert.Equal(1, hub.Connections);
     }
 
+    // The kick sweep in whitelist-remove reads the cache to decide who has lost their last
+    // coverage, so it has to be able to tell an answered refresh from an unanswered one. When it
+    // could not, a removal whose refresh failed left the dropped entry sitting in the cache,
+    // spared every session it used to cover, and reported a kick count of zero.
+    [Fact]
+    public async Task Refresh_SaysWhetherTheRegistryAnswered()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var registry = new FakeRegistryClient
+        {
+            Whitelist = new List<WhitelistEntry> { new() { PlayerUid = ListedUid } },
+        };
+        var cache = new WhitelistCache(registry, cts.Token);
+
+        Assert.True(await cache.RefreshAsync());
+        Assert.NotNull(cache.FindCovering(ListedUid));
+
+        // Registry error: the previous list stands, and the caller is told the new state never
+        // landed rather than being handed a stale answer as if it were fresh.
+        registry.Whitelist = null;
+        Assert.False(await cache.RefreshAsync());
+        Assert.NotNull(cache.FindCovering(ListedUid));
+
+        // And the entry really is gone once an answer does arrive.
+        registry.Whitelist = new List<WhitelistEntry>();
+        Assert.True(await cache.RefreshAsync());
+        Assert.Null(cache.FindCovering(ListedUid));
+    }
+
+    [Fact]
+    public async Task Refresh_WithoutARegistry_ReportsNothingLanded()
+    {
+        var cache = new WhitelistCache(registry: null, CancellationToken.None);
+
+        Assert.False(await cache.RefreshAsync());
+        Assert.False(cache.HasSynced);
+    }
+
     [Fact]
     public async Task RedirectToAWhitelistedBackend_IsRefusedForAnUnlistedPlayer()
     {

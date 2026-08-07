@@ -24,6 +24,11 @@ internal sealed partial class ProxySession : IPlayer
     private readonly CancellationToken sessionStopToken;
     private readonly DateTimeOffset sessionStart = DateTimeOffset.UtcNow;
     private readonly string clientRemote; // captured at construction — safe after socket close
+    // The key this session's UDP override is filed under, captured for the same reason: the
+    // socket is closed by the time the teardown wants to take the override back down, and
+    // TcpClient.Close() nulls Client. Kept in the raw, un-normalised form the relay matches
+    // incoming datagrams against.
+    private readonly System.Net.IPAddress? clientAddress;
     private readonly SessionState? state;
     private readonly FrameSniffer? sniffC2S;
     private readonly FrameSniffer? sniffS2C;
@@ -90,9 +95,9 @@ internal sealed partial class ProxySession : IPlayer
         this.client.NoDelay = true;
         this.clientStream = client.GetStream();
         this.sessionStopToken = stopToken;
-        this.clientRemote = client.Client?.RemoteEndPoint is System.Net.IPEndPoint cep
-            ? (cep.Address.IsIPv4MappedToIPv6 ? cep.Address.MapToIPv4().ToString() : cep.Address.ToString())
-            : "?";
+        var clientEp = client.Client?.RemoteEndPoint as System.Net.IPEndPoint;
+        this.clientAddress = clientEp?.Address;
+        this.clientRemote = DescribeClient(this.clientAddress);
         this.stickies = stickies;
         this.registry = registry;
         this.udpOverrides = udpOverrides;
@@ -108,10 +113,24 @@ internal sealed partial class ProxySession : IPlayer
         this.sniffC2S.OnRawFrame = OnClientFrame;
     }
 
+    // The client address as everything that reads a log line or a sticky route expects it: an
+    // IPv4 one unwrapped from ::ffff:1.2.3.4 under dual-stack, and "?" when the socket had no
+    // endpoint to offer.
+    private static string DescribeClient(System.Net.IPAddress? address)
+    {
+        if (address == null) return "?";
+        return address.IsIPv4MappedToIPv6 ? address.MapToIPv4().ToString() : address.ToString();
+    }
+
     public SessionState.Phase Phase => state?.Current ?? SessionState.Phase.TcpOpen;
 
     public string? PlayerUid => capturedPlayerUid;
     public string? PlayerName => capturedPlayerName;
+
+    // The backend this session is pumped to right now, or null before the first upstream is up.
+    // Read by the evacuate command to find the sessions sitting on the backend being emptied.
+    public BackendEndpoint? CurrentBackend => currentBackend;
+
     public bool HasIdentification => capturedIdentification != null;
     public bool SupportsSeamlessTransfers => seamlessCapable;
     public string ClientRemote => clientRemote;
@@ -192,7 +211,7 @@ internal sealed partial class ProxySession : IPlayer
                     return (addr.ToString(), ep.Port);
                 }
             }
-            catch { }
+            catch { /* the socket can be closed under us between the null check and the read */ }
             return ("", 0);
         }
     }
@@ -201,9 +220,12 @@ internal sealed partial class ProxySession : IPlayer
     public void Close()
     {
         closed = true;
-        try { pumpCts?.Cancel(); } catch { }
-        try { upstream?.Close(); } catch { }
-        try { client.Close(); } catch { }
+        // Every step here is best-effort: Close races the pumps and the teardown in RunAsync's
+        // finally, so any of the three can already be disposed. Whoever gets there first wins and
+        // the loser has nothing left to do.
+        try { pumpCts?.Cancel(); } catch { /* already disposed by an earlier teardown */ }
+        try { upstream?.Close(); } catch { /* backend socket may be gone already */ }
+        try { client.Close(); } catch { /* the client may have dropped first */ }
     }
 
     private void OnClientFrame(string name, ReadOnlyMemory<byte> raw)
@@ -228,12 +250,13 @@ internal sealed partial class ProxySession : IPlayer
         var server = currentBackend?.ToServerInfo();
         var evt = new PlayerChatEvent(this, server, message, groupId);
         // Off the pump: a slow handler must not stall the player's own traffic. Chat is observed,
-        // never gated, so nothing downstream waits on this.
+        // never gated, so nothing downstream waits on this. The token keeps a proxy that is
+        // already stopping from waking handlers for a line nobody can act on any more.
         _ = Task.Run(async () =>
         {
             try { await events.FireAsync(evt).ConfigureAwait(false); }
-            catch { }
-        });
+            catch { /* a plugin that throws on a chat line does not get to end the session */ }
+        }, sessionStopToken);
     }
 
     // `landingOn` is the backend this session is about to be connected to, passed by the connect
@@ -401,14 +424,20 @@ internal sealed partial class ProxySession : IPlayer
             try
             {
                 var frame = DisconnectBuilder.BuildDisconnectFrame(reason);
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                // Two seconds to get the reason across, and never longer than the proxy itself
+                // lives: a shutdown must not sit out the full courtesy write for a player whose
+                // socket is going away regardless. RunAsync's finally closes what this skips.
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
+                cts.CancelAfter(TimeSpan.FromSeconds(2));
                 await clientStream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
                 await clientStream.FlushAsync(cts.Token).ConfigureAwait(false);
-                try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { }
+                // Breathing room for the client to render the reason before the socket goes.
+                // Cut short by the 2s budget or by session stop, and either way Close follows.
+                try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { /* cut short, close now */ }
             }
-            catch { }
+            catch { /* the client may have left before the reason reached it; nothing to salvage */ }
             finally { Close(); }
-        });
+        }, sessionStopToken);
     }
 
     // The reason a transfer to `target` is refused because of a ban, or null when it is allowed.
@@ -583,9 +612,9 @@ internal sealed partial class ProxySession : IPlayer
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                     await clientStream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
                     await clientStream.FlushAsync(cts.Token).ConfigureAwait(false);
-                    try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { }
+                    try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { /* cut short, tear down now */ }
                 }
-                catch { }
+                catch { /* no backend and now no client either; the finally below tears it down */ }
                 return;
             }
 
@@ -608,24 +637,28 @@ internal sealed partial class ProxySession : IPlayer
             // was given with a dropped connection. The write carries its own 2s cap.
             var pendingDisconnect = gateDisconnect;
             if (pendingDisconnect != null) await SafeAwait(pendingDisconnect).ConfigureAwait(false);
-            try { upstream?.Close(); } catch { }
-            try { client.Close(); } catch { }
-            // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts fresh.
-            try
-            {
-                if (udpOverrides != null && client.Client?.RemoteEndPoint is System.Net.IPEndPoint ep)
-                    udpOverrides.Clear(ep.Address);
-            }
-            catch { }
+            // The pumps exited because one of these two ended, so the other is usually the only
+            // one left to close and the dead one throws. This is the last owner either way.
+            try { upstream?.Close(); } catch { /* backend already dropped us */ }
+            try { client.Close(); } catch { /* client already dropped us */ }
+            // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts
+            // fresh. Off the address captured at construction, not off the socket: by here the
+            // client socket has been closed either by this teardown or by Close(), and
+            // TcpClient.Close() nulls Client, so reading the endpoint back gives nothing to clear
+            // under and the override outlives the session.
+            if (udpOverrides != null && clientAddress != null)
+                udpOverrides.Clear(clientAddress);
             if (events != null)
             {
+                // Disconnect notifications are the last thing this session does. A handler that
+                // throws here must not skip the ones after it or lose the summary line below.
                 if (kickedByBackend && currentBackend != null)
                 {
                     try { await events.FireAsync(new ServerKickedEvent(this, currentBackend.ToServerInfo())).ConfigureAwait(false); }
-                    catch { }
+                    catch { /* a failed kick notification must not swallow the disconnect one */ }
                 }
                 try { await events.FireAsync(new PlayerDisconnectEvent(this, c2sBytes, s2cBytes)).ConfigureAwait(false); }
-                catch { }
+                catch { /* the session is over; a throwing handler changes nothing about that */ }
             }
             var elapsed = DateTimeOffset.UtcNow - sessionStart;
             Log.Info($"[s{Id}] {capturedPlayerName ?? clientRemote} disconnected ({FormatDuration(elapsed)} | ↑{FormatBytes(c2sBytes)} ↓{FormatBytes(s2cBytes)})");
@@ -690,19 +723,21 @@ internal sealed partial class ProxySession : IPlayer
         {
             ProxyMetrics.BackendConnectFailure();
             Log.Warn($"[s{Id}] could not reach backend {target}: {ex.Message}");
-            try { up.Close(); } catch { }
+            // The reason is already logged above; closing a socket that never connected is
+            // housekeeping and its own failure adds nothing to the failover decision.
+            try { up.Close(); } catch { /* never connected, nothing to report */ }
             return (false, false, $"{target}: {ex.Message}");
         }
         if (!await TryWriteProxyProtocolAsync(up, target).ConfigureAwait(false))
         {
             ProxyMetrics.BackendConnectFailure();
-            try { up.Close(); } catch { }
+            try { up.Close(); } catch { /* the header write already failed; the socket is done */ }
             return (false, false, $"{target}: PROXY v2 header write failed");
         }
         if (!await TryWriteFirstClientFrameAsync(up, firstClientFrame).ConfigureAwait(false))
         {
             ProxyMetrics.BackendConnectFailure();
-            try { up.Close(); } catch { }
+            try { up.Close(); } catch { /* the frame replay already failed; the socket is done */ }
             return (false, false, $"{target}: first client frame write failed");
         }
         ProxyMetrics.BackendConnectSuccess();
@@ -717,7 +752,7 @@ internal sealed partial class ProxySession : IPlayer
         if (events != null)
         {
             try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
-            catch { }
+            catch { /* the player is connected and playing; a throwing handler cannot undo that */ }
         }
         return (true, false, null);
     }
@@ -725,13 +760,10 @@ internal sealed partial class ProxySession : IPlayer
     // Pin UDP for this client to the same backend our TCP session uses. No-op without overrides.
     private void UpdateUdpOverride(BackendEndpoint target)
     {
-        if (udpOverrides == null) return;
-        try
-        {
-            if (client.Client?.RemoteEndPoint is System.Net.IPEndPoint ep)
-                udpOverrides.Set(ep.Address, target);
-        }
-        catch { }
+        // Same captured address the teardown clears under, so the two always agree on the key.
+        // No usable client address means no override to pin, and UDP falls back to the default.
+        if (udpOverrides == null || clientAddress == null) return;
+        udpOverrides.Set(clientAddress, target);
     }
 
     private async Task<bool> TryWriteFirstClientFrameAsync(TcpClient up, ReadOnlyMemory<byte> frame)
@@ -877,7 +909,9 @@ internal sealed partial class ProxySession : IPlayer
         return null;
     }
 
-    private static async Task SafeAwait(Task t) { try { await t.ConfigureAwait(false); } catch { } }
+    // Await a task purely to know it has finished. Callers use this on pumps and on the forged
+    // disconnect, both of which already log and handle their own failures on the way out.
+    private static async Task SafeAwait(Task t) { try { await t.ConfigureAwait(false); } catch { /* the task reported for itself */ } }
 
     private static string FormatDuration(TimeSpan t)
     {

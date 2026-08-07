@@ -40,8 +40,7 @@ internal sealed class ClientSessionRunner
             if (connectEvt.IsDenied)
             {
                 Log.Info($"[s{session.Id}] connection denied by handler: {connectEvt.DenyReason}");
-                await TryForgeDisconnectAsync(client, connectEvt.DenyReason ?? "connection refused").ConfigureAwait(false);
-                try { client.Close(); } catch { }
+                await RefuseAsync(client, connectEvt.DenyReason ?? "connection refused").ConfigureAwait(false);
                 return;
             }
 
@@ -64,8 +63,7 @@ internal sealed class ClientSessionRunner
             if (chooseEvt.IsCancelled)
             {
                 Log.Info($"[s{session.Id}] initial connect cancelled by handler: {chooseEvt.CancelReason}");
-                await TryForgeDisconnectAsync(client, chooseEvt.CancelReason ?? "connection cancelled").ConfigureAwait(false);
-                try { client.Close(); } catch { }
+                await RefuseAsync(client, chooseEvt.CancelReason ?? "connection cancelled").ConfigureAwait(false);
                 return;
             }
 
@@ -81,8 +79,7 @@ internal sealed class ClientSessionRunner
             if (ordered.Count == 0)
             {
                 Log.Warn($"[s{session.Id}] no healthy backend: {selectReason}; sending forged disconnect");
-                await TryForgeDisconnectAsync(client, $"No backend available right now ({selectReason}). Please try again shortly.").ConfigureAwait(false);
-                try { client.Close(); } catch { }
+                await RefuseAsync(client, $"No backend available right now ({selectReason}). Please try again shortly.").ConfigureAwait(false);
                 return;
             }
 
@@ -91,7 +88,9 @@ internal sealed class ClientSessionRunner
         catch (Exception ex)
         {
             Log.Warn($"[s{session.Id}] session crashed: {ex.GetType().Name}: {ex.Message}");
-            try { client.Close(); } catch { }
+            // The crash is logged above and this listener has to keep accepting. A close that
+            // throws on top of it means the socket is already gone, which is the goal anyway.
+            try { client.Close(); } catch { /* already gone */ }
         }
     }
 
@@ -167,7 +166,9 @@ internal sealed class ClientSessionRunner
         return whitelist.FindCovering(uid, target.ServerId) == null;
     }
 
-    private static async Task TryForgeDisconnectAsync(TcpClient client, string message)
+    // Tell the client why it is not getting in, then drop it. Every refusal in RunAsync ends
+    // this way, so the close lives here rather than being repeated at each call site.
+    private static async Task RefuseAsync(TcpClient client, string message)
     {
         try
         {
@@ -175,9 +176,12 @@ internal sealed class ClientSessionRunner
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             await client.GetStream().WriteAsync(frame, cts.Token).ConfigureAwait(false);
             await client.GetStream().FlushAsync(cts.Token).ConfigureAwait(false);
-            try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { }
+            // Breathing room for the client to render the reason before the socket goes.
+            try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { /* 2s budget spent, close now */ }
         }
-        catch { }
+        catch { /* the reason is a courtesy; a client that already left still gets refused */ }
+
+        try { client.Close(); } catch { /* the write path above may have closed it already */ }
     }
 
     private async Task<byte[]> TryReadFirstFrameAsync(TcpClient client)

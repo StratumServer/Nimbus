@@ -1,0 +1,8 @@
+root = true
+
+# CA1861 asks for constant array arguments to be hoisted into static readonly fields, which is
+# the right trade on a hot path called in a loop. In a test it puts the expected value in a
+# different place from the assertion that reads it, and an assertion you have to scroll to
+# understand is worse than an allocation nobody is timing.
+[*.Tests/**.cs]
+dotnet_diagnostic.CA1861.severity = none

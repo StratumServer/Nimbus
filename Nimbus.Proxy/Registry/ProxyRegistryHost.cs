@@ -52,13 +52,25 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
     {
         if (embeddedHost != null)
         {
+            // The proxy is on its way out and the embedded registry dies with the process. Two
+            // seconds to drain in-flight heartbeats, then it goes down the hard way; neither step
+            // has a caller left to report to.
             using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            try { await embeddedHost.StopAsync(stopCts.Token).ConfigureAwait(false); } catch { }
-            try { await embeddedHost.DisposeAsync().ConfigureAwait(false); } catch { }
+            try { await embeddedHost.StopAsync(stopCts.Token).ConfigureAwait(false); } catch { /* drain timed out */ }
+            try { await embeddedHost.DisposeAsync().ConfigureAwait(false); } catch { /* half-stopped host */ }
         }
 
         if (Client is IDisposable disposable)
             disposable.Dispose();
+    }
+
+    // Same rule as ProxyRuntime uses for the drain flags: a relative directory hangs off the
+    // proxy executable, so a proxy started from a service manager with some other working
+    // directory still finds yesterday's bans.
+    private static string ResolveStateDir(string dir)
+    {
+        if (string.IsNullOrWhiteSpace(dir)) return AppContext.BaseDirectory;
+        return Path.IsPathRooted(dir) ? dir : Path.Combine(AppContext.BaseDirectory, dir);
     }
 
     private static ProxyRegistryHost BuildEmbedded(ProxyConfig cfg, CancellationToken stopToken)
@@ -72,6 +84,13 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
             NonceWindowSeconds = cfg.Registry.NonceWindowSeconds,
             MaxReservationTtlSeconds = cfg.Registry.MaxReservationTtlSeconds,
             LogHeartbeats = false,
+            StateDir = ResolveStateDir(cfg.Registry.EmbeddedStateDir),
+            ApiTokens = new ApiTokensConfig
+            {
+                Enabled = cfg.Registry.ApiTokensEnabled,
+                RateLimitPerMinute = cfg.Registry.ApiTokensRateLimitPerMinute,
+                TrustForwardedProto = cfg.Registry.ApiTokensTrustForwardedProto,
+            },
         };
         coreCfg.Identity.AdvertiseOnMasterServer = cfg.Registry.AdvertiseOnMasterServer;
 
@@ -96,22 +115,36 @@ internal sealed class ProxyRegistryHost : IAsyncDisposable
             {
                 throw new InvalidOperationException($"embedded registry failed to start on '{cfg.Registry.EmbeddedBind}': {ex.Message}", ex);
             }
-            Log.Info($"registry: embedded http bind={cfg.Registry.EmbeddedBind} proxy_id={cfg.Registry.ProxyId}");
+            Log.Info($"registry: embedded http bind={cfg.Registry.EmbeddedBind} proxy_id={cfg.Registry.ProxyId} state_dir={coreCfg.StateDir}");
 
-            var backends = app.Services.GetRequiredService<BackendRegistry>();
-            var reservations = app.Services.GetRequiredService<ReservationStore>();
-            var intents = app.Services.GetRequiredService<TransferIntentStore>();
-            var bans = app.Services.GetRequiredService<BanStore>();
-            var whitelist = app.Services.GetRequiredService<WhitelistStore>();
-            return new ProxyRegistryHost(new InProcRegistryClient(backends, reservations, intents, bans, whitelist, cfg.Registry), app);
+            var stores = new RegistryStores
+            {
+                Backends = app.Services.GetRequiredService<BackendRegistry>(),
+                Reservations = app.Services.GetRequiredService<ReservationStore>(),
+                Intents = app.Services.GetRequiredService<TransferIntentStore>(),
+                Bans = app.Services.GetRequiredService<BanStore>(),
+                Whitelist = app.Services.GetRequiredService<WhitelistStore>(),
+                Tokens = app.Services.GetRequiredService<ApiTokenStore>(),
+            };
+            return new ProxyRegistryHost(new InProcRegistryClient(stores, cfg.Registry), app);
         }
 
-        var backendsSvc = new BackendRegistry(coreCfg);
-        var reservationsSvc = new ReservationStore();
-        var intentsSvc = new TransferIntentStore();
-        var bansSvc = new BanStore();
-        var whitelistSvc = new WhitelistStore();
-        Log.Info($"registry: embedded (no http listener) proxy_id={cfg.Registry.ProxyId}");
-        return new ProxyRegistryHost(new InProcRegistryClient(backendsSvc, reservationsSvc, intentsSvc, bansSvc, whitelistSvc, cfg.Registry), null);
+        // No listener means no container either, so the stores are built here with the same
+        // state files AddNimbusRegistry would have given them. Bans have to outlive a restart
+        // in this mode as much as in any other; it is the default one.
+        var unhosted = new RegistryStores
+        {
+            Backends = new BackendRegistry(coreCfg),
+            Reservations = new ReservationStore(),
+            Intents = new TransferIntentStore(),
+            Bans = new BanStore(state: RegistryStateFiles.Bans(coreCfg.StateDir)),
+            Whitelist = new WhitelistStore(state: RegistryStateFiles.Whitelist(coreCfg.StateDir)),
+            // Tokens are worth minting in this mode even though nothing here answers a bearer
+            // header: an operator preparing a bot on a proxy with no listener still needs the
+            // credential, and the registry that will answer it reads the same file.
+            Tokens = new ApiTokenStore(state: RegistryStateFiles.Tokens(coreCfg.StateDir)),
+        };
+        Log.Info($"registry: embedded (no http listener) proxy_id={cfg.Registry.ProxyId} state_dir={coreCfg.StateDir}");
+        return new ProxyRegistryHost(new InProcRegistryClient(unhosted, cfg.Registry), null);
     }
 }

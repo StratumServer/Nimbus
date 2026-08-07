@@ -37,4 +37,14 @@ internal interface IRegistryClient
     Task<WhitelistEntry?> AddWhitelistAsync(WhitelistRequest request, CancellationToken ct);
 
     Task<bool> RemoveWhitelistAsync(string playerUid, string? serverId, CancellationToken ct);
+
+    // Scoped API tokens (#54). These are the management path only, reached from the admin socket:
+    // the tokens themselves are presented to the registry by whoever holds them and never travel
+    // back through here. Creating one is the single moment its plaintext exists, which is why the
+    // create call answers with a response type rather than with the stored record.
+    Task<ApiTokenCreateResponse?> CreateApiTokenAsync(ApiTokenCreateRequest request, CancellationToken ct);
+
+    Task<List<ApiToken>?> GetApiTokensAsync(CancellationToken ct);
+
+    Task<bool> RevokeApiTokenAsync(string id, CancellationToken ct);
 }

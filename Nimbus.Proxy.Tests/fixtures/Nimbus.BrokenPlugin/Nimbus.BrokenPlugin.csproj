@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    A plugin that fails during Initialize, built as a real assembly because that is the only
+    shape the loader ever meets one in: PluginLoaderTests copies this dll into a scratch
+    directory and points the collectible load context at it, so the failure travels through
+    reflection and Activator exactly as a third-party plugin's would.
+
+    One concrete plugin type per fixture assembly on purpose. The manifest id is per file, so
+    two concrete types in one dll would make the second a duplicate of the first, and which one
+    wins would depend on the order Reflection hands the types back.
+
+    Not referenced by the test assembly: it is an input file, not a dependency. The build order
+    comes from the ProjectReference in Nimbus.Proxy.Tests.csproj.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(FrameworkVersion)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- Test input, not product code: keeps it out of Sonar's coverage denominator. -->
+    <SonarQubeTestProject>true</SonarQubeTestProject>
+    <!--
+      One output path whatever the configuration. This project is not in Nimbus.slnx, so a
+      solution build has no configuration mapping for it and it falls back to Debug while the
+      test project that stages its dll is building Release. Pinning the path is what keeps the
+      two agreeing on where the file is.
+    -->
+    <OutputPath>$(MSBuildThisFileDirectory)bin\fixture\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Nimbus.Api\Nimbus.Api.csproj" Private="false" />
+  </ItemGroup>
+</Project>

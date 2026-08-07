@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -42,50 +41,43 @@ public static class Endpoints
         // Network snapshot.
         app.MapGet("/api/servers", (BackendRegistry reg) => Results.Ok(reg.Snapshot()));
 
-        // Reservations.
-        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationStore store, BackendRegistry reg, BanStore bans, RegistryConfig cfg, TimeProvider clock) =>
+        // Reservations. The mint rules live in ReservationService because the proxy's embedded
+        // mode reaches them without passing through here; this handler is the HTTP dress on
+        // them (parse, map the refusal to a status code).
+        app.MapPost("/api/reservations", async (HttpContext ctx, ReservationService reservations, RegistryConfig cfg) =>
         {
             ReservationRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<ReservationRequest>(); }
             catch { return Results.BadRequest(new { error = "malformed body" }); }
 
-            if (req is null || string.IsNullOrEmpty(req.PlayerUid) || string.IsNullOrEmpty(req.TargetServerId))
+            if (req is null)
                 return Results.BadRequest(new { error = "PlayerUid + TargetServerId required" });
 
-            if (req.TtlSeconds <= 0) req.TtlSeconds = NimbusProtocol.DefaultReservationTtlSeconds;
-            if (cfg.MaxReservationTtlSeconds > 0 && req.TtlSeconds > cfg.MaxReservationTtlSeconds)
-                req.TtlSeconds = cfg.MaxReservationTtlSeconds;
-
-            // Target must be known + non-stale.
-            var target = reg.Get(req.TargetServerId);
-            if (target is null)
-                return Results.NotFound(new ReservationResponse { Ok = false, Error = "target server not registered" });
-
-            // Bans are enforced at the proxy, which knows the player and the destination at the
-            // same time. This is the multi-proxy backstop: a proxy running on a ban list that is
-            // seconds out of date still cannot mint the reservation that would seat the player.
-            if (bans.FindBlocking(req.PlayerUid, req.TargetServerId) is not null)
-                return Results.Json(new ReservationResponse { Ok = false, Error = "player is banned from the target server" },
-                    statusCode: StatusCodes.Status403Forbidden);
-
-            // Whitelists get no equivalent backstop: whether coverage is required at all lives in
-            // proxy config, and the registry has no way to know which mode a proxy is running.
-
-            var r = new TransferReservation
+            var result = reservations.Mint(new ReservationMintRequest
             {
-                Id = NewReservationId(),
                 PlayerUid = req.PlayerUid,
                 PlayerName = req.PlayerName,
                 SourceServerId = req.SourceServerId,
                 TargetServerId = req.TargetServerId,
-                ExpiresAtUnix = clock.GetUtcNow().ToUnixTimeSeconds() + req.TtlSeconds,
+                TtlSeconds = req.TtlSeconds,
+                MaxTtlSeconds = cfg.MaxReservationTtlSeconds,
                 Reason = req.Reason,
-                RealRemoteIp = req.RealRemoteIp ?? "",
+                RealRemoteIp = req.RealRemoteIp,
                 RealRemotePort = req.RealRemotePort,
-                ClientTransferId = req.ClientTransferId ?? "",
+                ClientTransferId = req.ClientTransferId,
+            });
+
+            return result.Status switch
+            {
+                ReservationMintStatus.MissingSubject
+                    => Results.BadRequest(new { error = "PlayerUid + TargetServerId required" }),
+                ReservationMintStatus.UnknownTarget
+                    => Results.NotFound(new ReservationResponse { Ok = false, Error = "target server not registered" }),
+                ReservationMintStatus.Banned
+                    => Results.Json(new ReservationResponse { Ok = false, Error = "player is banned from the target server" },
+                        statusCode: StatusCodes.Status403Forbidden),
+                _ => Results.Ok(new ReservationResponse { Ok = true, Reservation = result.Reservation }),
             };
-            store.Add(r);
-            return Results.Ok(new ReservationResponse { Ok = true, Reservation = r });
         });
 
         // Backend consumes a reservation during identification. Single-use.
@@ -124,21 +116,12 @@ public static class Endpoints
             try { req = await ctx.Request.ReadFromJsonAsync<BanRequest>(); }
             catch { return Results.BadRequest(new { error = "malformed body" }); }
 
-            if (req is null || string.IsNullOrEmpty(req.PlayerUid))
+            Attribute(ctx, req);
+            var stamped = RegistryStamps.NewBan(req, clock.GetUtcNow().ToUnixTimeSeconds());
+            if (stamped is null)
                 return Results.BadRequest(new BanResponse { Ok = false, Error = "PlayerUid required" });
 
-            long now = clock.GetUtcNow().ToUnixTimeSeconds();
-            var ban = bans.Add(new NetworkBan
-            {
-                PlayerUid = req.PlayerUid,
-                PlayerName = req.PlayerName ?? "",
-                ServerId = req.ServerId ?? "",
-                Reason = req.Reason ?? "",
-                BannedBy = req.BannedBy ?? "",
-                CreatedAtUnix = now,
-                ExpiresAtUnix = req.DurationSeconds > 0 ? now + req.DurationSeconds : 0,
-            });
-            return Results.Ok(new BanResponse { Ok = true, Ban = ban });
+            return Results.Ok(new BanResponse { Ok = true, Ban = bans.Add(stamped) });
         });
 
         // Lift a ban. Omit ServerId to lift the network-wide one; a scoped ban must be lifted
@@ -171,28 +154,19 @@ public static class Endpoints
 
         // Network whitelist. Same storage shape as the bans above, read the other way round:
         // an entry says a player may come in. Whether that is required at all is a proxy-side
-        // switch ([whitelist] in nimbus.proxy.toml), so nothing here refuses anything.
+        // toggle, the [whitelist] section of nimbus.proxy.toml, so nothing here refuses anything.
         app.MapPost("/api/whitelist", async (HttpContext ctx, WhitelistStore whitelist, TimeProvider clock) =>
         {
             WhitelistRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<WhitelistRequest>(); }
             catch { return Results.BadRequest(new { error = "malformed body" }); }
 
-            if (req is null || string.IsNullOrEmpty(req.PlayerUid))
+            Attribute(ctx, req);
+            var stamped = RegistryStamps.NewWhitelistEntry(req, clock.GetUtcNow().ToUnixTimeSeconds());
+            if (stamped is null)
                 return Results.BadRequest(new WhitelistResponse { Ok = false, Error = "PlayerUid required" });
 
-            long now = clock.GetUtcNow().ToUnixTimeSeconds();
-            var entry = whitelist.Add(new WhitelistEntry
-            {
-                PlayerUid = req.PlayerUid,
-                PlayerName = req.PlayerName ?? "",
-                ServerId = req.ServerId ?? "",
-                Note = req.Note ?? "",
-                AddedBy = req.AddedBy ?? "",
-                CreatedAtUnix = now,
-                ExpiresAtUnix = req.DurationSeconds > 0 ? now + req.DurationSeconds : 0,
-            });
-            return Results.Ok(new WhitelistResponse { Ok = true, Entry = entry });
+            return Results.Ok(new WhitelistResponse { Ok = true, Entry = whitelist.Add(stamped) });
         });
 
         // Drop an entry. Omit ServerId to drop the network-wide one; a scoped entry must be
@@ -243,6 +217,81 @@ public static class Endpoints
             var taken = store.Drain();
             return Results.Ok(new TransferIntentDrainResponse { Ok = true, Intents = taken });
         });
+
+        // Token management. HMAC only, like every other internal endpoint: no scope reaches these
+        // three, so a leaked bot token cannot mint itself a better one. ApiTokenScopes maps them
+        // to no scope at all, which is what TokenAuthMiddleware turns into a 403.
+        app.MapPost("/api/tokens", async (HttpContext ctx, ApiTokenService tokens) =>
+        {
+            ApiTokenCreateRequest? req;
+            try { req = await ctx.Request.ReadFromJsonAsync<ApiTokenCreateRequest>(); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
+
+            var result = tokens.Create(req);
+            return result.Status switch
+            {
+                ApiTokenCreateStatus.MissingName
+                    => Results.BadRequest(new ApiTokenCreateResponse { Ok = false, Error = "name required" }),
+                ApiTokenCreateStatus.InvalidName
+                    => Results.BadRequest(new ApiTokenCreateResponse
+                    {
+                        Ok = false,
+                        Error = $"name must be at most {ApiTokenService.MaxNameLength} characters and carry no control characters",
+                    }),
+                ApiTokenCreateStatus.NoScopes
+                    => Results.BadRequest(new ApiTokenCreateResponse { Ok = false, Error = "at least one scope required" }),
+                ApiTokenCreateStatus.UnknownScope
+                    => Results.BadRequest(new ApiTokenCreateResponse
+                    {
+                        Ok = false,
+                        Error = $"unknown scope '{result.UnknownScope}'; known scopes are {string.Join(", ", ApiTokenScopes.All)}",
+                    }),
+                // The only response that ever carries the plaintext. The record next to it is
+                // redacted like every other listing: the caller gets the secret once and the
+                // metadata for as long as the token exists.
+                _ => Results.Ok(new ApiTokenCreateResponse
+                {
+                    Ok = true,
+                    Token = result.Plaintext,
+                    Record = result.Token!.Redacted(),
+                }),
+            };
+        });
+
+        app.MapPost("/api/tokens/revoke", async (HttpContext ctx, ApiTokenService tokens) =>
+        {
+            ApiTokenRevokeRequest? req;
+            try { req = await ctx.Request.ReadFromJsonAsync<ApiTokenRevokeRequest>(); }
+            catch { return Results.BadRequest(new { error = "malformed body" }); }
+
+            if (req is null || string.IsNullOrWhiteSpace(req.Id))
+                return Results.BadRequest(new ApiTokenResponse { Ok = false, Error = "Id required" });
+
+            if (!tokens.Revoke(req.Id))
+                return Results.NotFound(new ApiTokenResponse { Ok = false, Error = "no matching token, or already revoked" });
+            return Results.Ok(new ApiTokenResponse { Ok = true });
+        });
+
+        // Records only. The store holds a hash and never the secret, and even the hash is left
+        // out of the answer.
+        app.MapGet("/api/tokens", (ApiTokenService tokens)
+            => Results.Ok(new ApiTokenListResponse { Ok = true, Tokens = tokens.List() }));
+    }
+
+    // A write made with a scoped token is attributed to that token, not to whoever the body says.
+    // Overwriting rather than defaulting is the point: the credential names its holder, and a
+    // caller must not be able to sign somebody else's name to a ban by filling in the field.
+    // HMAC-authenticated callers are untouched and keep attributing themselves.
+    private static void Attribute(HttpContext ctx, BanRequest? req)
+    {
+        var attribution = ApiTokenIdentity.Attribution(ctx);
+        if (attribution is not null && req is not null) req.BannedBy = attribution;
+    }
+
+    private static void Attribute(HttpContext ctx, WhitelistRequest? req)
+    {
+        var attribution = ApiTokenIdentity.Attribution(ctx);
+        if (attribution is not null && req is not null) req.AddedBy = attribution;
     }
 
     // Reads a body that a caller is allowed to leave out entirely. An absent body is not an
@@ -250,14 +299,24 @@ public static class Endpoints
     // still be passing its arguments in the query.
     private static async Task<T?> ReadOptionalBodyAsync<T>(HttpContext ctx) where T : class
     {
-        if (ctx.Request.ContentLength is null or 0) return null;
-        return await ctx.Request.ReadFromJsonAsync<T>();
+        if (!DeclaresABody(ctx.Request)) return null;
+        // RequestAborted, not None: finishing the read for a caller that has already hung up
+        // buys nothing, and the handler above turns the cancellation into the same 400 a
+        // truncated body gets.
+        return await ctx.Request.ReadFromJsonAsync<T>(ctx.RequestAborted);
     }
 
-    private static string NewReservationId()
+    // A caller announces a body in one of two ways: it measures it (Content-Length) or it
+    // chunks it (Transfer-Encoding). Reading only the first sent every chunked request down
+    // the deprecated query path with an empty request object, so its arguments vanished and
+    // the answer was usually a 400 (#91). Neither header means there is genuinely nothing to
+    // read, which is still the old proxy asking to be answered from the query.
+    private static bool DeclaresABody(HttpRequest request)
     {
-        Span<byte> bytes = stackalloc byte[12];
-        RandomNumberGenerator.Fill(bytes);
-        return Convert.ToHexString(bytes);
+        if (request.ContentLength is { } length) return length > 0;
+        // Joined rather than walked: "gzip, chunked" and a repeated header read the same way,
+        // and a header that is not there at all reads as an empty string rather than null.
+        return request.Headers.TransferEncoding.ToString()
+            .Contains("chunked", StringComparison.OrdinalIgnoreCase);
     }
 }

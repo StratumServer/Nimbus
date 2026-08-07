@@ -13,6 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Nimbus.Registry.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Nimbus.Shared\Nimbus.Shared.csproj" />
   </ItemGroup>
 </Project>

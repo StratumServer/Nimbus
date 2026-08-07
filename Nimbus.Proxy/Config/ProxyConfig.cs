@@ -227,13 +227,34 @@ internal sealed class RegistryConfig
 
     // Embedded mode only. Empty Bind disables the HTTP listener.
     // The proxy still keeps its in-process registry path.
-    public string EmbeddedBind { get; set; } = "http://0.0.0.0:8765";
+    //
+    // Loopback by default, so the file written on a first run passes the validator below it and a
+    // single-machine install serves players without being edited first. Backends on another host
+    // or in another container cannot reach a loopback bind: widen this to "http://0.0.0.0:8765"
+    // and, in the same edit, replace embedded_shared_secret, which the validator requires and
+    // refuses to start without. The Pterodactyl eggs write both lines from panel variables, so a
+    // panel install never sees these defaults.
+    public string EmbeddedBind { get; set; } = "http://127.0.0.1:8765";
     public string EmbeddedSharedSecret { get; set; } = "change-me-and-keep-secret";
     public int BackendStaleSeconds { get; set; } = 20;
     public int BackendDropSeconds { get; set; } = 120;
     public int NonceWindowSeconds { get; set; } = 90;
     public int MaxReservationTtlSeconds { get; set; } = 300;
     public bool AdvertiseOnMasterServer { get; set; } = false;
+
+    // Where the embedded registry keeps its ban list, whitelist and issued API tokens so they
+    // survive a restart: nimbus.bans.json, nimbus.whitelist.json and nimbus.tokens.json. Relative
+    // paths resolve next to the proxy executable, the same rule [persistence] uses for the drain
+    // flags.
+    public string EmbeddedStateDir { get; set; } = ".";
+
+    // Embedded mode only, and the same three settings the standalone registry reads from its own
+    // [api_tokens] section. They gate how a scoped bearer token is accepted, never how one is
+    // created: `nimctl token create` works either way, because minting a credential the registry
+    // is not yet answering is how an operator gets ready to turn it on.
+    public bool ApiTokensEnabled { get; set; } = false;
+    public int ApiTokensRateLimitPerMinute { get; set; } = 60;
+    public bool ApiTokensTrustForwardedProto { get; set; } = false;
 }
 
 // Whitelist enforcement. The list itself lives in the registry; these switches decide where it
@@ -287,11 +308,11 @@ internal sealed class MetricsConfig
     // (Pterodactyl, AMP, ...) and dashboards.
     public bool StatusApi { get; set; } = true;
 
-    // Optional bearer token for /status. Empty = open (fine on the loopback default bind);
-    // set it before exposing the bind beyond localhost. "Authorization: Bearer <token>" is
-    // the preferred way to send it; "?token=<token>" exists only as a compatibility
-    // fallback for panels that cannot set headers, and query strings can end up in access
-    // logs, so prefer the header wherever possible.
+    // Optional bearer token for /status. Leave it empty to keep /status open, which is fine on
+    // the loopback default bind; set it before exposing the bind beyond localhost. Send it in
+    // the Authorization header as a bearer token. The ?token= query parameter exists only as a
+    // compatibility fallback for panels that cannot set headers, and query strings can end up in
+    // access logs, so prefer the header wherever possible.
     public string StatusApiToken { get; set; } = "";
 }
 

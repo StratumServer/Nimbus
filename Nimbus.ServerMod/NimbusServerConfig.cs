@@ -1,3 +1,5 @@
+using Nimbus.Shared;
+
 namespace Nimbus.ServerMod;
 
 public sealed class NimbusServerConfig
@@ -16,7 +18,15 @@ public sealed class NimbusServerConfig
     public List<string> Tags { get; set; } = new();
 
     public string RegistryUrl { get; set; } = "";
-    public string SharedSecret { get; set; } = "";
+
+    // The HMAC key this backend authenticates to the registry with. It is never generated here:
+    // the proxy or the standalone registry generates one on its first run and this end has to
+    // match it, so a value minted on the backend could only ever be a value that fails to
+    // authenticate. What the default does instead is name the file to copy it out of, since a
+    // freshly written nimbus-server.json is the one place an operator is looking. Every value in
+    // SecretPlaceholders, this one included, counts as unset: the mod stays "misconfigured"
+    // rather than heartbeating with a string published in the Nimbus repository.
+    public string SharedSecret { get; set; } = SecretPlaceholders.BackendConfig;
     public int HeartbeatIntervalSeconds { get; set; } = 5;
     public int RegistryHttpTimeoutSeconds { get; set; } = 5;
 

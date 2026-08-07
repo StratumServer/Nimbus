@@ -299,6 +299,84 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         }
     }
 
+    // The three token-management calls are signed like every other call on this client: the
+    // registry accepts HMAC and nothing else on /api/tokens, so the proxy reaches them with the
+    // shared secret rather than with a token of its own. The plaintext comes back exactly once,
+    // in this response, and is handed straight to the operator who asked for it.
+    public async Task<ApiTokenCreateResponse?> CreateApiTokenAsync(ApiTokenCreateRequest request, CancellationToken ct)
+    {
+        try
+        {
+            byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
+            const string path = "/api/tokens";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            Sign(msg, "POST", path, body);
+
+            using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                // The detail is the registry's refusal reason (an unknown scope, a missing name)
+                // and never carries a credential: the only response that ever holds one is a 200.
+                string detail = await SafeReadAsync(resp).ConfigureAwait(false);
+                Log.Warn($"registry POST {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
+                return null;
+            }
+            var parsed = await resp.Content.ReadFromJsonAsync<ApiTokenCreateResponse>(cancellationToken: ct).ConfigureAwait(false);
+            return parsed != null && parsed.Ok ? parsed : null;
+        }
+        catch (Exception ex)
+        {
+            // The exception message, not the request: a token create carries no secret on the way
+            // out, but the habit of logging the body is how one eventually does.
+            Log.Warn($"registry token create failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<List<ApiToken>?> GetApiTokensAsync(CancellationToken ct)
+    {
+        try
+        {
+            const string path = "/api/tokens";
+            using var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
+            Sign(msg, "GET", path, Array.Empty<byte>());
+            using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                Log.Warn($"registry GET {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
+                return null;
+            }
+            var parsed = await resp.Content.ReadFromJsonAsync<ApiTokenListResponse>(cancellationToken: ct).ConfigureAwait(false);
+            return parsed?.Tokens;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"registry GET /api/tokens failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<bool> RevokeApiTokenAsync(string id, CancellationToken ct)
+    {
+        try
+        {
+            byte[] body = JsonSerializer.SerializeToUtf8Bytes(new ApiTokenRevokeRequest { Id = id });
+            const string path = "/api/tokens/revoke";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            Sign(msg, "POST", path, body);
+
+            using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
+            return resp.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"registry token revoke failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
     private void Sign(HttpRequestMessage msg, string method, string canonicalPath, byte[] body)
     {
         long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
