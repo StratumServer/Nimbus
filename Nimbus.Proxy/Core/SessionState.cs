@@ -5,7 +5,18 @@ namespace Nimbus.Proxy;
 internal sealed class SessionState
 {
     private readonly long sessionId;
-    private Phase phase = Phase.TcpOpen;
+
+    // Written by both sniffer pumps (c->s and s->c) and read from admin and plugin threads that
+    // gate seamless transfers on Phase.Ready. volatile makes the cross-thread read through Current
+    // see the latest write without locking (a Phase is int-backed, so the read of an aligned int
+    // is atomic). volatile alone is not enough for the writers though: the transition below is a
+    // read-modify-write, not a pure store, so the two pumps also take transitionGate to compose it
+    // atomically. See OnFrame.
+    private volatile Phase phase = Phase.TcpOpen;
+
+    // Serialises the read-modify-write in OnFrame between the two pump threads. Current stays
+    // lock-free because a volatile read of the field is all a reader needs.
+    private readonly object transitionGate = new();
 
     public SessionState(long sessionId) { this.sessionId = sessionId; }
 
@@ -27,10 +38,18 @@ internal sealed class SessionState
     // one lives in its own method below rather than behind the direction flag.
     public void OnFrame(bool clientToServer, string packetName)
     {
-        Phase next = clientToServer ? NextPhaseFromClient(packetName) : NextPhaseFromServer(packetName);
+        // The transition reads the current phase (the NextPhase* tables gate on it), decides the
+        // next one, then writes it back. That read-modify-write has to be atomic against the other
+        // pump: without the lock, both directions could read the same phase, compute two different
+        // successors, and one store would clobber the other or move off a phase the other thread
+        // already advanced. volatile gives visibility but not compose atomicity, so we lock here.
+        lock (transitionGate)
+        {
+            Phase next = clientToServer ? NextPhaseFromClient(packetName) : NextPhaseFromServer(packetName);
 
-        if (next != phase)
-            phase = next;
+            if (next != phase)
+                phase = next;
+        }
     }
 
     // Client to server. A name that matches nothing here leaves the phase where it was.
