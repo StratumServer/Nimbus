@@ -37,7 +37,16 @@ internal static class ChatlineParser
         return ParseChatlineBody(payload, out message, out groupId);
     }
 
-    private static bool ParseChatlineBody(ReadOnlySpan<byte> body, out string message, out int groupId)
+    // Essential complexity (S3776 reports cognitive complexity 21). This walks a protobuf body one
+    // field at a time: read the tag, and either decode the one length-delimited field we want
+    // (Message), the one varint field we want (Groupid), or skip anything else. Each field is its
+    // own branch and each length-delimited read carries its own bounds check because that is what
+    // the wire format is; the count is the layout's, not the code's. Splitting the per-field
+    // handling into helpers would move the field-number-to-output mapping away from the loop that
+    // reads it and force every helper to thread `ref pos` and the out-parameters, making the frame
+    // harder to check against the layout documented at the top of this file rather than easier. It
+    // is clearest as one flat pass down the body.
+    private static bool ParseChatlineBody(ReadOnlySpan<byte> body, out string message, out int groupId) // NOSONAR
     {
         message = "";
         groupId = 0;
