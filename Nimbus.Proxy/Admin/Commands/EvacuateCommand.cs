@@ -138,11 +138,7 @@ internal sealed class EvacuateCommand : IAdminCommand
 
         foreach (var session in onSource)
         {
-            string? halted = ctx.StopToken.IsCancellationRequested
-                ? "the proxy is shutting down"
-                : DateTime.UtcNow >= deadline
-                    ? $"the sweep reached its {SweepBudget.TotalSeconds:0}s budget"
-                    : null;
+            string? halted = HaltReason(ctx, deadline);
             if (halted != null)
             {
                 completed = false;
@@ -169,38 +165,51 @@ internal sealed class EvacuateCommand : IAdminCommand
             }
             anyAttempted = true;
 
-            var (target, targetRefusal) = fixedTarget != null
-                ? (fixedTarget, null)
-                : await ChooseTargetAsync(ctx, source).ConfigureAwait(false);
-            if (target == null)
-            {
-                failed++;
-                entries.Add(Entry(session, "failed", null, null, targetRefusal ?? "no backend to move to"));
-                continue;
-            }
-
-            if (!await probes.ReachableAsync(target).ConfigureAwait(false))
-            {
-                failed++;
-                entries.Add(Entry(session, "failed", target, null, $"target {target.Host}:{target.Port} unreachable (tcp probe)"));
-                continue;
-            }
-
-            var (modeUsed, failReason) = await session.RequestTransferAsync(target, mode, ctx.Proxy.Registry,
-                reason ?? $"evacuating {source}", ctx.Proxy.RegistryCfg.FailOnError).ConfigureAwait(false);
-            if (failReason == null)
-            {
-                moved++;
-                entries.Add(Entry(session, "moved", target, modeUsed, null));
-            }
-            else
-            {
-                failed++;
-                entries.Add(Entry(session, "failed", target, modeUsed, failReason));
-            }
+            var move = await MoveSessionAsync(ctx, session, source, fixedTarget, probes, mode, reason).ConfigureAwait(false);
+            entries.Add(move.Entry);
+            if (move.Outcome == MoveOutcome.Moved) moved++;
+            else failed++;
         }
 
         return new Sweep(moved, failed, skipped, completed, entries);
+    }
+
+    // Whether this pass of the sweep must stop before touching the session, and why, phrased for
+    // the "skipped" line the caller writes. Cancellation wins over the budget because a shutdown is
+    // the sharper reason to give. Null means carry on.
+    private static string? HaltReason(AdminContext ctx, DateTime deadline)
+        => ctx.StopToken.IsCancellationRequested
+            ? "the proxy is shutting down"
+            : DateTime.UtcNow >= deadline
+                ? $"the sweep reached its {SweepBudget.TotalSeconds:0}s budget"
+                : null;
+
+    private enum MoveOutcome { Moved, Failed }
+
+    private sealed record MoveResult(MoveOutcome Outcome, object Entry);
+
+    // Move one session, running the target checks in the same order swap runs them: pick the target
+    // (the fixed one, or ask the router afresh so capacity filling up mid-sweep sends later players
+    // elsewhere), probe it, then hand it to the same RequestTransferAsync a hand-typed swap uses. A
+    // refused transfer leaves the player where they are and is reported as failed; nobody is
+    // disconnected.
+    private static async Task<MoveResult> MoveSessionAsync(AdminContext ctx, ProxySession session, string source,
+        BackendEndpoint? fixedTarget, ProbeCache probes, string mode, string? reason)
+    {
+        var (target, targetRefusal) = fixedTarget != null
+            ? (fixedTarget, null)
+            : await ChooseTargetAsync(ctx, source).ConfigureAwait(false);
+        if (target == null)
+            return new MoveResult(MoveOutcome.Failed, Entry(session, "failed", null, null, targetRefusal ?? "no backend to move to"));
+
+        if (!await probes.ReachableAsync(target).ConfigureAwait(false))
+            return new MoveResult(MoveOutcome.Failed, Entry(session, "failed", target, null, $"target {target.Host}:{target.Port} unreachable (tcp probe)"));
+
+        var (modeUsed, failReason) = await session.RequestTransferAsync(target, mode, ctx.Proxy.Registry,
+            reason ?? $"evacuating {source}", ctx.Proxy.RegistryCfg.FailOnError).ConfigureAwait(false);
+        return failReason == null
+            ? new MoveResult(MoveOutcome.Moved, Entry(session, "moved", target, modeUsed, null))
+            : new MoveResult(MoveOutcome.Failed, Entry(session, "failed", target, modeUsed, failReason));
     }
 
     // The same target checks swap makes, in the same order, so a name that swap would refuse is
