@@ -632,6 +632,10 @@ internal sealed partial class ProxySession : IPlayer
         }
     }
 
+    // Single-target convenience. Kept for callers that already have one endpoint in hand.
+    // Sits here, ahead of the phases RunAsync is built from, so the two overloads stay adjacent.
+    public Task RunAsync(BackendEndpoint initial) => RunAsync(new[] { initial });
+
     // Try each candidate until one connects. A handler cancelling stops the chain; a connect
     // failure moves on to the next backend. Returns whether the session got an upstream, and the
     // last reason it did not, which is what the player is eventually told.
@@ -725,9 +729,6 @@ internal sealed partial class ProxySession : IPlayer
         try { await events.FireAsync(new PlayerDisconnectEvent(this, c2sBytes, s2cBytes)).ConfigureAwait(false); }
         catch { /* the session is over; a throwing handler changes nothing about that */ }
     }
-
-    // Single-target convenience. Kept for callers that already have one endpoint in hand.
-    public Task RunAsync(BackendEndpoint initial) => RunAsync(new[] { initial });
 
     private async Task<(bool ok, bool cancelled, string? reason)> ConnectUpstreamAsync(BackendEndpoint target, ReadOnlyMemory<byte> firstClientFrame)
     {
