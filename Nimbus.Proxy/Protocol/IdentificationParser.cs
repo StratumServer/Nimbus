@@ -31,7 +31,16 @@ internal static class IdentificationParser
         return ParseIdentBody(payload, out playerUid, out playerName);
     }
 
-    private static bool ParseIdentBody(ReadOnlySpan<byte> body, out string playerUid, out string playerName)
+    // Essential complexity (S3776 reports cognitive complexity 25). This walks a protobuf body one
+    // field at a time: read the tag, and for a length-delimited Playername (field 2) or PlayerUID
+    // (field 6) decode and bounds-check the string, otherwise skip the field. Two interesting
+    // fields, each length-delimited read carrying its own bounds check, plus the early return once
+    // both are in hand, is what the wire format costs; the count is the layout's, not the code's.
+    // Splitting the per-field handling into helpers would pull the field-number-to-output mapping
+    // away from the loop that reads it and thread `ref pos` plus the out-parameters through every
+    // helper, making the frame harder to check against the layout documented at the top of this
+    // file rather than easier. It is clearest as one flat pass down the body.
+    private static bool ParseIdentBody(ReadOnlySpan<byte> body, out string playerUid, out string playerName) // NOSONAR
     {
         playerUid = "";
         playerName = "";
