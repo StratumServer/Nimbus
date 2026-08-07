@@ -130,10 +130,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         if (string.IsNullOrEmpty(serverId)) return null;
         var snap = await GetServersAsync(ct).ConfigureAwait(false);
         if (snap == null) return null;
-        foreach (var b in snap.Backends)
-            if (string.Equals(b.ServerId, serverId, StringComparison.OrdinalIgnoreCase))
-                return b;
-        return null;
+        return snap.Backends.FirstOrDefault(b => string.Equals(b.ServerId, serverId, StringComparison.OrdinalIgnoreCase));
     }
 
     // Drain all pending transfer intents from the registry. Each intent is delivered at most

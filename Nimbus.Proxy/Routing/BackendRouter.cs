@@ -77,12 +77,7 @@ internal sealed class BackendRouter
                 continue;
             }
 
-            BackendSnapshot? b = null;
-            foreach (var x in snap.Backends)
-            {
-                if (string.Equals(x.ServerId, c.ServerId, StringComparison.OrdinalIgnoreCase))
-                { b = x; break; }
-            }
+            var b = snap.Backends.FirstOrDefault(x => string.Equals(x.ServerId, c.ServerId, StringComparison.OrdinalIgnoreCase));
             if (b == null) { lastSkipReason = $"{c.ServerId} not in registry"; continue; }
             if (b.Stale) { lastSkipReason = $"{c.ServerId} stale"; continue; }
             if (b.Maintenance) { lastSkipReason = $"{c.ServerId} in maintenance"; continue; }
@@ -104,11 +99,7 @@ internal sealed class BackendRouter
             foreach (var name in cfg.Try)
             {
                 if (string.IsNullOrWhiteSpace(name)) continue;
-                BackendEndpoint? hit = null;
-                foreach (var b in backends)
-                {
-                    if (string.Equals(b.ServerId, name, StringComparison.OrdinalIgnoreCase)) { hit = b; break; }
-                }
+                var hit = backends.FirstOrDefault(b => string.Equals(b.ServerId, name, StringComparison.OrdinalIgnoreCase));
                 if (hit == null)
                 {
                     Log.Warn($"router: try references unknown server '{name}', skipping");

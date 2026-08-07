@@ -63,7 +63,12 @@ public sealed class BanStore
     {
         if (string.IsNullOrEmpty(playerUid)) return null;
         long now = _clock.GetUtcNow().ToUnixTimeSeconds();
-        foreach (var kv in _bans)
+        // Kept as a walk rather than the Where/FirstOrDefault the analyser asks for: the connection
+        // gate calls this on every join, and the LINQ form either copies the whole table (.Values
+        // snapshots a ConcurrentDictionary) or allocates a closure per call, where this exits on
+        // the first match and allocates nothing. Active() below is the operator-driven listing and
+        // does get the LINQ form.
+        foreach (var kv in _bans) // NOSONAR
         {
             var ban = kv.Value;
             if (!string.Equals(ban.PlayerUid, playerUid, StringComparison.OrdinalIgnoreCase)) continue;
@@ -76,10 +81,7 @@ public sealed class BanStore
     public List<NetworkBan> Active()
     {
         long now = _clock.GetUtcNow().ToUnixTimeSeconds();
-        var list = new List<NetworkBan>();
-        foreach (var kv in _bans)
-            if (kv.Value.IsActiveAt(now)) list.Add(kv.Value);
-        return list;
+        return _bans.Values.Where(ban => ban.IsActiveAt(now)).ToList();
     }
 
     public int Prune()

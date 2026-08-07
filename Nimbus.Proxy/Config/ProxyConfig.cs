@@ -76,9 +76,7 @@ internal sealed class ProxyConfig
         foreach (var kv in Servers)
         {
             var (h, p) = SplitHostPort(kv.Value, $"servers.{kv.Key}");
-            bool pp = false;
-            foreach (var n in ProxyProtocolServers)
-                if (string.Equals(n, kv.Key, StringComparison.OrdinalIgnoreCase)) { pp = true; break; }
+            bool pp = ProxyProtocolServers.Any(n => string.Equals(n, kv.Key, StringComparison.OrdinalIgnoreCase));
             list.Add(new BackendEndpoint { Host = h, Port = p, ServerId = kv.Key, ProxyProtocol = pp });
         }
         _resolvedBackends = list;
@@ -105,10 +103,7 @@ internal sealed class ProxyConfig
     public BackendEndpoint? FindBackend(string name)
     {
         if (string.IsNullOrEmpty(name)) return null;
-        foreach (var b in Backends())
-            if (string.Equals(b.ServerId, name, StringComparison.OrdinalIgnoreCase))
-                return b;
-        return null;
+        return Backends().FirstOrDefault(b => string.Equals(b.ServerId, name, StringComparison.OrdinalIgnoreCase));
     }
 
     public BackendEndpoint DefaultBackend()
@@ -285,9 +280,7 @@ internal sealed class WhitelistConfig
     {
         if (Network) return true;
         if (string.IsNullOrEmpty(serverId)) return false;
-        foreach (var s in Servers)
-            if (string.Equals(s, serverId, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
+        return Servers.Any(s => string.Equals(s, serverId, StringComparison.OrdinalIgnoreCase));
     }
 }
 

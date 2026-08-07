@@ -264,9 +264,8 @@ public sealed class NimbusServerModSystem : ModSystem
         if (api == null) return Array.Empty<BackendModInfo>();
 
         var result = new List<BackendModInfo>();
-        foreach (var mod in api.ModLoader.Mods)
+        foreach (var info in api.ModLoader.Mods.Select(mod => mod.Info))
         {
-            var info = mod.Info;
             if (info == null || !info.RequiredOnClient) continue;
             if (info.Side != EnumAppSide.Universal) continue;
             result.Add(new BackendModInfo { Id = info.ModID ?? "", Version = info.Version ?? "" });

@@ -48,7 +48,10 @@ public sealed class RegistryConfig
     public IEnumerable<string> AllSecrets()
     {
         if (!string.IsNullOrEmpty(SharedSecret)) yield return SharedSecret;
-        foreach (var s in AcceptedSecrets)
+        // Left as a walk: this method is already a lazy iterator, and the Where the analyser asks
+        // for would nest a second state machine inside it to save one line, on a path every
+        // authenticated request goes through.
+        foreach (var s in AcceptedSecrets) // NOSONAR
             if (!string.IsNullOrEmpty(s)) yield return s;
     }
 }

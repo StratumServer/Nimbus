@@ -79,11 +79,8 @@ internal static class ProxyConfigValidator
         {
             if (string.IsNullOrWhiteSpace(forced.Key))
                 result.Warn("[forced-hosts] contains an empty hostname");
-            foreach (var serverId in forced.Value)
-            {
-                if (!HasServer(cfg, serverId))
-                    result.Warn($"forced-hosts.{forced.Key} references unknown server '{serverId}'");
-            }
+            foreach (var serverId in forced.Value.Where(id => !HasServer(cfg, id)))
+                result.Warn($"forced-hosts.{forced.Key} references unknown server '{serverId}'");
         }
     }
 
@@ -277,11 +274,8 @@ internal static class ProxyConfigValidator
         if (!cfg.Plugins.Enabled) return;
         if (string.IsNullOrWhiteSpace(cfg.Plugins.Directory))
             result.Error("plugins.directory must be set when plugins.enabled = true");
-        foreach (var id in cfg.Plugins.Disabled)
-        {
-            if (!IsPluginId(id))
-                result.Error($"plugins.disabled contains invalid plugin id '{id}'");
-        }
+        foreach (var id in cfg.Plugins.Disabled.Where(id => !IsPluginId(id)))
+            result.Error($"plugins.disabled contains invalid plugin id '{id}'");
     }
 
     private static IPEndPoint? ValidateEndpoint(string value, string label, bool requireIpAddress, ProxyConfigValidation result)
@@ -349,10 +343,5 @@ internal static class ProxyConfigValidator
     }
 
     private static bool HasServer(ProxyConfig cfg, string serverId)
-    {
-        foreach (var key in cfg.Servers.Keys)
-            if (string.Equals(key, serverId, StringComparison.OrdinalIgnoreCase))
-                return true;
-        return false;
-    }
+        => cfg.Servers.Keys.Any(key => string.Equals(key, serverId, StringComparison.OrdinalIgnoreCase));
 }

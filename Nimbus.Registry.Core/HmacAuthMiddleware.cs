@@ -88,11 +88,7 @@ public sealed class HmacAuthMiddleware
             proto, ts, nonce, body);
 
         string providedSig = sigVals.ToString();
-        bool ok = false;
-        foreach (var secret in _cfg.AllSecrets())
-        {
-            if (HmacSigner.Verify(secret, canonical, providedSig, ts, now)) { ok = true; break; }
-        }
+        bool ok = _cfg.AllSecrets().Any(secret => HmacSigner.Verify(secret, canonical, providedSig, ts, now));
 
         if (!ok)
         {

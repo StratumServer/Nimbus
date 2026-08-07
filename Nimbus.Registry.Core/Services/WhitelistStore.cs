@@ -64,7 +64,10 @@ public sealed class WhitelistStore
     {
         if (string.IsNullOrEmpty(playerUid)) return null;
         long now = _clock.GetUtcNow().ToUnixTimeSeconds();
-        foreach (var kv in _entries)
+        // Kept as a walk rather than the Where/FirstOrDefault the analyser asks for, for the reason
+        // BanStore.FindBlocking spells out: this is the join gate, and the LINQ form would copy the
+        // whole table or allocate a closure per call where this exits on the first match.
+        foreach (var kv in _entries) // NOSONAR
         {
             var entry = kv.Value;
             if (!string.Equals(entry.PlayerUid, playerUid, StringComparison.OrdinalIgnoreCase)) continue;
@@ -77,10 +80,7 @@ public sealed class WhitelistStore
     public List<WhitelistEntry> Active()
     {
         long now = _clock.GetUtcNow().ToUnixTimeSeconds();
-        var list = new List<WhitelistEntry>();
-        foreach (var kv in _entries)
-            if (kv.Value.IsActiveAt(now)) list.Add(kv.Value);
-        return list;
+        return _entries.Values.Where(entry => entry.IsActiveAt(now)).ToList();
     }
 
     public int Prune()

@@ -48,15 +48,8 @@ internal sealed class TransferIntentDispatcher
     {
         if (string.IsNullOrEmpty(intent.PlayerUid) || string.IsNullOrEmpty(intent.TargetServerId)) return;
 
-        ProxySession? match = null;
-        foreach (var session in sessions.Values)
-        {
-            if (string.Equals(session.PlayerUid, intent.PlayerUid, StringComparison.OrdinalIgnoreCase))
-            {
-                match = session;
-                break;
-            }
-        }
+        var match = sessions.Values.FirstOrDefault(
+            s => string.Equals(s.PlayerUid, intent.PlayerUid, StringComparison.OrdinalIgnoreCase));
 
         if (match == null)
         {

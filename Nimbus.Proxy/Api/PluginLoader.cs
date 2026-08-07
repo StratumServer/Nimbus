@@ -140,13 +140,11 @@ internal sealed class PluginLoader
             Log.Warn($"plugins: skipping {metadata.Id} from {Path.GetFileName(dllPath)}, it asks for api {metadata.ApiVersion} and this build offers {CurrentApiVersion}");
             return false;
         }
-        foreach (var dep in metadata.Dependencies)
+        var missing = metadata.Dependencies.FirstOrDefault(dep => !loadedIds.Contains(dep));
+        if (missing != null)
         {
-            if (!loadedIds.Contains(dep))
-            {
-                Log.Warn($"plugins: skipping {metadata.Id}, missing dependency '{dep}'");
-                return false;
-            }
+            Log.Warn($"plugins: skipping {metadata.Id}, missing dependency '{missing}'");
+            return false;
         }
         return true;
     }
@@ -196,10 +194,10 @@ internal sealed class PluginLoader
 
     public void ShutdownAll()
     {
-        foreach (var lp in loaded)
+        foreach (var instance in loaded.Select(lp => lp.Instance))
         {
-            try { lp.Instance.Shutdown(); }
-            catch (Exception ex) { Log.Warn($"plugins: Shutdown() threw for {lp.Instance.Name}: {ex.Message}"); }
+            try { instance.Shutdown(); }
+            catch (Exception ex) { Log.Warn($"plugins: Shutdown() threw for {instance.Name}: {ex.Message}"); }
         }
     }
 
