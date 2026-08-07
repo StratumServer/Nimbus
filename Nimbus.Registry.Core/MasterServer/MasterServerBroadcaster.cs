@@ -39,7 +39,10 @@ internal sealed class MasterServerBroadcaster : BackgroundService
         }
 
         _client = new MasterServerClient(id.MasterServerUrl, _log);
-        _log.LogInformation("master server advertising as '{Name}' at {Host}:{Port}", id.ServerName, id.PublicHost, id.PublicPort);
+        // Guarded like the two below it: the registry's own sink starts at Warning, so an
+        // Information line is formatted and boxed on its way to being dropped.
+        if (_log.IsEnabled(LogLevel.Information))
+            _log.LogInformation("master server advertising as '{Name}' at {Host}:{Port}", id.ServerName, id.PublicHost, id.PublicPort);
 
         // Wait up to 30s for at least one backend to heartbeat so the first register
         // packet carries a real maxPlayers and mod list.
@@ -112,7 +115,8 @@ internal sealed class MasterServerBroadcaster : BackgroundService
         {
             _token = resp.data;
             _lastRegisteredMaxPlayers = packet.maxPlayers;
-            _log.LogInformation("master server registered ok (maxPlayers={Max})", packet.maxPlayers);
+            if (_log.IsEnabled(LogLevel.Information))
+                _log.LogInformation("master server registered ok (maxPlayers={Max})", packet.maxPlayers);
         }
         else if (resp.status == "blacklisted")
         {
@@ -137,7 +141,8 @@ internal sealed class MasterServerBroadcaster : BackgroundService
         if (resp == null) return;
         if (resp.status == "invalid" || resp.status == "timeout")
         {
-            _log.LogInformation("master server heartbeat says {Status}, will re-register", resp.status);
+            if (_log.IsEnabled(LogLevel.Information))
+                _log.LogInformation("master server heartbeat says {Status}, will re-register", resp.status);
             _token = null;
         }
     }

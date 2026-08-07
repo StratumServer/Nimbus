@@ -85,7 +85,11 @@ public sealed class RegistrySweeper : BackgroundService
                 int n = _nonces.Prune();
                 int x = _bans.Prune();
                 int w = _whitelist.Prune();
-                if (b + r + i + n + x + w > 0)
+                // The level check is not ceremony here: the registry runs at minimum level Warning
+                // with a provider that accepts nothing below it, so this line never prints, and
+                // without the check the six counters are boxed into an object[] every fifteen
+                // seconds for a message that is discarded on the way out.
+                if (b + r + i + n + x + w > 0 && _log.IsEnabled(LogLevel.Debug))
                     _log.LogDebug("sweep: dropped backends={B} reservations={R} intents={I} nonces={N} bans={X} whitelist={W}", b, r, i, n, x, w);
             }
             catch (Exception ex)

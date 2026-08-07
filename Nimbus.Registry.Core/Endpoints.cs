@@ -38,7 +38,11 @@ public static class Endpoints
                 return Results.BadRequest(new { error = "missing ServerId" });
 
             reg.Upsert(hb);
-            if (cfg.LogHeartbeats)
+            // Two gates rather than one: LogHeartbeats is the operator's opt-in, and the level
+            // check is what stops four counters being boxed per heartbeat per backend when the
+            // opt-in is on but the sink is running at Warning, which is where the registry sits
+            // by default.
+            if (cfg.LogHeartbeats && log.IsEnabled(LogLevel.Information))
                 log.LogInformation("heartbeat {Id} players={P}/{M} tps={Tps:F1} maint={M2}",
                     hb.ServerId, hb.Players, hb.MaxPlayers, hb.Tps, hb.Maintenance);
 
