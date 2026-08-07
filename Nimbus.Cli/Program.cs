@@ -168,62 +168,56 @@ internal static class Program
 
     // `whitelist` takes a sub-verb rather than three top-level names, because add/remove/list all
     // read the same list and reading `whitelist list` out loud is what an operator expects. Bare
-    // `whitelist` lists, which is the harmless one.
-    //
-    // CA1859 asks for Dictionary<string, object?> here as it does for the builders around it. It
-    // does not compile: the `list` arm has no arguments to carry and returns the same anonymous
-    // one-field object every no-argument verb in BuildPayload returns, so object is the only type
-    // this signature can have.
-#pragma warning disable CA1859
+    // `whitelist` lists, which is the harmless one. The return type is object rather than the
+    // Dictionary the arms build (which CA1859 would prefer) because the `list` arm carries no
+    // arguments and returns the same anonymous one-field object every no-argument verb returns.
     private static object BuildWhitelist(List<string> args)
-#pragma warning restore CA1859
     {
         string sub = args.Count >= 2 && !args[1].StartsWith('-') ? args[1].ToLowerInvariant() : "list";
-        switch (sub)
+        return sub switch
         {
-            case "list" or "ls":
-                return new { cmd = "whitelist-list" };
+            "list" or "ls" => new { cmd = "whitelist-list" },
+            "add" => BuildWhitelistAdd(args),
+            "remove" or "rm" or "del" => BuildWhitelistRemove(args),
+            _ => throw new ArgumentException($"unknown whitelist sub-command: {sub} (add, remove, list)"),
+        };
+    }
 
-            case "add":
-            {
-                string? uid = GetOpt(args, "--uid");
-                string? player = GetOpt(args, "--player") ?? GetOpt(args, "--name");
-                if (string.IsNullOrEmpty(uid) && string.IsNullOrEmpty(player))
-                    throw new ArgumentException("whitelist add requires --uid <uid> or --player <name>");
+    private static Dictionary<string, object?> BuildWhitelistAdd(List<string> args)
+    {
+        string? uid = GetOpt(args, "--uid");
+        string? player = GetOpt(args, "--player") ?? GetOpt(args, "--name");
+        if (string.IsNullOrEmpty(uid) && string.IsNullOrEmpty(player))
+            throw new ArgumentException("whitelist add requires --uid <uid> or --player <name>");
 
-                var d = new Dictionary<string, object?> { ["cmd"] = "whitelist-add" };
-                if (!string.IsNullOrEmpty(uid))    d["uid"] = uid;
-                if (!string.IsNullOrEmpty(player)) d["player"] = player;
+        var d = new Dictionary<string, object?> { ["cmd"] = "whitelist-add" };
+        if (!string.IsNullOrEmpty(uid))    d["uid"] = uid;
+        if (!string.IsNullOrEmpty(player)) d["player"] = player;
 
-                string? serverId = ServerIdOpt(args);
-                if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
-                string? note = GetOpt(args, "--note") ?? GetOpt(args, "--reason");
-                if (!string.IsNullOrEmpty(note)) d["note"] = note;
+        string? serverId = ServerIdOpt(args);
+        if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
+        string? note = GetOpt(args, "--note") ?? GetOpt(args, "--reason");
+        if (!string.IsNullOrEmpty(note)) d["note"] = note;
 
-                string? durationStr = GetOpt(args, "--duration");
-                if (!string.IsNullOrEmpty(durationStr))
-                {
-                    if (!int.TryParse(durationStr, out int duration))
-                        throw new ArgumentException("--duration takes a number of seconds");
-                    d["duration"] = duration;
-                }
-                return d;
-            }
-
-            case "remove" or "rm" or "del":
-            {
-                string? uid = GetOpt(args, "--uid") ?? (args.Count >= 3 && !args[2].StartsWith('-') ? args[2] : null);
-                if (string.IsNullOrEmpty(uid)) throw new ArgumentException("whitelist remove requires --uid <uid>");
-
-                var d = new Dictionary<string, object?> { ["cmd"] = "whitelist-remove", ["uid"] = uid };
-                string? serverId = ServerIdOpt(args);
-                if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
-                return d;
-            }
-
-            default:
-                throw new ArgumentException($"unknown whitelist sub-command: {sub} (add, remove, list)");
+        string? durationStr = GetOpt(args, "--duration");
+        if (!string.IsNullOrEmpty(durationStr))
+        {
+            if (!int.TryParse(durationStr, out int duration))
+                throw new ArgumentException("--duration takes a number of seconds");
+            d["duration"] = duration;
         }
+        return d;
+    }
+
+    private static Dictionary<string, object?> BuildWhitelistRemove(List<string> args)
+    {
+        string? uid = GetOpt(args, "--uid") ?? (args.Count >= 3 && !args[2].StartsWith('-') ? args[2] : null);
+        if (string.IsNullOrEmpty(uid)) throw new ArgumentException("whitelist remove requires --uid <uid>");
+
+        var d = new Dictionary<string, object?> { ["cmd"] = "whitelist-remove", ["uid"] = uid };
+        string? serverId = ServerIdOpt(args);
+        if (!string.IsNullOrEmpty(serverId)) d["serverId"] = serverId;
+        return d;
     }
 
     // `token` takes a sub-verb for the same reason `whitelist` does: create, revoke and list all
