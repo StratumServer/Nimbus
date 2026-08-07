@@ -9,6 +9,10 @@ internal sealed class PluginLoader
 {
     public const string CurrentApiVersion = "0.1";
 
+    // One instance for every manifest read: JsonSerializerOptions builds a converter cache on
+    // first use, and a fresh one per plugin throws that away each time.
+    private static readonly JsonSerializerOptions ManifestJson = new() { PropertyNameCaseInsensitive = true };
+
     private readonly List<LoadedPlugin> loaded = new();
     private readonly HashSet<string> loadedIds = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> disabledIds;
@@ -85,7 +89,7 @@ internal sealed class PluginLoader
         }
     }
 
-    private PluginMetadata ReadMetadata(string dllPath, Type pluginType)
+    private static PluginMetadata ReadMetadata(string dllPath, Type pluginType)
     {
         var manifestPath = Path.ChangeExtension(dllPath, ".plugin.json");
         if (!File.Exists(manifestPath))
@@ -97,10 +101,7 @@ internal sealed class PluginLoader
         try
         {
             using var fs = File.OpenRead(manifestPath);
-            var manifest = JsonSerializer.Deserialize<PluginManifest>(fs, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-            }) ?? new PluginManifest();
+            var manifest = JsonSerializer.Deserialize<PluginManifest>(fs, ManifestJson) ?? new PluginManifest();
 
             var id = Clean(manifest.Id, Path.GetFileNameWithoutExtension(dllPath));
             return new PluginMetadata(

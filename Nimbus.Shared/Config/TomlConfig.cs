@@ -21,6 +21,10 @@ public static class TomlConfig
         PropertyNamingPolicy = new SnakeCaseNamingPolicy(),
     };
 
+    // Held next to Options for the same reason: the legacy-JSON migration below reads with it, and
+    // JsonSerializerOptions builds a converter cache on first use that a per-call instance drops.
+    private static readonly JsonSerializerOptions LegacyJson = new() { PropertyNameCaseInsensitive = true };
+
     // Load `T` from `tomlPath`. If the file does not exist:
     //   - if a sibling `.json` (same stem) exists, load it as JSON and write a TOML next to it,
     //     keeping the original as `<name>.json.migrated`.
@@ -41,9 +45,7 @@ public static class TomlConfig
             var jsonSibling = Path.ChangeExtension(tomlPath, ".json");
             if (File.Exists(jsonSibling))
             {
-                value = JsonSerializer.Deserialize<T>(File.ReadAllText(jsonSibling),
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                    ?? new T();
+                value = JsonSerializer.Deserialize<T>(File.ReadAllText(jsonSibling), LegacyJson) ?? new T();
                 Save(tomlPath, value);
                 // The TOML is written and is what gets read from now on, so failing to rename the
                 // old JSON leaves a file nobody consults rather than a half-done migration.

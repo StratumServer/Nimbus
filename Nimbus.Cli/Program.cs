@@ -18,6 +18,10 @@ internal static class Program
     // timing out at fifteen seconds with nothing to say why.
     private const string EvacuateCommandName = "evacuate";
 
+    // One instance rather than one per call: JsonSerializerOptions freezes itself on first use and
+    // building a fresh one each time rebuilds the converter cache behind it.
+    private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+
     private static int Main(string[] args)
     {
         // Parsing is inside the try because a bad --port is now a usage error with a message on
@@ -153,7 +157,7 @@ internal static class Program
 
     private static object BuildUnban(List<string> args)
     {
-        string? uid = GetOpt(args, "--uid") ?? (args.Count >= 2 && !args[1].StartsWith("-") ? args[1] : null);
+        string? uid = GetOpt(args, "--uid") ?? (args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : null);
         if (string.IsNullOrEmpty(uid)) throw new ArgumentException("unban requires --uid <uid>");
 
         string? serverId = ServerIdOpt(args);
@@ -167,7 +171,7 @@ internal static class Program
     // `whitelist` lists, which is the harmless one.
     private static object BuildWhitelist(List<string> args)
     {
-        string sub = args.Count >= 2 && !args[1].StartsWith("-") ? args[1].ToLowerInvariant() : "list";
+        string sub = args.Count >= 2 && !args[1].StartsWith('-') ? args[1].ToLowerInvariant() : "list";
         switch (sub)
         {
             case "list" or "ls":
@@ -201,7 +205,7 @@ internal static class Program
 
             case "remove" or "rm" or "del":
             {
-                string? uid = GetOpt(args, "--uid") ?? (args.Count >= 3 && !args[2].StartsWith("-") ? args[2] : null);
+                string? uid = GetOpt(args, "--uid") ?? (args.Count >= 3 && !args[2].StartsWith('-') ? args[2] : null);
                 if (string.IsNullOrEmpty(uid)) throw new ArgumentException("whitelist remove requires --uid <uid>");
 
                 var d = new Dictionary<string, object?> { ["cmd"] = "whitelist-remove", ["uid"] = uid };
@@ -268,7 +272,7 @@ internal static class Program
 
     private static object BuildDrain(List<string> args, string cmd)
     {
-        string? serverId = args.Count >= 2 && !args[1].StartsWith("-") ? args[1] : ServerIdOpt(args);
+        string? serverId = args.Count >= 2 && !args[1].StartsWith('-') ? args[1] : ServerIdOpt(args);
         if (string.IsNullOrEmpty(serverId)) throw new ArgumentException($"{cmd} requires <serverId> or --server <id>");
         return new { cmd, serverId };
     }
@@ -482,7 +486,7 @@ internal static class Program
         try
         {
             using var doc = JsonDocument.Parse(raw);
-            return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+            return JsonSerializer.Serialize(doc.RootElement, IndentedJson);
         }
         catch { return raw; }
     }
