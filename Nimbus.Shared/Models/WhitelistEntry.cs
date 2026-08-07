@@ -7,7 +7,7 @@ namespace Nimbus.Shared.Models;
 // The list on its own decides nothing. Enforcement is a proxy-side toggle, the [whitelist]
 // section of nimbus.proxy.toml, so an entry sitting in the registry while enforcement is off
 // costs nobody anything.
-public sealed class WhitelistEntry
+public sealed class WhitelistEntry : IScopedEntry
 {
     public string PlayerUid { get; set; } = "";
 
@@ -35,6 +35,9 @@ public sealed class WhitelistEntry
     // which is all a backend with no ServerId can be asked about.
     public bool Covers(string? serverId)
         => IsNetworkWide || string.Equals(ServerId, serverId, StringComparison.OrdinalIgnoreCase);
+
+    // The IScopedEntry reading of the same test: an entry matches the scope it covers.
+    public bool Matches(string? serverId) => Covers(serverId);
 }
 
 public sealed class WhitelistRequest
