@@ -67,19 +67,8 @@ internal static class ProxyConfigValidator
             ValidateEndpoint(kv.Value, $"servers.{kv.Key}", requireIpAddress: false, result);
         }
 
-        foreach (var serverId in cfg.Try)
-        {
-            if (string.IsNullOrWhiteSpace(serverId)) continue;
-            if (!HasServer(cfg, serverId))
-                result.Warn($"try references unknown server '{serverId}'");
-        }
-
-        foreach (var serverId in cfg.ProxyProtocolServers)
-        {
-            if (string.IsNullOrWhiteSpace(serverId)) continue;
-            if (!HasServer(cfg, serverId))
-                result.Warn($"proxy_protocol_servers references unknown server '{serverId}'");
-        }
+        WarnUnknownServerRefs(cfg, cfg.Try, "try", result);
+        WarnUnknownServerRefs(cfg, cfg.ProxyProtocolServers, "proxy_protocol_servers", result);
 
         foreach (var forced in cfg.ForcedHosts)
         {
@@ -87,6 +76,19 @@ internal static class ProxyConfigValidator
                 result.Warn("[forced-hosts] contains an empty hostname");
             foreach (var serverId in forced.Value.Where(id => !HasServer(cfg, id)))
                 result.Warn($"forced-hosts.{forced.Key} references unknown server '{serverId}'");
+        }
+    }
+
+    // A flat list of server ids that each has to name a configured backend, warned about by its
+    // section name. `try` and `proxy_protocol_servers` are the same check verbatim; forced-hosts is
+    // not, because it warns per hostname and carries its own empty-key case.
+    private static void WarnUnknownServerRefs(ProxyConfig cfg, IEnumerable<string> serverIds, string label, ProxyConfigValidation result)
+    {
+        foreach (var serverId in serverIds)
+        {
+            if (string.IsNullOrWhiteSpace(serverId)) continue;
+            if (!HasServer(cfg, serverId))
+                result.Warn($"{label} references unknown server '{serverId}'");
         }
     }
 
