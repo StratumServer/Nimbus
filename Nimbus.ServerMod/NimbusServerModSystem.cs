@@ -340,7 +340,10 @@ public sealed class NimbusServerModSystem : ModSystem
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(config.RegistryHttpTimeoutSeconds + 1));
-            var reservation = await registry!.ConsumeReservationByUidAsync(playerUid, config.ServerId, cts.Token)
+            // Load-bearing despite the analyser: registry is a nullable field with no assignment
+            // in this method, so removing it is a CS8602. The caller only reaches here once
+            // StartServerSide has constructed it.
+            var reservation = await registry!.ConsumeReservationByUidAsync(playerUid, config.ServerId, cts.Token) // NOSONAR
                 .ConfigureAwait(false);
 
             if (reservation != null)

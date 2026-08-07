@@ -33,7 +33,7 @@ internal sealed class WhitelistAddCommand : IAdminCommand
             online = WhitelistLookup.ByName(ctx, name);
             if (online?.PlayerUid == null)
                 return new { ok = false, reason = $"no live session for player '{name}'; whitelist by uid instead" };
-            uid = online.PlayerUid!;
+            uid = online.PlayerUid;
         }
         else
         {

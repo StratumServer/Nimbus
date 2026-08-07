@@ -815,7 +815,7 @@ internal sealed partial class ProxySession : IPlayer
     {
         pumpCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
         pumpC2S = PumpAsync("c->s", clientStream, upstream!.GetStream(), sniffC2S, isC2S: true, pumpCts.Token);
-        pumpS2C = PumpAsync("s->c", upstream!.GetStream(), clientStream, sniffS2C, isC2S: false, pumpCts.Token);
+        pumpS2C = PumpAsync("s->c", upstream.GetStream(), clientStream, sniffS2C, isC2S: false, pumpCts.Token);
     }
 
     private async Task PumpAsync(string label, NetworkStream from, NetworkStream to, FrameSniffer? sniffer, bool isC2S, CancellationToken token)

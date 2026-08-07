@@ -54,7 +54,7 @@ internal sealed partial class ProxySession
         // LoginTokenQuery that carries no identity to match the UID against (#57).
         if (stickies != null && !string.IsNullOrEmpty(capturedPlayerUid))
         {
-            stickies.Stage(capturedPlayerUid!, ClientEndpoint.ip, target, StickyRouteTable.UidTtl,
+            stickies.Stage(capturedPlayerUid, ClientEndpoint.ip, target, StickyRouteTable.UidTtl,
                 reason ?? "proxy redirect", stickyAttempt);
         }
         else
@@ -132,7 +132,7 @@ internal sealed partial class ProxySession
         using var mintCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
         mintCts.CancelAfter(TimeSpan.FromSeconds(10));
         var reservation = await registry.MintReservationAsync(
-            capturedPlayerUid!, capturedPlayerName ?? "", target.ServerId, reason, mintCts.Token,
+            capturedPlayerUid, capturedPlayerName ?? "", target.ServerId, reason, mintCts.Token,
             ClientEndpoint.ip, ClientEndpoint.port, clientTransferId).ConfigureAwait(false);
         if (reservation == null)
         {

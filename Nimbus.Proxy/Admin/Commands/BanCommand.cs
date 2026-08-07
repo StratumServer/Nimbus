@@ -30,7 +30,7 @@ internal sealed class BanCommand : IAdminCommand
             online = FindByName(ctx, name);
             if (online?.PlayerUid == null)
                 return new { ok = false, reason = $"no live session for player '{name}'; ban by uid instead" };
-            uid = online.PlayerUid!;
+            uid = online.PlayerUid;
         }
         else
         {
