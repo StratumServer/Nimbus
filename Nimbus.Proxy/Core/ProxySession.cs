@@ -484,6 +484,28 @@ internal sealed partial class ProxySession : IPlayer
     private static string DescribeTarget(BackendEndpoint target)
         => string.IsNullOrEmpty(target.ServerId) ? "the network" : target.ServerId;
 
+    // The two gates every transfer runs against its destination, in this order because a ban wins
+    // over a missing whitelist entry. Returns the refusal to hand back to the caller, or null when
+    // the player may go. `mode` is only the word the log line uses to name the path asking.
+    private string? CheckTransferGates(BackendEndpoint target, string mode)
+    {
+        var banFail = CheckTargetBan(target);
+        if (banFail != null)
+        {
+            Log.Warn($"[s{Id}] {mode} rejected: {banFail}");
+            return banFail;
+        }
+
+        var whitelistFail = CheckTargetWhitelist(target);
+        if (whitelistFail != null)
+        {
+            Log.Warn($"[s{Id}] {mode} rejected: {whitelistFail}");
+            return whitelistFail;
+        }
+
+        return null;
+    }
+
     // How many redirects one staged route may fire before we give up and leave the player where
     // they landed. With address-matched routing in place the first redirect normally lands, and
     // the NAT mix-up above needs at most one more. Anything past that is a loop, not a retry.
@@ -592,130 +614,215 @@ internal sealed partial class ProxySession : IPlayer
     {
         try
         {
-            // Try each candidate until one connects. ConnectUpstreamAsync fires per-attempt
-            // Handler cancel stops the chain. Connect failure tries the next backend.
-            bool connected = false;
-            string? lastFailReason = null;
-            for (int i = 0; i < tryOrder.Count; i++)
-            {
-                var (ok, cancelled, reason) = await ConnectUpstreamAsync(tryOrder[i], firstClientFrame).ConfigureAwait(false);
-                if (ok) { connected = true; break; }
-                lastFailReason = reason;
-                if (cancelled) break;
-                if (i + 1 < tryOrder.Count)
-                    Log.Info($"[s{Id}] failover: trying next candidate after '{reason}'");
-            }
+            var (connected, lastFailReason) = await ConnectAnyAsync(tryOrder, firstClientFrame).ConfigureAwait(false);
             if (!connected)
             {
                 // The gate already sent the real reason; do not paper over it.
                 if (rejectedAtGate) return;
 
-                Log.Warn($"[s{Id}] no candidate connected: {lastFailReason ?? "unknown"}; sending forged disconnect");
-                try
-                {
-                    var frame = DisconnectBuilder.BuildDisconnectFrame($"No backend reachable right now ({lastFailReason ?? "all candidates failed"}). Please try again shortly.");
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                    await clientStream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
-                    await clientStream.FlushAsync(cts.Token).ConfigureAwait(false);
-                    try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { /* cut short, tear down now */ }
-                }
-                catch { /* no backend and now no client either; the finally below tears it down */ }
+                await SendNoBackendDisconnectAsync(lastFailReason).ConfigureAwait(false);
                 return;
             }
 
-            // Loop until the pumps exit. The unsafe splice path restarts them on a new upstream.
-            while (!sessionStopToken.IsCancellationRequested && !closed)
-            {
-                await Task.WhenAll(SafeAwait(pumpC2S!), SafeAwait(pumpS2C!)).ConfigureAwait(false);
-                if (!swapping) break;  // pumps ended because of client/upstream close, not a swap
-
-                // The swap routine installs the new pumps before it clears this flag.
-                while (swapping && !sessionStopToken.IsCancellationRequested && !closed)
-                    await Task.Delay(10, sessionStopToken).ConfigureAwait(false);
-            }
+            await PumpUntilClosedAsync().ConfigureAwait(false);
         }
         finally
         {
-            closed = true;
-            // A gate rejection forges its disconnect off the pump, so it can still be in flight
-            // here. Closing the client socket underneath it would replace the reason the player
-            // was given with a dropped connection. The write carries its own 2s cap.
-            var pendingDisconnect = gateDisconnect;
-            if (pendingDisconnect != null) await SafeAwait(pendingDisconnect).ConfigureAwait(false);
-            // The pumps exited because one of these two ended, so the other is usually the only
-            // one left to close and the dead one throws. This is the last owner either way.
-            try { upstream?.Close(); } catch { /* backend already dropped us */ }
-            try { client.Close(); } catch { /* client already dropped us */ }
-            // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts
-            // fresh. Off the address captured at construction, not off the socket: by here the
-            // client socket has been closed either by this teardown or by Close(), and
-            // TcpClient.Close() nulls Client, so reading the endpoint back gives nothing to clear
-            // under and the override outlives the session.
-            if (udpOverrides != null && clientAddress != null)
-                udpOverrides.Clear(clientAddress);
-            if (events != null)
-            {
-                // Disconnect notifications are the last thing this session does. A handler that
-                // throws here must not skip the ones after it or lose the summary line below.
-                if (kickedByBackend && currentBackend != null)
-                {
-                    try { await events.FireAsync(new ServerKickedEvent(this, currentBackend.ToServerInfo())).ConfigureAwait(false); }
-                    catch { /* a failed kick notification must not swallow the disconnect one */ }
-                }
-                try { await events.FireAsync(new PlayerDisconnectEvent(this, c2sBytes, s2cBytes)).ConfigureAwait(false); }
-                catch { /* the session is over; a throwing handler changes nothing about that */ }
-            }
-            var elapsed = DateTimeOffset.UtcNow - sessionStart;
-            Log.Info($"[s{Id}] {capturedPlayerName ?? clientRemote} disconnected ({FormatDuration(elapsed)} | ↑{FormatBytes(c2sBytes)} ↓{FormatBytes(s2cBytes)})");
+            await TearDownSessionAsync().ConfigureAwait(false);
         }
     }
 
     // Single-target convenience. Kept for callers that already have one endpoint in hand.
+    // Sits here, ahead of the phases RunAsync is built from, so the two overloads stay adjacent.
     public Task RunAsync(BackendEndpoint initial) => RunAsync(new[] { initial });
+
+    // Try each candidate until one connects. A handler cancelling stops the chain; a connect
+    // failure moves on to the next backend. Returns whether the session got an upstream, and the
+    // last reason it did not, which is what the player is eventually told.
+    private async Task<(bool connected, string? lastFailReason)> ConnectAnyAsync(
+        IReadOnlyList<BackendEndpoint> tryOrder, ReadOnlyMemory<byte> firstClientFrame)
+    {
+        string? lastFailReason = null;
+        for (int i = 0; i < tryOrder.Count; i++)
+        {
+            var (ok, cancelled, reason) = await ConnectUpstreamAsync(tryOrder[i], firstClientFrame).ConfigureAwait(false);
+            if (ok) return (true, null);
+            lastFailReason = reason;
+            if (cancelled) break;
+            if (i + 1 < tryOrder.Count)
+                Log.Info($"[s{Id}] failover: trying next candidate after '{reason}'");
+        }
+        return (false, lastFailReason);
+    }
+
+    // Nothing on the candidate list answered. Forge a disconnect so the player is told that,
+    // rather than watching the connection drop for no stated reason. Best effort throughout: the
+    // teardown runs next whether or not any of this reached the client.
+    private async Task SendNoBackendDisconnectAsync(string? lastFailReason)
+    {
+        Log.Warn($"[s{Id}] no candidate connected: {lastFailReason ?? "unknown"}; sending forged disconnect");
+        try
+        {
+            var frame = DisconnectBuilder.BuildDisconnectFrame($"No backend reachable right now ({lastFailReason ?? "all candidates failed"}). Please try again shortly.");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await clientStream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
+            await clientStream.FlushAsync(cts.Token).ConfigureAwait(false);
+            try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { /* cut short, tear down now */ }
+        }
+        catch { /* no backend and now no client either; the teardown handles the rest */ }
+    }
+
+    // Sit on the pumps until they stop for good. They also stop for a swap, which installs a new
+    // upstream and a new pair underneath us, so the exit has to tell the two cases apart.
+    private async Task PumpUntilClosedAsync()
+    {
+        while (!sessionStopToken.IsCancellationRequested && !closed)
+        {
+            await Task.WhenAll(SafeAwait(pumpC2S!), SafeAwait(pumpS2C!)).ConfigureAwait(false);
+            if (!swapping) break;  // pumps ended because of client/upstream close, not a swap
+
+            // The swap routine installs the new pumps before it clears this flag.
+            while (swapping && !sessionStopToken.IsCancellationRequested && !closed)
+                await Task.Delay(10, sessionStopToken).ConfigureAwait(false);
+        }
+    }
+
+    // Close everything this session owns, in the one order that does not cut a message short.
+    // Runs from RunAsync's finally, so it runs however the session ended.
+    private async Task TearDownSessionAsync()
+    {
+        closed = true;
+        // A gate rejection forges its disconnect off the pump, so it can still be in flight
+        // here. Closing the client socket underneath it would replace the reason the player
+        // was given with a dropped connection. The write carries its own 2s cap.
+        var pendingDisconnect = gateDisconnect;
+        if (pendingDisconnect != null) await SafeAwait(pendingDisconnect).ConfigureAwait(false);
+        // The pumps exited because one of these two ended, so the other is usually the only
+        // one left to close and the dead one throws. This is the last owner either way.
+        try { upstream?.Close(); } catch { /* backend already dropped us */ }
+        try { client.Close(); } catch { /* client already dropped us */ }
+        // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts
+        // fresh. Off the address captured at construction, not off the socket: by here the
+        // client socket has been closed either by this teardown or by Close(), and
+        // TcpClient.Close() nulls Client, so reading the endpoint back gives nothing to clear
+        // under and the override outlives the session.
+        if (udpOverrides != null && clientAddress != null)
+            udpOverrides.Clear(clientAddress);
+
+        await AnnounceDisconnectAsync().ConfigureAwait(false);
+
+        var elapsed = DateTimeOffset.UtcNow - sessionStart;
+        Log.Info($"[s{Id}] {capturedPlayerName ?? clientRemote} disconnected ({FormatDuration(elapsed)} | ↑{FormatBytes(c2sBytes)} ↓{FormatBytes(s2cBytes)})");
+    }
+
+    // Disconnect notifications are the last thing this session does. A handler that throws here
+    // must not skip the ones after it or lose the summary line the teardown writes afterwards.
+    private async Task AnnounceDisconnectAsync()
+    {
+        if (events == null) return;
+
+        if (kickedByBackend && currentBackend != null)
+        {
+            try { await events.FireAsync(new ServerKickedEvent(this, currentBackend.ToServerInfo())).ConfigureAwait(false); }
+            catch { /* a failed kick notification must not swallow the disconnect one */ }
+        }
+        try { await events.FireAsync(new PlayerDisconnectEvent(this, c2sBytes, s2cBytes)).ConfigureAwait(false); }
+        catch { /* the session is over; a throwing handler changes nothing about that */ }
+    }
 
     private async Task<(bool ok, bool cancelled, string? reason)> ConnectUpstreamAsync(BackendEndpoint target, ReadOnlyMemory<byte> firstClientFrame)
     {
-        // ServerPreConnect: handlers can swap target or cancel before we open the socket.
-        if (events != null)
-        {
-            var pre = new ServerPreConnectEvent(this, target.ToServerInfo(), reason: "initial connect");
-            await events.FireAsync(pre).ConfigureAwait(false);
-            if (pre.IsCancelled)
-            {
-                Log.Warn($"[s{Id}] initial upstream cancelled by handler: {pre.CancelReason}");
-                return (false, true, pre.CancelReason ?? "cancelled");
-            }
-            target = pre.Target.ToEndpoint();
-        }
+        var (settled, cancelled, cancelReason) = await FirePreConnectAsync(target, reason: "initial connect", label: "initial upstream").ConfigureAwait(false);
+        if (cancelled) return (false, true, cancelReason ?? "cancelled");
+        target = settled;
 
-        if (!firstClientFrame.IsEmpty)
-        {
-            // Classify before capturing. A stock client opens with LoginTokenQuery and only sends
-            // Identification once the backend has answered, so the first frame usually holds no
-            // identity at all and handing it to the capture path made every single session log a
-            // parse failure for a frame that never had a UID in it (#57).
-            string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
-            if (firstName == "Identification")
-                CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
-            else
-                Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
-            // A player the gate refused must not cause an upstream connection at all. The chain
-            // stops here rather than failing over: the gate has already told the client why it is
-            // going.
-            if (rejectedAtGate)
-                return (false, true, gateRejectionReason ?? "player refused at the gate");
-            // If the first frame already contained Identification, prime the reservation
-            // before replaying bytes upstream. Missing UID here is non-fatal; the c->s pump
-            // retries as soon as it captures Identification from later frames.
-            var mintFail = await EnsureInitialReservationAsync(target, "initial connect").ConfigureAwait(false);
-            if (mintFail != null)
-            {
-                Log.Warn($"[s{Id}] initial reservation mint failed for {target}: {mintFail}");
-                return (false, true, mintFail);
-            }
-        }
+        // Anything the opening frame settles stops the whole candidate chain rather than failing
+        // over, because a different backend would not change the answer.
+        var frameFail = await PrepareFirstClientFrameAsync(target, firstClientFrame).ConfigureAwait(false);
+        if (frameFail != null) return (false, true, frameFail);
 
         var previous = currentBackend == null ? null : currentBackend.ToServerInfo();
+
+        var (up, openFail) = await OpenUpstreamAsync(target, firstClientFrame).ConfigureAwait(false);
+        if (openFail != null) return (false, false, openFail);
+
+        upstream = up;
+        currentBackend = target;
+        // The first frame has just been written to this backend. If it was the Identification,
+        // this backend is the one that gets to spend the mp token.
+        if (capturedIdentification != null) NoteIdentificationDelivered(target);
+        UpdateUdpOverride(target);
+        StartPumps();
+        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} ({clientRemote}) → {target.ServerId ?? target.ToString()}");
+        if (events != null)
+        {
+            try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
+            catch { /* the player is connected and playing; a throwing handler cannot undo that */ }
+        }
+        return (true, false, null);
+    }
+
+    // ServerPreConnect: handlers can swap the target or cancel before a socket is opened. Returns
+    // the destination the handlers settled on, and whether one of them refused. The raw
+    // CancelReason is handed back rather than a formatted message, because the two transfer paths
+    // word a cancellation differently. `label` only names the path in the log line.
+    private async Task<(BackendEndpoint target, bool cancelled, string? cancelReason)> FirePreConnectAsync(
+        BackendEndpoint target, string? reason, string label)
+    {
+        if (events == null) return (target, false, null);
+
+        var pre = new ServerPreConnectEvent(this, target.ToServerInfo(), reason);
+        await events.FireAsync(pre).ConfigureAwait(false);
+        if (pre.IsCancelled)
+        {
+            Log.Warn($"[s{Id}] {label} cancelled by handler: {pre.CancelReason}");
+            return (target, true, pre.CancelReason);
+        }
+        return (pre.Target.ToEndpoint(), false, null);
+    }
+
+    // Read the frame the client opened with, before any of it is replayed upstream: capture the
+    // identity if it is there, let the gates answer, and prime the reservation. Returns the reason
+    // this session must not reach a backend at all, or null to carry on connecting. A session with
+    // no opening frame has nothing to settle here and passes straight through.
+    private async Task<string?> PrepareFirstClientFrameAsync(BackendEndpoint target, ReadOnlyMemory<byte> firstClientFrame)
+    {
+        if (firstClientFrame.IsEmpty) return null;
+
+        // Classify before capturing. A stock client opens with LoginTokenQuery and only sends
+        // Identification once the backend has answered, so the first frame usually holds no
+        // identity at all and handing it to the capture path made every single session log a
+        // parse failure for a frame that never had a UID in it (#57).
+        string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
+        if (firstName == "Identification")
+            CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
+        else
+            Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
+
+        // A player the gate refused must not cause an upstream connection at all. The gate has
+        // already told the client why it is going.
+        if (rejectedAtGate)
+            return gateRejectionReason ?? "player refused at the gate";
+
+        // If the first frame already contained Identification, prime the reservation
+        // before replaying bytes upstream. Missing UID here is non-fatal; the c->s pump
+        // retries as soon as it captures Identification from later frames.
+        var mintFail = await EnsureInitialReservationAsync(target, "initial connect").ConfigureAwait(false);
+        if (mintFail != null)
+        {
+            Log.Warn($"[s{Id}] initial reservation mint failed for {target}: {mintFail}");
+            return mintFail;
+        }
+
+        return null;
+    }
+
+    // Open the socket this session will be pumped over: dial, announce the real client with a
+    // PROXY v2 header, and replay whatever the client already said. Returns the connected socket,
+    // or the reason this candidate failed. Every failure drops only the socket it opened, so the
+    // caller is free to try the next backend on the list.
+    private async Task<(TcpClient? up, string? fail)> OpenUpstreamAsync(BackendEndpoint target, ReadOnlyMemory<byte> firstClientFrame)
+    {
         var up = new TcpClient { NoDelay = true };
         using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
         connectCts.CancelAfter(cfg.Advanced.ConnectTimeoutMs);
@@ -731,35 +838,22 @@ internal sealed partial class ProxySession : IPlayer
             // The reason is already logged above; closing a socket that never connected is
             // housekeeping and its own failure adds nothing to the failover decision.
             try { up.Close(); } catch { /* never connected, nothing to report */ }
-            return (false, false, $"{target}: {ex.Message}");
+            return (null, $"{target}: {ex.Message}");
         }
         if (!await TryWriteProxyProtocolAsync(up, target).ConfigureAwait(false))
         {
             ProxyMetrics.BackendConnectFailure();
             try { up.Close(); } catch { /* the header write already failed; the socket is done */ }
-            return (false, false, $"{target}: PROXY v2 header write failed");
+            return (null, $"{target}: PROXY v2 header write failed");
         }
         if (!await TryWriteFirstClientFrameAsync(up, firstClientFrame).ConfigureAwait(false))
         {
             ProxyMetrics.BackendConnectFailure();
             try { up.Close(); } catch { /* the frame replay already failed; the socket is done */ }
-            return (false, false, $"{target}: first client frame write failed");
+            return (null, $"{target}: first client frame write failed");
         }
         ProxyMetrics.BackendConnectSuccess();
-        upstream = up;
-        currentBackend = target;
-        // The first frame has just been written to this backend. If it was the Identification,
-        // this backend is the one that gets to spend the mp token.
-        if (capturedIdentification != null) NoteIdentificationDelivered(target);
-        UpdateUdpOverride(target);
-        StartPumps();
-        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} ({clientRemote}) → {target.ServerId ?? target.ToString()}");
-        if (events != null)
-        {
-            try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
-            catch { /* the player is connected and playing; a throwing handler cannot undo that */ }
-        }
-        return (true, false, null);
+        return (up, null);
     }
 
     // Pin UDP for this client to the same backend our TCP session uses. No-op without overrides.
@@ -818,6 +912,20 @@ internal sealed partial class ProxySession : IPlayer
         pumpS2C = PumpAsync("s->c", upstream.GetStream(), clientStream, sniffS2C, isC2S: false, pumpCts.Token);
     }
 
+    // The three exceptions a dying stream throws at a pump. Cancellation, a broken socket and a
+    // socket disposed under us are three ways of being told the same thing, and the pump does the
+    // same thing about all of them, so they are matched in one place rather than as repeated
+    // catch triples on both the read and the write.
+    private static bool IsStreamGone(Exception ex)
+        => ex is OperationCanceledException or IOException or ObjectDisposedException;
+
+    // The byte pump, one instance per direction. The direction flag stays: c->s and s->c differ
+    // only in when the sniffer runs and what the exit is recorded against, and splitting them
+    // would duplicate the whole read-forward-cancel skeleton in the busiest code in the proxy.
+    //
+    // Both awaits below are on the stream calls directly rather than behind helpers. Wrapping
+    // either one would add an async state machine per chunk on a path that runs for every packet
+    // of every player, which is the same reasoning that keeps BanStore.FindBlocking a loop.
     private async Task PumpAsync(string label, NetworkStream from, NetworkStream to, FrameSniffer? sniffer, bool isC2S, CancellationToken token)
     {
         var buf = new byte[cfg.Advanced.BufferSize];
@@ -828,65 +936,89 @@ internal sealed partial class ProxySession : IPlayer
             {
                 int read;
                 try { read = await from.ReadAsync(buf.AsMemory(0, buf.Length), token).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-                catch (IOException) { break; }
-                catch (ObjectDisposedException) { break; }
+                catch (Exception ex) when (IsStreamGone(ex)) { break; }
                 if (read <= 0) break;
 
                 total += read;
+                var chunk = buf.AsMemory(0, read);
 
-                // Parse c->s frames before forwarding so we can mint the initial
-                // reservation as soon as Identification is captured.
-                if (isC2S)
-                {
-                    sniffer?.OnBytes(new ReadOnlySpan<byte>(buf, 0, read));
+                // c->s is inspected before the bytes are forwarded, so the gates and the initial
+                // reservation get to act on the frame before any backend sees it.
+                if (isC2S && !await InspectClientChunkAsync(sniffer, chunk).ConfigureAwait(false))
+                    break;
 
-                    // The gates normally fire before we dial a backend, but a client that stays
-                    // quiet past the first-frame read window (status.query_timeout_ms) gets here
-                    // with the pumps already running and its Identification in this very buffer.
-                    // Forwarding it would let a refused player's login reach the backend in the
-                    // ~150ms before the forged disconnect closes us down, so the pump has to drop
-                    // the chunk itself rather than trust the pre-connect check.
-                    if (rejectedAtGate)
-                    {
-                        Log.Trace($"[s{Id}] dropping c->s chunk after gate rejection");
-                        break;
-                    }
+                try { await to.WriteAsync(chunk, token).ConfigureAwait(false); }
+                catch (Exception ex) when (IsStreamGone(ex)) { break; }
 
-                    if (initialReservationState == 0)
-                    {
-                        var mintFail = await EnsureInitialReservationAsync(currentBackend, "initial connect (stream)").ConfigureAwait(false);
-                        if (mintFail != null)
-                        {
-                            Log.Warn($"[s{Id}] closing session after reservation prime failed: {mintFail}");
-                            break;
-                        }
-                    }
-                }
-
-                try { await to.WriteAsync(buf.AsMemory(0, read), token).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-                catch (IOException) { break; }
-                catch (ObjectDisposedException) { break; }
-
+                // s->c is inspected after the forward instead: nothing here gates it, so the
+                // player's frame is not made to wait on the parse.
                 if (!isC2S)
-                    sniffer?.OnBytes(new ReadOnlySpan<byte>(buf, 0, read));
+                    sniffer?.OnBytes(chunk.Span);
             }
         }
         finally
         {
-            if (isC2S) Interlocked.Add(ref c2sBytes, total); else Interlocked.Add(ref s2cBytes, total);
-            if (isC2S) ProxyMetrics.AddBytes(total, 0); else ProxyMetrics.AddBytes(0, total);
-            Log.Trace($"[s{Id}] {label} pump exited ({total} bytes this segment)");
+            RecordPumpExit(label, isC2S, total);
+        }
+    }
 
-            // s->c pump exiting without our own Close() or a swap in flight means the backend
-            // dropped the connection while the player was live.
-            if (!isC2S && !closed && !swapping)
+    // Everything the proxy does to a client chunk before it is allowed upstream. Returns false to
+    // stop the pump, which is how both refusals here end the session.
+    //
+    // ValueTask, and not Task, on purpose: this runs for every c->s chunk, and the ordinary case
+    // is the one with no await in it at all, where an async ValueTask method allocates nothing.
+    // The state machine is only paid for on the first chunk that has to mint a reservation.
+    private async ValueTask<bool> InspectClientChunkAsync(FrameSniffer? sniffer, ReadOnlyMemory<byte> chunk)
+    {
+        sniffer?.OnBytes(chunk.Span);
+
+        // The gates normally fire before we dial a backend, but a client that stays quiet past
+        // the first-frame read window (status.query_timeout_ms) gets here with the pumps already
+        // running and its Identification in this very buffer. Forwarding it would let a refused
+        // player's login reach the backend in the ~150ms before the forged disconnect closes us
+        // down, so the pump has to drop the chunk itself rather than trust the pre-connect check.
+        if (rejectedAtGate)
+        {
+            Log.Trace($"[s{Id}] dropping c->s chunk after gate rejection");
+            return false;
+        }
+
+        if (initialReservationState == 0)
+        {
+            var mintFail = await EnsureInitialReservationAsync(currentBackend, "initial connect (stream)").ConfigureAwait(false);
+            if (mintFail != null)
             {
-                var ph = Phase;
-                if (ph == SessionState.Phase.Ready || ph == SessionState.Phase.Disconnecting)
-                    kickedByBackend = true;
+                Log.Warn($"[s{Id}] closing session after reservation prime failed: {mintFail}");
+                return false;
             }
+        }
+
+        return true;
+    }
+
+    // Close out one pump: bill the bytes to its direction and work out whether its exit means the
+    // backend dropped a live player. Runs from PumpAsync's finally, so it runs on every exit path.
+    private void RecordPumpExit(string label, bool isC2S, long total)
+    {
+        if (isC2S)
+        {
+            Interlocked.Add(ref c2sBytes, total);
+            ProxyMetrics.AddBytes(total, 0);
+        }
+        else
+        {
+            Interlocked.Add(ref s2cBytes, total);
+            ProxyMetrics.AddBytes(0, total);
+        }
+        Log.Trace($"[s{Id}] {label} pump exited ({total} bytes this segment)");
+
+        // s->c pump exiting without our own Close() or a swap in flight means the backend
+        // dropped the connection while the player was live.
+        if (!isC2S && !closed && !swapping)
+        {
+            var ph = Phase;
+            if (ph == SessionState.Phase.Ready || ph == SessionState.Phase.Disconnecting)
+                kickedByBackend = true;
         }
     }
 
