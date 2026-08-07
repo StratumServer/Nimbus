@@ -119,31 +119,7 @@ internal sealed class WhitelistRemoveCommand : IAdminCommand
             Log.Warn($"whitelist cache refresh failed after removing {uid}: {ex.GetType().Name}: {ex.Message}");
         }
 
-        // Removing an entry can close a door the player is already standing behind. Which of
-        // their sessions that is depends on the backend each one sits on and on what coverage is
-        // left, so this walks the session table rather than reasoning from the removed entry.
-        int kicked = 0;
-        foreach (var session in ctx.Proxy.Sessions.Values)
-        {
-            if (!string.Equals(session.PlayerUid, uid, StringComparison.OrdinalIgnoreCase)) continue;
-
-            // A session with no backend yet reports a null serverId, which only whitelist.network
-            // gates.
-            string? current = ((IPlayer)session).CurrentServer?.ServerId;
-            if (!ctx.Cfg.Whitelist.RequiresCoverage(current)) continue;
-            // Only trust a "still covered" answer from a list the removal is actually in. On a
-            // stale list the entry that just went away is still sitting there and would spare
-            // every session it used to cover, which is how this command came to report a kick
-            // count of zero while the player stayed connected. Kicking someone who turns out to
-            // hold other coverage costs them a reconnect; leaving them on costs the removal its
-            // entire point.
-            if (cacheHasRemoval && ctx.Proxy.Whitelist.FindCovering(uid, current) != null) continue;
-
-            ((IPlayer)session).Disconnect(ctx.Cfg.Whitelist.Network
-                ? "This network is whitelisted."
-                : "This server is whitelisted.");
-            kicked++;
-        }
+        int kicked = KickSessionsLosingCoverage(ctx, uid, cacheHasRemoval);
 
         return new
         {
@@ -155,6 +131,36 @@ internal sealed class WhitelistRemoveCommand : IAdminCommand
             // erred towards kicking. The registry still holds the removal.
             cacheRefreshed = cacheHasRemoval,
         };
+    }
+
+    // Removing an entry can close a door the player is already standing behind. Which of their
+    // sessions that is depends on the backend each one sits on and on what coverage is left, so
+    // this walks the session table rather than reasoning from the removed entry. Kept apart from
+    // the command body because deciding who loses access is its own concern, distinct from talking
+    // to the registry and the cache above it. cacheHasRemoval carries whether the sweep may trust
+    // a "still covered" answer: on a stale list the entry that just went away is still sitting
+    // there and would spare every session it used to cover, which is how this command came to
+    // report a kick count of zero while the player stayed connected. Kicking someone who turns out
+    // to hold other coverage costs them a reconnect; leaving them on costs the removal its point.
+    private static int KickSessionsLosingCoverage(AdminContext ctx, string uid, bool cacheHasRemoval)
+    {
+        int kicked = 0;
+        foreach (var session in ctx.Proxy.Sessions.Values)
+        {
+            if (!string.Equals(session.PlayerUid, uid, StringComparison.OrdinalIgnoreCase)) continue;
+
+            // A session with no backend yet reports a null serverId, which only whitelist.network
+            // gates.
+            string? current = ((IPlayer)session).CurrentServer?.ServerId;
+            if (!ctx.Cfg.Whitelist.RequiresCoverage(current)) continue;
+            if (cacheHasRemoval && ctx.Proxy.Whitelist.FindCovering(uid, current) != null) continue;
+
+            ((IPlayer)session).Disconnect(ctx.Cfg.Whitelist.Network
+                ? "This network is whitelisted."
+                : "This server is whitelisted.");
+            kicked++;
+        }
+        return kicked;
     }
 }
 

@@ -76,16 +76,7 @@ internal sealed class BanCommand : IAdminCommand
             ? $"You are banned from {kickScope}."
             : $"You are banned from {kickScope}: {reason}";
 
-        int kicked = 0;
-        foreach (var session in ctx.Proxy.Sessions.Values)
-        {
-            if (!string.Equals(session.PlayerUid, uid, StringComparison.OrdinalIgnoreCase)) continue;
-            // A session with no backend yet reports a null serverId, which only a network-wide
-            // ban blocks.
-            if (!ban.Blocks(((IPlayer)session).CurrentServer?.ServerId)) continue;
-            ((IPlayer)session).Disconnect(kickReason);
-            kicked++;
-        }
+        int kicked = KickSessionsBlockedByBan(ctx, uid, ban, kickReason);
 
         return new
         {
@@ -96,6 +87,23 @@ internal sealed class BanCommand : IAdminCommand
             expiresAtUnix = ban.ExpiresAtUnix,
             kicked,
         };
+    }
+
+    // Walk the session table and disconnect the sessions this ban now covers. A session with no
+    // backend yet reports a null serverId, which only a network-wide ban blocks. Kept apart from
+    // the command body because it is a distinct sweep with its own reason to walk every session
+    // rather than reason from the single lookup above.
+    private static int KickSessionsBlockedByBan(AdminContext ctx, string uid, NetworkBan ban, string kickReason)
+    {
+        int kicked = 0;
+        foreach (var session in ctx.Proxy.Sessions.Values)
+        {
+            if (!string.Equals(session.PlayerUid, uid, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!ban.Blocks(((IPlayer)session).CurrentServer?.ServerId)) continue;
+            ((IPlayer)session).Disconnect(kickReason);
+            kicked++;
+        }
+        return kicked;
     }
 
     private static ProxySession? FindByName(AdminContext ctx, string name)
