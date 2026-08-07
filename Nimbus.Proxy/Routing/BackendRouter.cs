@@ -49,45 +49,50 @@ internal sealed class BackendRouter
         IReadOnlyList<BackendEndpoint> source = BuildOrderedSource();
         if (source.Count == 0) return (Array.Empty<BackendEndpoint>(), "no candidates configured");
 
-        // No registry: accept the source as-is, just filtered by drain.
-        NetworkSnapshot? snap = null;
-        if (registry != null)
-        {
-            try { snap = await registry.GetServersAsync(ct).ConfigureAwait(false); }
-            catch (Exception ex) { Log.Warn($"router: snapshot fetch failed: {ex.Message}"); }
-        }
-        // Treat an empty snapshot as "registry has nothing to say yet" so newly-started
-        // embedded registries (no backend has heartbeat-ed yet) still route to configured
-        // servers instead of returning "no viable candidates".
-        if (snap != null && snap.Backends.Count == 0) snap = null;
+        NetworkSnapshot? snap = await FetchHealthSnapshotAsync(ct).ConfigureAwait(false);
 
         var viable = new List<BackendEndpoint>(source.Count);
         string? lastSkipReason = null;
         foreach (var c in source)
         {
-            if (!string.IsNullOrEmpty(c.ServerId) && IsDrained(c.ServerId))
-            {
-                lastSkipReason = $"{c.ServerId} drained";
-                continue;
-            }
-            if (snap == null || string.IsNullOrEmpty(c.ServerId))
-            {
-                // No health data for this entry. Pass it through.
-                viable.Add(c);
-                continue;
-            }
-
-            var b = snap.Backends.FirstOrDefault(x => string.Equals(x.ServerId, c.ServerId, StringComparison.OrdinalIgnoreCase));
-            if (b == null) { lastSkipReason = $"{c.ServerId} not in registry"; continue; }
-            if (b.Stale) { lastSkipReason = $"{c.ServerId} stale"; continue; }
-            if (b.Maintenance) { lastSkipReason = $"{c.ServerId} in maintenance"; continue; }
-            if (b.MaxPlayers > 0 && b.Players >= b.MaxPlayers) { lastSkipReason = $"{c.ServerId} full ({b.Players}/{b.MaxPlayers})"; continue; }
+            string? skip = HealthSkipReason(c, snap);
+            if (skip != null) { lastSkipReason = skip; continue; }
             viable.Add(c);
         }
 
         return viable.Count == 0
             ? (Array.Empty<BackendEndpoint>(), lastSkipReason ?? "no viable candidates")
             : (viable, null);
+    }
+
+    // Fetches the registry's view of backend health for this routing decision, or null when there
+    // is nothing to gate on: no registry configured, the fetch failed, or the snapshot is empty.
+    // An empty snapshot is treated as "the registry has nothing to say yet" so a newly-started
+    // embedded registry (no backend has heartbeat-ed) still routes to configured servers instead
+    // of reporting no viable candidates.
+    private async Task<NetworkSnapshot?> FetchHealthSnapshotAsync(CancellationToken ct)
+    {
+        if (registry == null) return null;
+        NetworkSnapshot? snap = null;
+        try { snap = await registry.GetServersAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) { Log.Warn($"router: snapshot fetch failed: {ex.Message}"); }
+        return snap is { Backends.Count: 0 } ? null : snap;
+    }
+
+    // Why this candidate should be skipped for the current session, or null to keep it. Drain is
+    // checked first and applies without any health data; the remaining gates need a snapshot and a
+    // ServerId, and an entry we have no health data for is passed through rather than dropped.
+    private string? HealthSkipReason(BackendEndpoint c, NetworkSnapshot? snap)
+    {
+        if (!string.IsNullOrEmpty(c.ServerId) && IsDrained(c.ServerId)) return $"{c.ServerId} drained";
+        if (snap == null || string.IsNullOrEmpty(c.ServerId)) return null;
+
+        var b = snap.Backends.FirstOrDefault(x => string.Equals(x.ServerId, c.ServerId, StringComparison.OrdinalIgnoreCase));
+        if (b == null) return $"{c.ServerId} not in registry";
+        if (b.Stale) return $"{c.ServerId} stale";
+        if (b.Maintenance) return $"{c.ServerId} in maintenance";
+        if (b.MaxPlayers > 0 && b.Players >= b.MaxPlayers) return $"{c.ServerId} full ({b.Players}/{b.MaxPlayers})";
+        return null;
     }
 
     private IReadOnlyList<BackendEndpoint> BuildOrderedSource()
