@@ -67,18 +67,8 @@ internal sealed class EvacuateCommand : IAdminCommand
 
         string? to = req.OptionalString("to") ?? req.OptionalString("targetServerId");
         var probes = new ProbeCache();
-        BackendEndpoint? fixedTarget = null;
-        if (to != null)
-        {
-            if (string.Equals(to, source, StringComparison.OrdinalIgnoreCase))
-                return AdminCommandError.Usage(this, $"target '{to}' is the source; evacuate needs somewhere else to put them");
-
-            var (resolved, refusal) = await ResolveTargetAsync(ctx, to).ConfigureAwait(false);
-            if (resolved == null) return new { ok = false, reason = refusal };
-            if (!await probes.ReachableAsync(resolved).ConfigureAwait(false))
-                return new { ok = false, reason = $"target {resolved.Host}:{resolved.Port} unreachable (tcp probe)" };
-            fixedTarget = resolved;
-        }
+        var (fixedTarget, targetRefusal) = await ResolveFixedTargetAsync(ctx, to, source, probes).ConfigureAwait(false);
+        if (targetRefusal != null) return targetRefusal;
 
         bool drained = ctx.Proxy.Router.IsDrained(source);
         string? warning = drained
@@ -113,6 +103,26 @@ internal sealed class EvacuateCommand : IAdminCommand
             },
             sessions = sweep.Entries,
         };
+    }
+
+    // With --to, the operator named where everyone goes. Resolve it once, up front, and refuse the
+    // whole sweep before anyone is moved rather than discover a bad destination per player: it must
+    // not be the source, it has to resolve the way swap resolves a name, and it has to answer a tcp
+    // probe. No --to leaves fixedTarget null and the sweep asks the router per session.
+    private async Task<(BackendEndpoint? target, object? refusal)> ResolveFixedTargetAsync(
+        AdminContext ctx, string? to, string source, ProbeCache probes)
+    {
+        if (to == null) return (null, null);
+
+        if (string.Equals(to, source, StringComparison.OrdinalIgnoreCase))
+            return (null, AdminCommandError.Usage(this, $"target '{to}' is the source; evacuate needs somewhere else to put them"));
+
+        var (resolved, refusal) = await ResolveTargetAsync(ctx, to).ConfigureAwait(false);
+        if (resolved == null) return (null, new { ok = false, reason = refusal });
+        if (!await probes.ReachableAsync(resolved).ConfigureAwait(false))
+            return (null, new { ok = false, reason = $"target {resolved.Host}:{resolved.Port} unreachable (tcp probe)" });
+
+        return (resolved, null);
     }
 
     private sealed record Sweep(int Moved, int Failed, int Skipped, bool Completed, List<object> Entries);
