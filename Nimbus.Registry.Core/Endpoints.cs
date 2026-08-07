@@ -11,6 +11,13 @@ namespace Nimbus.Registry;
 
 public static class Endpoints
 {
+    // The two refusals this file repeats, held once because they are wire contract rather than
+    // prose: nine handlers answer an unparseable body with the first and four answer a missing
+    // subject with the second, and a caller that matches on the text needs every one of them to
+    // read the same.
+    private const string MalformedBody = "malformed body";
+    private const string PlayerUidRequired = "PlayerUid required";
+
     public static void Map(WebApplication app)
     {
         // Health (unauthenticated, outside /api).
@@ -26,7 +33,7 @@ public static class Endpoints
             var log = lf.CreateLogger("Heartbeat");
             BackendHeartbeat? hb;
             try { hb = await ctx.Request.ReadFromJsonAsync<BackendHeartbeat>(); }
-            catch { return Results.BadRequest(new { error = "malformed body" }); }
+            catch { return Results.BadRequest(new { error = MalformedBody }); }
             if (hb is null || string.IsNullOrEmpty(hb.ServerId))
                 return Results.BadRequest(new { error = "missing ServerId" });
 
@@ -48,7 +55,7 @@ public static class Endpoints
         {
             ReservationRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<ReservationRequest>(); }
-            catch { return Results.BadRequest(new { error = "malformed body" }); }
+            catch { return Results.BadRequest(new { error = MalformedBody }); }
 
             if (req is null)
                 return Results.BadRequest(new { error = "PlayerUid + TargetServerId required" });
@@ -114,12 +121,12 @@ public static class Endpoints
         {
             BanRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<BanRequest>(); }
-            catch { return Results.BadRequest(new { error = "malformed body" }); }
+            catch { return Results.BadRequest(new { error = MalformedBody }); }
 
             Attribute(ctx, req);
             var stamped = RegistryStamps.NewBan(req, clock.GetUtcNow().ToUnixTimeSeconds());
             if (stamped is null)
-                return Results.BadRequest(new BanResponse { Ok = false, Error = "PlayerUid required" });
+                return Results.BadRequest(new BanResponse { Ok = false, Error = PlayerUidRequired });
 
             return Results.Ok(new BanResponse { Ok = true, Ban = bans.Add(stamped) });
         });
@@ -130,7 +137,7 @@ public static class Endpoints
         {
             BanLiftRequest? req;
             try { req = await ReadOptionalBodyAsync<BanLiftRequest>(ctx); }
-            catch { return Results.BadRequest(new { error = "malformed body" }); }
+            catch { return Results.BadRequest(new { error = MalformedBody }); }
 
             // The signature covers the body and not the query, so a body naming a player settles
             // both arguments and the query is never consulted. Deprecated: ?uid=/?server= answer
@@ -141,7 +148,7 @@ public static class Endpoints
             bool fromBody = !string.IsNullOrEmpty(req?.PlayerUid);
             string uid = fromBody ? req!.PlayerUid : ctx.Request.Query["uid"].ToString();
             if (string.IsNullOrEmpty(uid))
-                return Results.BadRequest(new { error = "PlayerUid required" });
+                return Results.BadRequest(new { error = PlayerUidRequired });
 
             string serverId = fromBody ? req!.ServerId : ctx.Request.Query["server"].ToString();
             bool lifted = bans.Lift(uid, serverId);
@@ -159,12 +166,12 @@ public static class Endpoints
         {
             WhitelistRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<WhitelistRequest>(); }
-            catch { return Results.BadRequest(new { error = "malformed body" }); }
+            catch { return Results.BadRequest(new { error = MalformedBody }); }
 
             Attribute(ctx, req);
             var stamped = RegistryStamps.NewWhitelistEntry(req, clock.GetUtcNow().ToUnixTimeSeconds());
             if (stamped is null)
-                return Results.BadRequest(new WhitelistResponse { Ok = false, Error = "PlayerUid required" });
+                return Results.BadRequest(new WhitelistResponse { Ok = false, Error = PlayerUidRequired });
 
             return Results.Ok(new WhitelistResponse { Ok = true, Entry = whitelist.Add(stamped) });
         });
@@ -176,12 +183,12 @@ public static class Endpoints
         {
             WhitelistRemoveRequest? req;
             try { req = await ReadOptionalBodyAsync<WhitelistRemoveRequest>(ctx); }
-            catch { return Results.BadRequest(new { error = "malformed body" }); }
+            catch { return Results.BadRequest(new { error = MalformedBody }); }
 
             bool fromBody = !string.IsNullOrEmpty(req?.PlayerUid);
             string uid = fromBody ? req!.PlayerUid : ctx.Request.Query["uid"].ToString();
             if (string.IsNullOrEmpty(uid))
-                return Results.BadRequest(new { error = "PlayerUid required" });
+                return Results.BadRequest(new { error = PlayerUidRequired });
 
             string serverId = fromBody ? req!.ServerId : ctx.Request.Query["server"].ToString();
             if (!whitelist.Remove(uid, serverId))
@@ -198,7 +205,7 @@ public static class Endpoints
         {
             TransferIntentRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<TransferIntentRequest>(); }
-            catch { return Results.BadRequest(new { error = "malformed body" }); }
+            catch { return Results.BadRequest(new { error = MalformedBody }); }
 
             if (req is null || string.IsNullOrEmpty(req.PlayerUid) || string.IsNullOrEmpty(req.TargetServerId))
                 return Results.BadRequest(new TransferIntentResponse { Ok = false, Error = "PlayerUid + TargetServerId required" });
@@ -225,7 +232,7 @@ public static class Endpoints
         {
             ApiTokenCreateRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<ApiTokenCreateRequest>(); }
-            catch { return Results.BadRequest(new { error = "malformed body" }); }
+            catch { return Results.BadRequest(new { error = MalformedBody }); }
 
             var result = tokens.Create(req);
             return result.Status switch
@@ -262,7 +269,7 @@ public static class Endpoints
         {
             ApiTokenRevokeRequest? req;
             try { req = await ctx.Request.ReadFromJsonAsync<ApiTokenRevokeRequest>(); }
-            catch { return Results.BadRequest(new { error = "malformed body" }); }
+            catch { return Results.BadRequest(new { error = MalformedBody }); }
 
             if (req is null || string.IsNullOrWhiteSpace(req.Id))
                 return Results.BadRequest(new ApiTokenResponse { Ok = false, Error = "Id required" });

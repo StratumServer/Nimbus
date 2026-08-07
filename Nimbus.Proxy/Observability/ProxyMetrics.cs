@@ -87,28 +87,32 @@ internal static class ProxyMetrics
     public static void UnwhitelistedJoinRejected()
         => Interlocked.Increment(ref unwhitelistedJoinsRejected);
 
+    // The Prometheus type keyword, written once because it goes on every line of the exposition
+    // below and a typo in one of them is a metric a scraper silently declines to type.
+    private const string Counter = "counter";
+
     public static string RenderPrometheus()
     {
         var sb = new StringBuilder();
         Metric(sb, "nimbus_proxy_sessions_active", "gauge", "Active proxied TCP sessions.", Read(activeSessions));
-        Metric(sb, "nimbus_proxy_sessions_accepted_total", "counter", "Client sessions accepted by the proxy.", Read(sessionsAccepted));
-        Metric(sb, "nimbus_proxy_backend_connect_attempts_total", "counter", "Backend TCP connect attempts.", Read(backendConnectAttempts));
-        Metric(sb, "nimbus_proxy_backend_connect_success_total", "counter", "Backend TCP connect successes.", Read(backendConnectSuccesses));
-        Metric(sb, "nimbus_proxy_backend_connect_failures_total", "counter", "Backend TCP connect failures.", Read(backendConnectFailures));
-        Metric(sb, "nimbus_proxy_bytes_client_to_server_total", "counter", "Bytes pumped from clients to backends.", Read(bytesClientToServer));
-        Metric(sb, "nimbus_proxy_bytes_server_to_client_total", "counter", "Bytes pumped from backends to clients.", Read(bytesServerToClient));
-        Metric(sb, "nimbus_proxy_redirect_requests_total", "counter", "Redirect transfer requests.", Read(redirectRequests));
-        Metric(sb, "nimbus_proxy_redirect_success_total", "counter", "Redirect transfer successes.", Read(redirectSuccesses));
-        Metric(sb, "nimbus_proxy_redirect_failures_total", "counter", "Redirect transfer failures.", Read(redirectFailures));
-        Metric(sb, "nimbus_proxy_seamless_requests_total", "counter", "Seamless transfer requests.", Read(seamlessRequests));
-        Metric(sb, "nimbus_proxy_seamless_success_total", "counter", "Seamless transfer successes.", Read(seamlessSuccesses));
-        Metric(sb, "nimbus_proxy_seamless_failures_total", "counter", "Seamless transfer failures.", Read(seamlessFailures));
-        Metric(sb, "nimbus_proxy_admin_commands_total", "counter", "Admin commands dispatched.", Read(adminCommands));
-        Metric(sb, "nimbus_proxy_admin_denied_total", "counter", "Admin commands denied by permissions.", Read(adminDenied));
-        Metric(sb, "nimbus_proxy_registry_intent_poll_failures_total", "counter", "Transfer intent poll failures.", Read(registryIntentPollFailures));
+        Metric(sb, "nimbus_proxy_sessions_accepted_total", Counter, "Client sessions accepted by the proxy.", Read(sessionsAccepted));
+        Metric(sb, "nimbus_proxy_backend_connect_attempts_total", Counter, "Backend TCP connect attempts.", Read(backendConnectAttempts));
+        Metric(sb, "nimbus_proxy_backend_connect_success_total", Counter, "Backend TCP connect successes.", Read(backendConnectSuccesses));
+        Metric(sb, "nimbus_proxy_backend_connect_failures_total", Counter, "Backend TCP connect failures.", Read(backendConnectFailures));
+        Metric(sb, "nimbus_proxy_bytes_client_to_server_total", Counter, "Bytes pumped from clients to backends.", Read(bytesClientToServer));
+        Metric(sb, "nimbus_proxy_bytes_server_to_client_total", Counter, "Bytes pumped from backends to clients.", Read(bytesServerToClient));
+        Metric(sb, "nimbus_proxy_redirect_requests_total", Counter, "Redirect transfer requests.", Read(redirectRequests));
+        Metric(sb, "nimbus_proxy_redirect_success_total", Counter, "Redirect transfer successes.", Read(redirectSuccesses));
+        Metric(sb, "nimbus_proxy_redirect_failures_total", Counter, "Redirect transfer failures.", Read(redirectFailures));
+        Metric(sb, "nimbus_proxy_seamless_requests_total", Counter, "Seamless transfer requests.", Read(seamlessRequests));
+        Metric(sb, "nimbus_proxy_seamless_success_total", Counter, "Seamless transfer successes.", Read(seamlessSuccesses));
+        Metric(sb, "nimbus_proxy_seamless_failures_total", Counter, "Seamless transfer failures.", Read(seamlessFailures));
+        Metric(sb, "nimbus_proxy_admin_commands_total", Counter, "Admin commands dispatched.", Read(adminCommands));
+        Metric(sb, "nimbus_proxy_admin_denied_total", Counter, "Admin commands denied by permissions.", Read(adminDenied));
+        Metric(sb, "nimbus_proxy_registry_intent_poll_failures_total", Counter, "Transfer intent poll failures.", Read(registryIntentPollFailures));
         Metric(sb, "nimbus_proxy_drained_servers", "gauge", "Servers currently marked drained.", Read(drainedServers));
-        Metric(sb, "nimbus_proxy_banned_joins_rejected_total", "counter", "Joins rejected by a network ban.", Read(bannedJoinsRejected));
-        Metric(sb, "nimbus_proxy_unwhitelisted_joins_rejected_total", "counter", "Joins rejected for missing a whitelist entry.", Read(unwhitelistedJoinsRejected));
+        Metric(sb, "nimbus_proxy_banned_joins_rejected_total", Counter, "Joins rejected by a network ban.", Read(bannedJoinsRejected));
+        Metric(sb, "nimbus_proxy_unwhitelisted_joins_rejected_total", Counter, "Joins rejected for missing a whitelist entry.", Read(unwhitelistedJoinsRejected));
         return sb.ToString();
     }
 

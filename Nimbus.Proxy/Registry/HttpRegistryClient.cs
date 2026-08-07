@@ -11,6 +11,10 @@ namespace Nimbus.Proxy;
 // "remote". For embedded mode the proxy goes through InProcRegistryClient instead.
 internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
 {
+    // Written once because every request this client makes carries it, and a body the registry
+    // reads as the wrong media type is a 415 with nothing in the log to point at.
+    private const string JsonContentType = "application/json";
+
     private readonly HttpClient http;
     private readonly RegistryConfig cfg;
 
@@ -63,7 +67,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             {
                 Content = new ByteArrayContent(body)
             };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
             Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
@@ -147,7 +151,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             const string path = "/api/transfer-intents/drain";
             byte[] body = Array.Empty<byte>();
             using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
             Sign(msg, "POST", path, body);
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode) return new List<TransferIntent>();
@@ -188,7 +192,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
             const string path = "/api/bans";
             using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
             Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
@@ -216,7 +220,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
                 new BanLiftRequest { PlayerUid = playerUid, ServerId = serverId ?? "" });
             const string path = "/api/bans/lift";
             using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
             Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
@@ -259,7 +263,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
             const string path = "/api/whitelist";
             using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
             Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
@@ -287,7 +291,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
                 new WhitelistRemoveRequest { PlayerUid = playerUid, ServerId = serverId ?? "" });
             const string path = "/api/whitelist/remove";
             using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
             Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
@@ -311,7 +315,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
             const string path = "/api/tokens";
             using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
             Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
@@ -365,7 +369,7 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(new ApiTokenRevokeRequest { Id = id });
             const string path = "/api/tokens/revoke";
             using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
-            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(JsonContentType);
             Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);

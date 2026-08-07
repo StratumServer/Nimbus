@@ -21,6 +21,12 @@ internal static class ProxyConfigValidator
     // bind it then refuses to serve over is the kind of disagreement a typo here would cause.
     private const string Https = "https";
 
+    // Named for the same reason, and it is the sharper of the two: this is the transfer mode
+    // spelling that has to match the one ProxySession compares against and the one an operator
+    // types into transfers.default_mode. A validator that accepts a mode the session path then
+    // does not recognise sends every transfer down the redirect fallback without a word.
+    private const string Seamless = "seamless";
+
     public static ProxyConfigValidation Validate(ProxyConfig cfg)
     {
         var result = new ProxyConfigValidation();
@@ -87,11 +93,11 @@ internal static class ProxyConfigValidator
     private static void ValidateTransfers(ProxyConfig cfg, ProxyConfigValidation result)
     {
         var mode = NormalizeMode(cfg.Transfers.DefaultMode);
-        if (mode is not "redirect" and not "seamless")
+        if (mode is not "redirect" and not Seamless)
             result.Error($"transfers.default_mode must be 'redirect' or 'seamless', got '{cfg.Transfers.DefaultMode}'");
-        if (mode == "seamless" && !cfg.Transfers.AllowSeamless)
+        if (mode == Seamless && !cfg.Transfers.AllowSeamless)
             result.Error("transfers.default_mode = 'seamless' requires transfers.allow_seamless = true");
-        if (mode == "seamless" && cfg.Transfers.RequireSeamlessCapability && !cfg.Transfers.FallbackToRedirectWhenSeamlessUnavailable)
+        if (mode == Seamless && cfg.Transfers.RequireSeamlessCapability && !cfg.Transfers.FallbackToRedirectWhenSeamlessUnavailable)
             result.Warn("transfers.default_mode = 'seamless' will reject players without Nimbus client capability instead of falling back to redirect");
         if (cfg.Transfers.AllowSeamless && !cfg.Transfers.RequireSeamlessCapability)
             result.Warn("transfers.require_seamless_capability = false allows seamless requests without the Nimbus client handshake");
@@ -314,7 +320,7 @@ internal static class ProxyConfigValidator
     }
 
     private static string NormalizeMode(string mode)
-        => string.Equals(mode, "splice", StringComparison.OrdinalIgnoreCase) ? "seamless" : (mode ?? "").Trim().ToLowerInvariant();
+        => string.Equals(mode, "splice", StringComparison.OrdinalIgnoreCase) ? Seamless : (mode ?? "").Trim().ToLowerInvariant();
 
     private static bool IsLoopback(IPAddress address)
         => IPAddress.IsLoopback(address);
