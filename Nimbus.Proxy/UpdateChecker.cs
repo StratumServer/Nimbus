@@ -10,8 +10,8 @@ internal static class UpdateChecker
     // Hardcoded on purpose. These name the one repository this build checks itself against, so
     // there is nothing here for an operator to configure: a Nimbus that asked somewhere else where
     // the newest Nimbus is would be answering a different question.
-    private const string ApiUrl = "https://api.github.com/repos/trevorftp/Nimbus/releases/latest"; // NOSONAR
-    private const string ReleasesUrl = "https://github.com/trevorftp/Nimbus/releases"; // NOSONAR
+    private const string ApiUrl = "https://api.github.com/repos/StratumServer/Nimbus/releases/latest"; // NOSONAR
+    private const string ReleasesUrl = "https://github.com/StratumServer/Nimbus/releases"; // NOSONAR
 
     public static void StartBackgroundCheck()
     {
