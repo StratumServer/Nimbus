@@ -911,6 +911,20 @@ internal sealed partial class ProxySession : IPlayer
         pumpS2C = PumpAsync("s->c", upstream.GetStream(), clientStream, sniffS2C, isC2S: false, pumpCts.Token);
     }
 
+    // The three exceptions a dying stream throws at a pump. Cancellation, a broken socket and a
+    // socket disposed under us are three ways of being told the same thing, and the pump does the
+    // same thing about all of them, so they are matched in one place rather than as repeated
+    // catch triples on both the read and the write.
+    private static bool IsStreamGone(Exception ex)
+        => ex is OperationCanceledException or IOException or ObjectDisposedException;
+
+    // The byte pump, one instance per direction. The direction flag stays: c->s and s->c differ
+    // only in when the sniffer runs and what the exit is recorded against, and splitting them
+    // would duplicate the whole read-forward-cancel skeleton in the busiest code in the proxy.
+    //
+    // Both awaits below are on the stream calls directly rather than behind helpers. Wrapping
+    // either one would add an async state machine per chunk on a path that runs for every packet
+    // of every player, which is the same reasoning that keeps BanStore.FindBlocking a loop.
     private async Task PumpAsync(string label, NetworkStream from, NetworkStream to, FrameSniffer? sniffer, bool isC2S, CancellationToken token)
     {
         var buf = new byte[cfg.Advanced.BufferSize];
@@ -921,65 +935,89 @@ internal sealed partial class ProxySession : IPlayer
             {
                 int read;
                 try { read = await from.ReadAsync(buf.AsMemory(0, buf.Length), token).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-                catch (IOException) { break; }
-                catch (ObjectDisposedException) { break; }
+                catch (Exception ex) when (IsStreamGone(ex)) { break; }
                 if (read <= 0) break;
 
                 total += read;
+                var chunk = buf.AsMemory(0, read);
 
-                // Parse c->s frames before forwarding so we can mint the initial
-                // reservation as soon as Identification is captured.
-                if (isC2S)
-                {
-                    sniffer?.OnBytes(new ReadOnlySpan<byte>(buf, 0, read));
+                // c->s is inspected before the bytes are forwarded, so the gates and the initial
+                // reservation get to act on the frame before any backend sees it.
+                if (isC2S && !await InspectClientChunkAsync(sniffer, chunk).ConfigureAwait(false))
+                    break;
 
-                    // The gates normally fire before we dial a backend, but a client that stays
-                    // quiet past the first-frame read window (status.query_timeout_ms) gets here
-                    // with the pumps already running and its Identification in this very buffer.
-                    // Forwarding it would let a refused player's login reach the backend in the
-                    // ~150ms before the forged disconnect closes us down, so the pump has to drop
-                    // the chunk itself rather than trust the pre-connect check.
-                    if (rejectedAtGate)
-                    {
-                        Log.Trace($"[s{Id}] dropping c->s chunk after gate rejection");
-                        break;
-                    }
+                try { await to.WriteAsync(chunk, token).ConfigureAwait(false); }
+                catch (Exception ex) when (IsStreamGone(ex)) { break; }
 
-                    if (initialReservationState == 0)
-                    {
-                        var mintFail = await EnsureInitialReservationAsync(currentBackend, "initial connect (stream)").ConfigureAwait(false);
-                        if (mintFail != null)
-                        {
-                            Log.Warn($"[s{Id}] closing session after reservation prime failed: {mintFail}");
-                            break;
-                        }
-                    }
-                }
-
-                try { await to.WriteAsync(buf.AsMemory(0, read), token).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-                catch (IOException) { break; }
-                catch (ObjectDisposedException) { break; }
-
+                // s->c is inspected after the forward instead: nothing here gates it, so the
+                // player's frame is not made to wait on the parse.
                 if (!isC2S)
-                    sniffer?.OnBytes(new ReadOnlySpan<byte>(buf, 0, read));
+                    sniffer?.OnBytes(chunk.Span);
             }
         }
         finally
         {
-            if (isC2S) Interlocked.Add(ref c2sBytes, total); else Interlocked.Add(ref s2cBytes, total);
-            if (isC2S) ProxyMetrics.AddBytes(total, 0); else ProxyMetrics.AddBytes(0, total);
-            Log.Trace($"[s{Id}] {label} pump exited ({total} bytes this segment)");
+            RecordPumpExit(label, isC2S, total);
+        }
+    }
 
-            // s->c pump exiting without our own Close() or a swap in flight means the backend
-            // dropped the connection while the player was live.
-            if (!isC2S && !closed && !swapping)
+    // Everything the proxy does to a client chunk before it is allowed upstream. Returns false to
+    // stop the pump, which is how both refusals here end the session.
+    //
+    // ValueTask, and not Task, on purpose: this runs for every c->s chunk, and the ordinary case
+    // is the one with no await in it at all, where an async ValueTask method allocates nothing.
+    // The state machine is only paid for on the first chunk that has to mint a reservation.
+    private async ValueTask<bool> InspectClientChunkAsync(FrameSniffer? sniffer, ReadOnlyMemory<byte> chunk)
+    {
+        sniffer?.OnBytes(chunk.Span);
+
+        // The gates normally fire before we dial a backend, but a client that stays quiet past
+        // the first-frame read window (status.query_timeout_ms) gets here with the pumps already
+        // running and its Identification in this very buffer. Forwarding it would let a refused
+        // player's login reach the backend in the ~150ms before the forged disconnect closes us
+        // down, so the pump has to drop the chunk itself rather than trust the pre-connect check.
+        if (rejectedAtGate)
+        {
+            Log.Trace($"[s{Id}] dropping c->s chunk after gate rejection");
+            return false;
+        }
+
+        if (initialReservationState == 0)
+        {
+            var mintFail = await EnsureInitialReservationAsync(currentBackend, "initial connect (stream)").ConfigureAwait(false);
+            if (mintFail != null)
             {
-                var ph = Phase;
-                if (ph == SessionState.Phase.Ready || ph == SessionState.Phase.Disconnecting)
-                    kickedByBackend = true;
+                Log.Warn($"[s{Id}] closing session after reservation prime failed: {mintFail}");
+                return false;
             }
+        }
+
+        return true;
+    }
+
+    // Close out one pump: bill the bytes to its direction and work out whether its exit means the
+    // backend dropped a live player. Runs from PumpAsync's finally, so it runs on every exit path.
+    private void RecordPumpExit(string label, bool isC2S, long total)
+    {
+        if (isC2S)
+        {
+            Interlocked.Add(ref c2sBytes, total);
+            ProxyMetrics.AddBytes(total, 0);
+        }
+        else
+        {
+            Interlocked.Add(ref s2cBytes, total);
+            ProxyMetrics.AddBytes(0, total);
+        }
+        Log.Trace($"[s{Id}] {label} pump exited ({total} bytes this segment)");
+
+        // s->c pump exiting without our own Close() or a swap in flight means the backend
+        // dropped the connection while the player was live.
+        if (!isC2S && !closed && !swapping)
+        {
+            var ph = Phase;
+            if (ph == SessionState.Phase.Ready || ph == SessionState.Phase.Disconnecting)
+                kickedByBackend = true;
         }
     }
 
