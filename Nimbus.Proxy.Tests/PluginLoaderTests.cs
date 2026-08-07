@@ -33,7 +33,7 @@ public class PluginLoaderTests
         // The manifest wins over the type name for everything an operator sees in `plugins`.
         Assert.Equal(SampleId, plugin.Metadata.Id);
         Assert.Equal("Hub Fallback", plugin.Metadata.Name);
-        Assert.Equal("0.4.0", plugin.Metadata.Version);
+        Assert.Equal("0.5.0", plugin.Metadata.Version);
         Assert.Empty(plugin.Metadata.Dependencies);
         // The file it came from, so an operator can find the thing on disk.
         Assert.Equal(PluginDir.Sample, plugin.SourceFile);
@@ -345,7 +345,7 @@ public class PluginLoaderTests
         // version against itself, which no plugin can fail.
         using var dir = PluginDir.With(PluginDir.Sample)
             .WriteManifest(PluginDir.Sample, """
-                {"id":"hub-fallback","name":"Hub Fallback","version":"0.4.0","api_version":"0.0"}
+                {"id":"hub-fallback","name":"Hub Fallback","version":"0.5.0","api_version":"0.0"}
                 """);
         var loader = Loader();
 
@@ -581,13 +581,14 @@ public class PluginLoaderTests
         var api = new FakeProxyApi().WithServer("hub", "10.0.0.4", 42421);
         var loader = Loader();
         loader.LoadAll(dir.Path, api);
-        Assert.Equal("0.4.0", loader.Loaded[0].Metadata.Version);
+        Assert.Equal("0.5.0", loader.Loaded[0].Metadata.Version);
 
-        // An operator dropping in a new build of the same plugin.
-        dir.PatchManifest(PluginDir.Sample, "version", "0.5.0");
+        // An operator dropping in a new build of the same plugin. The patched version has to stay
+        // ahead of whatever the sample ships, or the assertion below passes on a stale read too.
+        dir.PatchManifest(PluginDir.Sample, "version", "0.6.0");
         loader.Reload(dir.Path, new EventBus(), api);
 
-        Assert.Equal("0.5.0", Assert.Single(loader.Loaded).Metadata.Version);
+        Assert.Equal("0.6.0", Assert.Single(loader.Loaded).Metadata.Version);
     }
 
     [Fact]
@@ -708,7 +709,7 @@ public class PluginLoaderTests
 
         var sample = listed.Single(p => p.GetProperty("id").GetString() == SampleId);
         Assert.Equal("Hub Fallback", sample.GetProperty("name").GetString());
-        Assert.Equal("0.4.0", sample.GetProperty("version").GetString());
+        Assert.Equal("0.5.0", sample.GetProperty("version").GetString());
         // The file to go and delete when the operator wants it gone.
         Assert.Equal(PluginDir.Sample, sample.GetProperty("source").GetString());
         Assert.Empty(sample.GetProperty("dependencies").EnumerateArray());
