@@ -7,7 +7,7 @@ set -euo pipefail
 apt-get update -qq && apt-get install -y -qq curl unzip > /dev/null
 
 VS_VERSION="${VS_VERSION:-1.22.6}"
-NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.4.0/Nimbus-v0.4.0.zip}"
+NIMBUS_DOWNLOAD_URL="${NIMBUS_DOWNLOAD_URL:-https://github.com/StratumServer/Nimbus/releases/download/v0.5.0/Nimbus-v0.5.0.zip}"
 
 # The panel hands this install the variable the admin was shown at creation time, which makes
 # this the last moment where a network authenticating with a value published in the Nimbus

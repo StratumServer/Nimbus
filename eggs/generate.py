@@ -11,7 +11,7 @@ RUNTIME_IMAGE = {".NET 10": "ghcr.io/parkervcp/yolks:dotnet_10"}
 # Install container for all three eggs: the panels' stock Debian image, which already
 # carries the apt tooling the install-*.sh sources expect.
 INSTALL_IMAGE = "ghcr.io/parkervcp/installers:debian"
-RELEASE_URL = "https://github.com/StratumServer/Nimbus/releases/download/v0.4.0/Nimbus-v0.4.0.zip"
+RELEASE_URL = "https://github.com/StratumServer/Nimbus/releases/download/v0.5.0/Nimbus-v0.5.0.zip"
 # All three eggs expose the download URL under the same panel-variable name; the description
 # differs because each one installs a different folder out of the zip.
 RELEASE_URL_VAR = "Nimbus release URL"
