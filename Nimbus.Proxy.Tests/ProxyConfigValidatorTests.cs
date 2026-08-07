@@ -551,6 +551,12 @@ public class ProxyConfigValidatorTests
     [InlineData("")]
     [InlineData("change-me-and-keep-secret")]
     [InlineData("REPLACE_ME_WITH_A_LONG_RANDOM_STRING")]
+    // The two literals the other halves of #40 write: the panel eggs' variable default and the
+    // one a backend's nimbus-server.json is created with. Neither reaches a proxy config on its
+    // own, and a config an operator assembled by pasting from the wiki, the panel and the mod is
+    // exactly the config this rule exists for.
+    [InlineData(Nimbus.Shared.SecretPlaceholders.Egg)]
+    [InlineData(Nimbus.Shared.SecretPlaceholders.BackendConfig)]
     public void AnEmbeddedRegistryExposedBeyondLoopbackOnADefaultSecret_IsAnError(string secret)
     {
         // The registry mints reservations and holds the ban list. On a published secret, anyone
