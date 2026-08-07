@@ -24,7 +24,11 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         this.cfg = cfg;
         http = new HttpClient
         {
-            BaseAddress = new Uri(cfg.Url.TrimEnd('/') + "/"),
+            // The trailing slash is what makes BaseAddress keep any path in registry.url instead
+            // of resolving the relative request URIs below against the host root. It is a URL
+            // separator, so the filesystem-path rule the analyser applies here does not: Path
+            // helpers would emit a backslash on Windows and sign a path the registry never sees.
+            BaseAddress = new Uri(cfg.Url.TrimEnd('/') + "/"), // NOSONAR
             Timeout = TimeSpan.FromSeconds(Math.Max(1, cfg.HttpTimeoutSeconds))
         };
         http.DefaultRequestHeaders.UserAgent.ParseAdd($"Nimbus-Proxy/{NimbusProtocol.NimbusVersion}");
@@ -54,19 +58,19 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         try
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(req);
-            const string path = "api/reservations";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path)
+            const string path = "/api/reservations";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..])
             {
                 Content = new ByteArrayContent(body)
             };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            Sign(msg, "POST", "/" + path, body);
+            Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
                 string detail = await SafeReadAsync(resp).ConfigureAwait(false);
-                Log.Warn($"registry POST /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
+                Log.Warn($"registry POST {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
                 return null;
             }
 
@@ -102,13 +106,13 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
 
         try
         {
-            const string path = "api/servers";
-            using var msg = new HttpRequestMessage(HttpMethod.Get, path);
-            Sign(msg, "GET", "/" + path, Array.Empty<byte>());
+            const string path = "/api/servers";
+            using var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
+            Sign(msg, "GET", path, Array.Empty<byte>());
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
-                Log.Warn($"registry GET /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
+                Log.Warn($"registry GET {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
                 return null;
             }
             var snap = await resp.Content.ReadFromJsonAsync<NetworkSnapshot>(cancellationToken: ct).ConfigureAwait(false);
@@ -140,11 +144,11 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
     {
         try
         {
-            const string path = "api/transfer-intents/drain";
+            const string path = "/api/transfer-intents/drain";
             byte[] body = Array.Empty<byte>();
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            Sign(msg, "POST", "/" + path, body);
+            Sign(msg, "POST", path, body);
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode) return new List<TransferIntent>();
             var parsed = await resp.Content.ReadFromJsonAsync<TransferIntentDrainResponse>(cancellationToken: ct).ConfigureAwait(false);
@@ -158,13 +162,13 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
     {
         try
         {
-            const string path = "api/bans";
-            using var msg = new HttpRequestMessage(HttpMethod.Get, path);
-            Sign(msg, "GET", "/" + path, Array.Empty<byte>());
+            const string path = "/api/bans";
+            using var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
+            Sign(msg, "GET", path, Array.Empty<byte>());
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
-                Log.Warn($"registry GET /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
+                Log.Warn($"registry GET {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
                 return null;
             }
             var parsed = await resp.Content.ReadFromJsonAsync<BanListResponse>(cancellationToken: ct).ConfigureAwait(false);
@@ -182,16 +186,16 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         try
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
-            const string path = "api/bans";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
+            const string path = "/api/bans";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            Sign(msg, "POST", "/" + path, body);
+            Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
                 string detail = await SafeReadAsync(resp).ConfigureAwait(false);
-                Log.Warn($"registry POST /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
+                Log.Warn($"registry POST {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
                 return null;
             }
             var parsed = await resp.Content.ReadFromJsonAsync<BanResponse>(cancellationToken: ct).ConfigureAwait(false);
@@ -210,10 +214,10 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(
                 new BanLiftRequest { PlayerUid = playerUid, ServerId = serverId ?? "" });
-            const string path = "api/bans/lift";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
+            const string path = "/api/bans/lift";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            Sign(msg, "POST", "/" + path, body);
+            Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;
@@ -229,13 +233,13 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
     {
         try
         {
-            const string path = "api/whitelist";
-            using var msg = new HttpRequestMessage(HttpMethod.Get, path);
-            Sign(msg, "GET", "/" + path, Array.Empty<byte>());
+            const string path = "/api/whitelist";
+            using var msg = new HttpRequestMessage(HttpMethod.Get, path[1..]);
+            Sign(msg, "GET", path, Array.Empty<byte>());
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
-                Log.Warn($"registry GET /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
+                Log.Warn($"registry GET {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase}");
                 return null;
             }
             var parsed = await resp.Content.ReadFromJsonAsync<WhitelistListResponse>(cancellationToken: ct).ConfigureAwait(false);
@@ -253,16 +257,16 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         try
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request);
-            const string path = "api/whitelist";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
+            const string path = "/api/whitelist";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            Sign(msg, "POST", "/" + path, body);
+            Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
                 string detail = await SafeReadAsync(resp).ConfigureAwait(false);
-                Log.Warn($"registry POST /{path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
+                Log.Warn($"registry POST {path} -> {(int)resp.StatusCode} {resp.ReasonPhrase} {detail}");
                 return null;
             }
             var parsed = await resp.Content.ReadFromJsonAsync<WhitelistResponse>(cancellationToken: ct).ConfigureAwait(false);
@@ -281,10 +285,10 @@ internal sealed class HttpRegistryClient : IRegistryClient, IDisposable
         {
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(
                 new WhitelistRemoveRequest { PlayerUid = playerUid, ServerId = serverId ?? "" });
-            const string path = "api/whitelist/remove";
-            using var msg = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ByteArrayContent(body) };
+            const string path = "/api/whitelist/remove";
+            using var msg = new HttpRequestMessage(HttpMethod.Post, path[1..]) { Content = new ByteArrayContent(body) };
             msg.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            Sign(msg, "POST", "/" + path, body);
+            Sign(msg, "POST", path, body);
 
             using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;
