@@ -109,18 +109,9 @@ internal sealed partial class ProxySession
     // destination that has to be clear of bans. Returns the settled target and a failure reason.
     private async Task<(BackendEndpoint target, string? fail)> ResolveSwapTargetAsync(BackendEndpoint target, string? swapReason)
     {
-        // ServerPreConnect: handlers can swap target or cancel before we open the new upstream.
-        if (events != null)
-        {
-            var pre = new ServerPreConnectEvent(this, target.ToServerInfo(), swapReason);
-            await events.FireAsync(pre).ConfigureAwait(false);
-            if (pre.IsCancelled)
-            {
-                Log.Warn($"[s{Id}] seamless cancelled by handler: {pre.CancelReason}");
-                return (target, $"cancelled: {pre.CancelReason}");
-            }
-            target = pre.Target.ToEndpoint();
-        }
+        var (settled, cancelled, cancelReason) = await FirePreConnectAsync(target, swapReason, label: "seamless").ConfigureAwait(false);
+        if (cancelled) return (settled, $"cancelled: {cancelReason}");
+        target = settled;
 
         var gateFail = CheckTransferGates(target, "seamless");
         if (gateFail != null) return (target, gateFail);

@@ -697,47 +697,97 @@ internal sealed partial class ProxySession : IPlayer
 
     private async Task<(bool ok, bool cancelled, string? reason)> ConnectUpstreamAsync(BackendEndpoint target, ReadOnlyMemory<byte> firstClientFrame)
     {
-        // ServerPreConnect: handlers can swap target or cancel before we open the socket.
-        if (events != null)
-        {
-            var pre = new ServerPreConnectEvent(this, target.ToServerInfo(), reason: "initial connect");
-            await events.FireAsync(pre).ConfigureAwait(false);
-            if (pre.IsCancelled)
-            {
-                Log.Warn($"[s{Id}] initial upstream cancelled by handler: {pre.CancelReason}");
-                return (false, true, pre.CancelReason ?? "cancelled");
-            }
-            target = pre.Target.ToEndpoint();
-        }
+        var (settled, cancelled, cancelReason) = await FirePreConnectAsync(target, reason: "initial connect", label: "initial upstream").ConfigureAwait(false);
+        if (cancelled) return (false, true, cancelReason ?? "cancelled");
+        target = settled;
 
-        if (!firstClientFrame.IsEmpty)
-        {
-            // Classify before capturing. A stock client opens with LoginTokenQuery and only sends
-            // Identification once the backend has answered, so the first frame usually holds no
-            // identity at all and handing it to the capture path made every single session log a
-            // parse failure for a frame that never had a UID in it (#57).
-            string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
-            if (firstName == "Identification")
-                CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
-            else
-                Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
-            // A player the gate refused must not cause an upstream connection at all. The chain
-            // stops here rather than failing over: the gate has already told the client why it is
-            // going.
-            if (rejectedAtGate)
-                return (false, true, gateRejectionReason ?? "player refused at the gate");
-            // If the first frame already contained Identification, prime the reservation
-            // before replaying bytes upstream. Missing UID here is non-fatal; the c->s pump
-            // retries as soon as it captures Identification from later frames.
-            var mintFail = await EnsureInitialReservationAsync(target, "initial connect").ConfigureAwait(false);
-            if (mintFail != null)
-            {
-                Log.Warn($"[s{Id}] initial reservation mint failed for {target}: {mintFail}");
-                return (false, true, mintFail);
-            }
-        }
+        // Anything the opening frame settles stops the whole candidate chain rather than failing
+        // over, because a different backend would not change the answer.
+        var frameFail = await PrepareFirstClientFrameAsync(target, firstClientFrame).ConfigureAwait(false);
+        if (frameFail != null) return (false, true, frameFail);
 
         var previous = currentBackend == null ? null : currentBackend.ToServerInfo();
+
+        var (up, openFail) = await OpenUpstreamAsync(target, firstClientFrame).ConfigureAwait(false);
+        if (openFail != null) return (false, false, openFail);
+
+        upstream = up;
+        currentBackend = target;
+        // The first frame has just been written to this backend. If it was the Identification,
+        // this backend is the one that gets to spend the mp token.
+        if (capturedIdentification != null) NoteIdentificationDelivered(target);
+        UpdateUdpOverride(target);
+        StartPumps();
+        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} ({clientRemote}) → {target.ServerId ?? target.ToString()}");
+        if (events != null)
+        {
+            try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
+            catch { /* the player is connected and playing; a throwing handler cannot undo that */ }
+        }
+        return (true, false, null);
+    }
+
+    // ServerPreConnect: handlers can swap the target or cancel before a socket is opened. Returns
+    // the destination the handlers settled on, and whether one of them refused. The raw
+    // CancelReason is handed back rather than a formatted message, because the two transfer paths
+    // word a cancellation differently. `label` only names the path in the log line.
+    private async Task<(BackendEndpoint target, bool cancelled, string? cancelReason)> FirePreConnectAsync(
+        BackendEndpoint target, string? reason, string label)
+    {
+        if (events == null) return (target, false, null);
+
+        var pre = new ServerPreConnectEvent(this, target.ToServerInfo(), reason);
+        await events.FireAsync(pre).ConfigureAwait(false);
+        if (pre.IsCancelled)
+        {
+            Log.Warn($"[s{Id}] {label} cancelled by handler: {pre.CancelReason}");
+            return (target, true, pre.CancelReason);
+        }
+        return (pre.Target.ToEndpoint(), false, null);
+    }
+
+    // Read the frame the client opened with, before any of it is replayed upstream: capture the
+    // identity if it is there, let the gates answer, and prime the reservation. Returns the reason
+    // this session must not reach a backend at all, or null to carry on connecting. A session with
+    // no opening frame has nothing to settle here and passes straight through.
+    private async Task<string?> PrepareFirstClientFrameAsync(BackendEndpoint target, ReadOnlyMemory<byte> firstClientFrame)
+    {
+        if (firstClientFrame.IsEmpty) return null;
+
+        // Classify before capturing. A stock client opens with LoginTokenQuery and only sends
+        // Identification once the backend has answered, so the first frame usually holds no
+        // identity at all and handing it to the capture path made every single session log a
+        // parse failure for a frame that never had a UID in it (#57).
+        string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
+        if (firstName == "Identification")
+            CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
+        else
+            Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
+
+        // A player the gate refused must not cause an upstream connection at all. The gate has
+        // already told the client why it is going.
+        if (rejectedAtGate)
+            return gateRejectionReason ?? "player refused at the gate";
+
+        // If the first frame already contained Identification, prime the reservation
+        // before replaying bytes upstream. Missing UID here is non-fatal; the c->s pump
+        // retries as soon as it captures Identification from later frames.
+        var mintFail = await EnsureInitialReservationAsync(target, "initial connect").ConfigureAwait(false);
+        if (mintFail != null)
+        {
+            Log.Warn($"[s{Id}] initial reservation mint failed for {target}: {mintFail}");
+            return mintFail;
+        }
+
+        return null;
+    }
+
+    // Open the socket this session will be pumped over: dial, announce the real client with a
+    // PROXY v2 header, and replay whatever the client already said. Returns the connected socket,
+    // or the reason this candidate failed. Every failure drops only the socket it opened, so the
+    // caller is free to try the next backend on the list.
+    private async Task<(TcpClient? up, string? fail)> OpenUpstreamAsync(BackendEndpoint target, ReadOnlyMemory<byte> firstClientFrame)
+    {
         var up = new TcpClient { NoDelay = true };
         using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
         connectCts.CancelAfter(cfg.Advanced.ConnectTimeoutMs);
@@ -753,35 +803,22 @@ internal sealed partial class ProxySession : IPlayer
             // The reason is already logged above; closing a socket that never connected is
             // housekeeping and its own failure adds nothing to the failover decision.
             try { up.Close(); } catch { /* never connected, nothing to report */ }
-            return (false, false, $"{target}: {ex.Message}");
+            return (null, $"{target}: {ex.Message}");
         }
         if (!await TryWriteProxyProtocolAsync(up, target).ConfigureAwait(false))
         {
             ProxyMetrics.BackendConnectFailure();
             try { up.Close(); } catch { /* the header write already failed; the socket is done */ }
-            return (false, false, $"{target}: PROXY v2 header write failed");
+            return (null, $"{target}: PROXY v2 header write failed");
         }
         if (!await TryWriteFirstClientFrameAsync(up, firstClientFrame).ConfigureAwait(false))
         {
             ProxyMetrics.BackendConnectFailure();
             try { up.Close(); } catch { /* the frame replay already failed; the socket is done */ }
-            return (false, false, $"{target}: first client frame write failed");
+            return (null, $"{target}: first client frame write failed");
         }
         ProxyMetrics.BackendConnectSuccess();
-        upstream = up;
-        currentBackend = target;
-        // The first frame has just been written to this backend. If it was the Identification,
-        // this backend is the one that gets to spend the mp token.
-        if (capturedIdentification != null) NoteIdentificationDelivered(target);
-        UpdateUdpOverride(target);
-        StartPumps();
-        Log.Info($"[s{Id}] {capturedPlayerName ?? "?"} ({clientRemote}) → {target.ServerId ?? target.ToString()}");
-        if (events != null)
-        {
-            try { await events.FireAsync(new ServerPostConnectEvent(this, target.ToServerInfo(), previous)).ConfigureAwait(false); }
-            catch { /* the player is connected and playing; a throwing handler cannot undo that */ }
-        }
-        return (true, false, null);
+        return (up, null);
     }
 
     // Pin UDP for this client to the same backend our TCP session uses. No-op without overrides.
