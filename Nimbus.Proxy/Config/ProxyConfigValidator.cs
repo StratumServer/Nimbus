@@ -157,29 +157,39 @@ internal static class ProxyConfigValidator
         if (cfg.Registry.TransferIntentPollMs < 250)
             result.Warn("registry.transfer_intent_poll_ms below 250 will be clamped to 250");
 
-        if (mode == "remote")
-        {
-            if (string.IsNullOrWhiteSpace(cfg.Registry.Url))
-                result.Error("registry.url is required when registry.mode = 'remote'");
-            else if (!Uri.TryCreate(cfg.Registry.Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or Https))
-                result.Error("registry.url must be an absolute http or https URL");
-            if (string.IsNullOrWhiteSpace(cfg.Registry.SharedSecret))
-                result.Error("registry.shared_secret is required when registry.mode = 'remote'");
-        }
-
-        if (mode == "embedded" && !string.IsNullOrWhiteSpace(cfg.Registry.EmbeddedBind))
-        {
-            if (!Uri.TryCreate(cfg.Registry.EmbeddedBind, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or Https))
-            {
-                result.Error("registry.embedded_bind must be an absolute http or https URL, or empty");
-            }
-            else if (!IsLoopbackOrLocalhost(uri.Host) && IsDefaultSecret(cfg.Registry.EmbeddedSharedSecret))
-            {
-                result.Error("registry.embedded_bind is not loopback, so registry.embedded_shared_secret must be changed from the default");
-            }
-        }
+        if (mode == "remote") ValidateRemoteRegistry(cfg, result);
+        if (mode == "embedded") ValidateEmbeddedRegistry(cfg, result);
 
         ValidateApiTokens(cfg, mode, result);
+    }
+
+    // What remote mode requires: a URL to reach the standalone registry at, and a shared secret to
+    // authenticate to it with.
+    private static void ValidateRemoteRegistry(ProxyConfig cfg, ProxyConfigValidation result)
+    {
+        if (string.IsNullOrWhiteSpace(cfg.Registry.Url))
+            result.Error("registry.url is required when registry.mode = 'remote'");
+        else if (!Uri.TryCreate(cfg.Registry.Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or Https))
+            result.Error("registry.url must be an absolute http or https URL");
+        if (string.IsNullOrWhiteSpace(cfg.Registry.SharedSecret))
+            result.Error("registry.shared_secret is required when registry.mode = 'remote'");
+    }
+
+    // What embedded mode requires of an explicitly set bind: it has to be a real http/https URL,
+    // and if it faces off-box it may not still be carrying the default shared secret. An empty bind
+    // takes the loopback default and needs neither check.
+    private static void ValidateEmbeddedRegistry(ProxyConfig cfg, ProxyConfigValidation result)
+    {
+        if (string.IsNullOrWhiteSpace(cfg.Registry.EmbeddedBind)) return;
+
+        if (!Uri.TryCreate(cfg.Registry.EmbeddedBind, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or Https))
+        {
+            result.Error("registry.embedded_bind must be an absolute http or https URL, or empty");
+        }
+        else if (!IsLoopbackOrLocalhost(uri.Host) && IsDefaultSecret(cfg.Registry.EmbeddedSharedSecret))
+        {
+            result.Error("registry.embedded_bind is not loopback, so registry.embedded_shared_secret must be changed from the default");
+        }
     }
 
     // The [api_tokens] settings on the embedded registry. All of them are inert in remote mode,
