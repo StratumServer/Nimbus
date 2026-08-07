@@ -19,73 +19,17 @@ internal sealed partial class ProxySession
     {
         ProxyMetrics.RedirectRequested();
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        if (closed) { Log.Warn($"[s{Id}] redirect rejected: session is closed"); ProxyMetrics.RedirectFailed(); return "session closed"; }
-        if (capturedIdentification == null)
-        {
-            Log.Warn($"[s{Id}] redirect rejected: no Identification captured yet (phase={Phase})");
-            ProxyMetrics.RedirectFailed();
-            return $"no Identification captured yet (phase={Phase})";
-        }
-        if (string.IsNullOrEmpty(target.Host)) { ProxyMetrics.RedirectFailed(); return "redirect target has empty host"; }
-        if (target.Port <= 0 || target.Port > 65535) { ProxyMetrics.RedirectFailed(); return $"redirect target has invalid port {target.Port}"; }
 
-        var banFail = CheckTargetBan(target);
-        if (banFail != null)
-        {
-            Log.Warn($"[s{Id}] redirect rejected: {banFail}");
-            ProxyMetrics.RedirectFailed();
-            return banFail;
-        }
-
-        var whitelistFail = CheckTargetWhitelist(target);
-        if (whitelistFail != null)
-        {
-            Log.Warn($"[s{Id}] redirect rejected: {whitelistFail}");
-            ProxyMetrics.RedirectFailed();
-            return whitelistFail;
-        }
+        var preFail = CheckRedirectPreconditions(target);
+        if (preFail != null) { ProxyMetrics.RedirectFailed(); return preFail; }
 
         var mintFail = await MintReservationIfPossibleAsync(target, registry, reason ?? "proxy redirect", failOnRegistryError, clientTransferId).ConfigureAwait(false);
         if (mintFail != null) { ProxyMetrics.RedirectFailed(); return mintFail; }
 
-        // RedirectFix reconnects through the cached proxy address. The next session consumes this
-        // route before choosing a backend. Stage it under the client address as well as the UID:
-        // this is the only point where both are known, and the reconnect will arrive with a
-        // LoginTokenQuery that carries no identity to match the UID against (#57).
-        if (stickies != null && !string.IsNullOrEmpty(capturedPlayerUid))
-        {
-            stickies.Stage(capturedPlayerUid, ClientEndpoint.ip, target, StickyRouteTable.UidTtl,
-                reason ?? "proxy redirect", stickyAttempt);
-        }
-        else
-        {
-            Log.Warn($"[s{Id}] no sticky staged (stickies={(stickies != null ? "set" : "null")}, uid='{capturedPlayerUid ?? ""}'), reconnect may land on default backend");
-        }
+        StageRedirectSticky(target, reason, stickyAttempt);
 
-        // What the forged packet carries: the configured proxy address when set, else the
-        // backend's address per vanilla VS convention ("host" or "host:port"). See
-        // RedirectTargeting for why stamping the proxy matters once vanilla clients follow
-        // the stamped host literally (#18).
-        var stamp = RedirectTargeting.Resolve(cfg.Transfers, target);
-        string hostString = stamp.HostString;
-        string displayName = string.IsNullOrEmpty(target.ServerId) ? hostString : target.ServerId;
-        Log.Trace($"[s{Id}] redirect stamps {(stamp.ProxyStamped ? "proxy address" : "backend address")} '{hostString}'");
-
-        byte[] frame;
-        try { frame = RedirectBuilder.BuildRedirectFrame(hostString, displayName); }
-        catch (Exception ex) { Log.Warn($"[s{Id}] redirect frame build failed: {ex.Message}"); ProxyMetrics.RedirectFailed(); return $"frame build failed: {ex.Message}"; }
-
-        try
-        {
-            await clientStream.WriteAsync(frame, sessionStopToken).ConfigureAwait(false);
-            await clientStream.FlushAsync(sessionStopToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"[s{Id}] redirect write to client failed: {ex.Message}");
-            ProxyMetrics.RedirectFailed();
-            return $"client write failed: {ex.Message}";
-        }
+        var sendFail = await SendRedirectFrameAsync(target).ConfigureAwait(false);
+        if (sendFail != null) { ProxyMetrics.RedirectFailed(); return sendFail; }
 
         // 250ms is enough for the client to process the in-flight packet and start its own
         // disconnect before we tear the sockets down.
@@ -102,6 +46,74 @@ internal sealed partial class ProxySession
             try { await events.FireAsync(new PlayerTransferredEvent(this, from, target.ToServerInfo(), "redirect")).ConfigureAwait(false); }
             catch { /* the transfer stands whatever the handler thinks of it */ }
         }
+        return null;
+    }
+
+    // Everything that can refuse a redirect before any of it becomes visible to the player, in
+    // the order it has always been asked. Returns the reason to hand back, or null to go ahead.
+    private string? CheckRedirectPreconditions(BackendEndpoint target)
+    {
+        if (closed) { Log.Warn($"[s{Id}] redirect rejected: session is closed"); return "session closed"; }
+        if (capturedIdentification == null)
+        {
+            Log.Warn($"[s{Id}] redirect rejected: no Identification captured yet (phase={Phase})");
+            return $"no Identification captured yet (phase={Phase})";
+        }
+        // The two endpoint shape checks answer without a log line, unlike every other refusal
+        // here: a target with no host or no port is a caller passing nonsense rather than a
+        // player being turned away, and the returned reason goes straight back to that caller.
+        if (string.IsNullOrEmpty(target.Host)) return "redirect target has empty host";
+        if (target.Port <= 0 || target.Port > 65535) return $"redirect target has invalid port {target.Port}";
+
+        return CheckTransferGates(target, "redirect");
+    }
+
+    // RedirectFix reconnects through the cached proxy address. The next session consumes this
+    // route before choosing a backend. Stage it under the client address as well as the UID:
+    // this is the only point where both are known, and the reconnect will arrive with a
+    // LoginTokenQuery that carries no identity to match the UID against (#57).
+    private void StageRedirectSticky(BackendEndpoint target, string? reason, int stickyAttempt)
+    {
+        if (stickies != null && !string.IsNullOrEmpty(capturedPlayerUid))
+        {
+            stickies.Stage(capturedPlayerUid, ClientEndpoint.ip, target, StickyRouteTable.UidTtl,
+                reason ?? "proxy redirect", stickyAttempt);
+        }
+        else
+        {
+            Log.Warn($"[s{Id}] no sticky staged (stickies={(stickies != null ? "set" : "null")}, uid='{capturedPlayerUid ?? ""}'), reconnect may land on default backend");
+        }
+    }
+
+    // Forge the vanilla Packet_ServerRedirect and put it on the client's wire. Returns the failure
+    // reason, or null once the bytes are flushed. Nothing here is recoverable: a client that did
+    // not get the packet is not going to move, and the caller reports that as the redirect failing.
+    private async Task<string?> SendRedirectFrameAsync(BackendEndpoint target)
+    {
+        // What the forged packet carries: the configured proxy address when set, else the
+        // backend's address per vanilla VS convention ("host" or "host:port"). See
+        // RedirectTargeting for why stamping the proxy matters once vanilla clients follow
+        // the stamped host literally (#18).
+        var stamp = RedirectTargeting.Resolve(cfg.Transfers, target);
+        string hostString = stamp.HostString;
+        string displayName = string.IsNullOrEmpty(target.ServerId) ? hostString : target.ServerId;
+        Log.Trace($"[s{Id}] redirect stamps {(stamp.ProxyStamped ? "proxy address" : "backend address")} '{hostString}'");
+
+        byte[] frame;
+        try { frame = RedirectBuilder.BuildRedirectFrame(hostString, displayName); }
+        catch (Exception ex) { Log.Warn($"[s{Id}] redirect frame build failed: {ex.Message}"); return $"frame build failed: {ex.Message}"; }
+
+        try
+        {
+            await clientStream.WriteAsync(frame, sessionStopToken).ConfigureAwait(false);
+            await clientStream.FlushAsync(sessionStopToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[s{Id}] redirect write to client failed: {ex.Message}");
+            return $"client write failed: {ex.Message}";
+        }
+
         return null;
     }
 

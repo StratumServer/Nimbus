@@ -484,6 +484,28 @@ internal sealed partial class ProxySession : IPlayer
     private static string DescribeTarget(BackendEndpoint target)
         => string.IsNullOrEmpty(target.ServerId) ? "the network" : target.ServerId;
 
+    // The two gates every transfer runs against its destination, in this order because a ban wins
+    // over a missing whitelist entry. Returns the refusal to hand back to the caller, or null when
+    // the player may go. `mode` is only the word the log line uses to name the path asking.
+    private string? CheckTransferGates(BackendEndpoint target, string mode)
+    {
+        var banFail = CheckTargetBan(target);
+        if (banFail != null)
+        {
+            Log.Warn($"[s{Id}] {mode} rejected: {banFail}");
+            return banFail;
+        }
+
+        var whitelistFail = CheckTargetWhitelist(target);
+        if (whitelistFail != null)
+        {
+            Log.Warn($"[s{Id}] {mode} rejected: {whitelistFail}");
+            return whitelistFail;
+        }
+
+        return null;
+    }
+
     // How many redirects one staged route may fire before we give up and leave the player where
     // they landed. With address-matched routing in place the first redirect normally lands, and
     // the NAT mix-up above needs at most one more. Anything past that is a loop, not a retry.
