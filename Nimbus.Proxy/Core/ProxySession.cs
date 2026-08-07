@@ -614,82 +614,116 @@ internal sealed partial class ProxySession : IPlayer
     {
         try
         {
-            // Try each candidate until one connects. ConnectUpstreamAsync fires per-attempt
-            // Handler cancel stops the chain. Connect failure tries the next backend.
-            bool connected = false;
-            string? lastFailReason = null;
-            for (int i = 0; i < tryOrder.Count; i++)
-            {
-                var (ok, cancelled, reason) = await ConnectUpstreamAsync(tryOrder[i], firstClientFrame).ConfigureAwait(false);
-                if (ok) { connected = true; break; }
-                lastFailReason = reason;
-                if (cancelled) break;
-                if (i + 1 < tryOrder.Count)
-                    Log.Info($"[s{Id}] failover: trying next candidate after '{reason}'");
-            }
+            var (connected, lastFailReason) = await ConnectAnyAsync(tryOrder, firstClientFrame).ConfigureAwait(false);
             if (!connected)
             {
                 // The gate already sent the real reason; do not paper over it.
                 if (rejectedAtGate) return;
 
-                Log.Warn($"[s{Id}] no candidate connected: {lastFailReason ?? "unknown"}; sending forged disconnect");
-                try
-                {
-                    var frame = DisconnectBuilder.BuildDisconnectFrame($"No backend reachable right now ({lastFailReason ?? "all candidates failed"}). Please try again shortly.");
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                    await clientStream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
-                    await clientStream.FlushAsync(cts.Token).ConfigureAwait(false);
-                    try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { /* cut short, tear down now */ }
-                }
-                catch { /* no backend and now no client either; the finally below tears it down */ }
+                await SendNoBackendDisconnectAsync(lastFailReason).ConfigureAwait(false);
                 return;
             }
 
-            // Loop until the pumps exit. The unsafe splice path restarts them on a new upstream.
-            while (!sessionStopToken.IsCancellationRequested && !closed)
-            {
-                await Task.WhenAll(SafeAwait(pumpC2S!), SafeAwait(pumpS2C!)).ConfigureAwait(false);
-                if (!swapping) break;  // pumps ended because of client/upstream close, not a swap
-
-                // The swap routine installs the new pumps before it clears this flag.
-                while (swapping && !sessionStopToken.IsCancellationRequested && !closed)
-                    await Task.Delay(10, sessionStopToken).ConfigureAwait(false);
-            }
+            await PumpUntilClosedAsync().ConfigureAwait(false);
         }
         finally
         {
-            closed = true;
-            // A gate rejection forges its disconnect off the pump, so it can still be in flight
-            // here. Closing the client socket underneath it would replace the reason the player
-            // was given with a dropped connection. The write carries its own 2s cap.
-            var pendingDisconnect = gateDisconnect;
-            if (pendingDisconnect != null) await SafeAwait(pendingDisconnect).ConfigureAwait(false);
-            // The pumps exited because one of these two ended, so the other is usually the only
-            // one left to close and the dead one throws. This is the last owner either way.
-            try { upstream?.Close(); } catch { /* backend already dropped us */ }
-            try { client.Close(); } catch { /* client already dropped us */ }
-            // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts
-            // fresh. Off the address captured at construction, not off the socket: by here the
-            // client socket has been closed either by this teardown or by Close(), and
-            // TcpClient.Close() nulls Client, so reading the endpoint back gives nothing to clear
-            // under and the override outlives the session.
-            if (udpOverrides != null && clientAddress != null)
-                udpOverrides.Clear(clientAddress);
-            if (events != null)
-            {
-                // Disconnect notifications are the last thing this session does. A handler that
-                // throws here must not skip the ones after it or lose the summary line below.
-                if (kickedByBackend && currentBackend != null)
-                {
-                    try { await events.FireAsync(new ServerKickedEvent(this, currentBackend.ToServerInfo())).ConfigureAwait(false); }
-                    catch { /* a failed kick notification must not swallow the disconnect one */ }
-                }
-                try { await events.FireAsync(new PlayerDisconnectEvent(this, c2sBytes, s2cBytes)).ConfigureAwait(false); }
-                catch { /* the session is over; a throwing handler changes nothing about that */ }
-            }
-            var elapsed = DateTimeOffset.UtcNow - sessionStart;
-            Log.Info($"[s{Id}] {capturedPlayerName ?? clientRemote} disconnected ({FormatDuration(elapsed)} | ↑{FormatBytes(c2sBytes)} ↓{FormatBytes(s2cBytes)})");
+            await TearDownSessionAsync().ConfigureAwait(false);
         }
+    }
+
+    // Try each candidate until one connects. A handler cancelling stops the chain; a connect
+    // failure moves on to the next backend. Returns whether the session got an upstream, and the
+    // last reason it did not, which is what the player is eventually told.
+    private async Task<(bool connected, string? lastFailReason)> ConnectAnyAsync(
+        IReadOnlyList<BackendEndpoint> tryOrder, ReadOnlyMemory<byte> firstClientFrame)
+    {
+        string? lastFailReason = null;
+        for (int i = 0; i < tryOrder.Count; i++)
+        {
+            var (ok, cancelled, reason) = await ConnectUpstreamAsync(tryOrder[i], firstClientFrame).ConfigureAwait(false);
+            if (ok) return (true, null);
+            lastFailReason = reason;
+            if (cancelled) break;
+            if (i + 1 < tryOrder.Count)
+                Log.Info($"[s{Id}] failover: trying next candidate after '{reason}'");
+        }
+        return (false, lastFailReason);
+    }
+
+    // Nothing on the candidate list answered. Forge a disconnect so the player is told that,
+    // rather than watching the connection drop for no stated reason. Best effort throughout: the
+    // teardown runs next whether or not any of this reached the client.
+    private async Task SendNoBackendDisconnectAsync(string? lastFailReason)
+    {
+        Log.Warn($"[s{Id}] no candidate connected: {lastFailReason ?? "unknown"}; sending forged disconnect");
+        try
+        {
+            var frame = DisconnectBuilder.BuildDisconnectFrame($"No backend reachable right now ({lastFailReason ?? "all candidates failed"}). Please try again shortly.");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await clientStream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
+            await clientStream.FlushAsync(cts.Token).ConfigureAwait(false);
+            try { await Task.Delay(150, cts.Token).ConfigureAwait(false); } catch { /* cut short, tear down now */ }
+        }
+        catch { /* no backend and now no client either; the teardown handles the rest */ }
+    }
+
+    // Sit on the pumps until they stop for good. They also stop for a swap, which installs a new
+    // upstream and a new pair underneath us, so the exit has to tell the two cases apart.
+    private async Task PumpUntilClosedAsync()
+    {
+        while (!sessionStopToken.IsCancellationRequested && !closed)
+        {
+            await Task.WhenAll(SafeAwait(pumpC2S!), SafeAwait(pumpS2C!)).ConfigureAwait(false);
+            if (!swapping) break;  // pumps ended because of client/upstream close, not a swap
+
+            // The swap routine installs the new pumps before it clears this flag.
+            while (swapping && !sessionStopToken.IsCancellationRequested && !closed)
+                await Task.Delay(10, sessionStopToken).ConfigureAwait(false);
+        }
+    }
+
+    // Close everything this session owns, in the one order that does not cut a message short.
+    // Runs from RunAsync's finally, so it runs however the session ended.
+    private async Task TearDownSessionAsync()
+    {
+        closed = true;
+        // A gate rejection forges its disconnect off the pump, so it can still be in flight
+        // here. Closing the client socket underneath it would replace the reason the player
+        // was given with a dropped connection. The write carries its own 2s cap.
+        var pendingDisconnect = gateDisconnect;
+        if (pendingDisconnect != null) await SafeAwait(pendingDisconnect).ConfigureAwait(false);
+        // The pumps exited because one of these two ended, so the other is usually the only
+        // one left to close and the dead one throws. This is the last owner either way.
+        try { upstream?.Close(); } catch { /* backend already dropped us */ }
+        try { client.Close(); } catch { /* client already dropped us */ }
+        // Drop any UDP retargeting for this client IP so the next player (or NAT reuse) starts
+        // fresh. Off the address captured at construction, not off the socket: by here the
+        // client socket has been closed either by this teardown or by Close(), and
+        // TcpClient.Close() nulls Client, so reading the endpoint back gives nothing to clear
+        // under and the override outlives the session.
+        if (udpOverrides != null && clientAddress != null)
+            udpOverrides.Clear(clientAddress);
+
+        await AnnounceDisconnectAsync().ConfigureAwait(false);
+
+        var elapsed = DateTimeOffset.UtcNow - sessionStart;
+        Log.Info($"[s{Id}] {capturedPlayerName ?? clientRemote} disconnected ({FormatDuration(elapsed)} | ↑{FormatBytes(c2sBytes)} ↓{FormatBytes(s2cBytes)})");
+    }
+
+    // Disconnect notifications are the last thing this session does. A handler that throws here
+    // must not skip the ones after it or lose the summary line the teardown writes afterwards.
+    private async Task AnnounceDisconnectAsync()
+    {
+        if (events == null) return;
+
+        if (kickedByBackend && currentBackend != null)
+        {
+            try { await events.FireAsync(new ServerKickedEvent(this, currentBackend.ToServerInfo())).ConfigureAwait(false); }
+            catch { /* a failed kick notification must not swallow the disconnect one */ }
+        }
+        try { await events.FireAsync(new PlayerDisconnectEvent(this, c2sBytes, s2cBytes)).ConfigureAwait(false); }
+        catch { /* the session is over; a throwing handler changes nothing about that */ }
     }
 
     // Single-target convenience. Kept for callers that already have one endpoint in hand.
