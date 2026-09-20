@@ -412,6 +412,145 @@ public class ProxySessionLifecycleTests
         lock (kicks) Assert.Single(kicks);
     }
 
+    // A pump ends on a read from one end or on a write to the other, so which endpoint went away
+    // does not follow from which direction the pump ran in. Checked here directly because the
+    // socket-level tests below can only ever exercise whichever of the two paths wins the race.
+    [Fact]
+    public void APumpExit_NamesTheEndpointThatEndedItRatherThanItsOwnDirection()
+    {
+        Assert.Equal(ProxySession.PumpExitOrigin.Client, ProxySession.EndpointThatEnded(isC2S: true, onRead: true));
+        // The one the direction flag used to get wrong: c->s writes the backend, so a failed
+        // write there is the backend going away, not the client.
+        Assert.Equal(ProxySession.PumpExitOrigin.Backend, ProxySession.EndpointThatEnded(isC2S: true, onRead: false));
+        Assert.Equal(ProxySession.PumpExitOrigin.Backend, ProxySession.EndpointThatEnded(isC2S: false, onRead: true));
+        // And its mirror: s->c writes the client, so a failed write there is the client leaving.
+        Assert.Equal(ProxySession.PumpExitOrigin.Client, ProxySession.EndpointThatEnded(isC2S: false, onRead: false));
+    }
+
+    // How many sessions each of the two write-failure scenarios below is run over. Which pump
+    // notices a reset first is a property of the kernel, not of the proxy, so a single session
+    // proves nothing about the other orderings. The outcome asserted holds for all of them.
+    private const int RaceRounds = 25;
+
+    // Both pumps sitting in a write at once, which is what puts the write-failure paths in play:
+    // the player is talking to a backend that has stopped draining, and the backend is talking to
+    // a player nothing in the harness reads for. In that state a reset on one side is only seen by
+    // the pump writing towards it, and the other one is blocked against a socket that is still
+    // fine, so the endpoint that failed and the direction of the pump that noticed are opposites.
+    private static async Task<Task> WedgeBothPumpsInWritesAsync(SessionHarness harness, string label)
+    {
+        var backend = harness.Backends["hub"];
+        backend.StopReading();
+        backend.KeepSending();
+        var traffic = harness.KeepPlayerSendingAsync();
+        await SessionHarness.WaitForStallAsync(() => harness.PlayerBytesSent,
+            $"{label}: the player's stream never backed up at the backend");
+        await SessionHarness.WaitForStallAsync(() => backend.BytesSent,
+            $"{label}: the backend's stream never backed up at the client");
+        return traffic;
+    }
+
+    // A client resetting under a backend that is mid-send ends the s->c pump on its write, and
+    // s->c is the direction that used to be read as "the backend hung up". The player is the one
+    // who left, so no plugin should be told the server kicked them.
+    [Fact]
+    public async Task AClientResettingUnderBackendTraffic_IsNotReportedAsABackendKick()
+    {
+        for (int round = 0; round < RaceRounds; round++)
+        {
+            using var harness = await SessionHarness.StartAsync("hub");
+            var kicks = new List<ServerKickedEvent>();
+            harness.Events.Subscribe<ServerKickedEvent>(evt => { lock (kicks) kicks.Add(evt); });
+            await harness.ReachReadyAsync();
+            var traffic = await WedgeBothPumpsInWritesAsync(harness, $"round {round}");
+
+            harness.AbortPlayerSocket();
+
+            Assert.Same(harness.Running, await Task.WhenAny(harness.Running, Task.Delay(5000)));
+            lock (kicks) Assert.Empty(kicks);
+            await traffic;
+        }
+    }
+
+    // The mirror of it: a backend resetting under a player who is mid-send ends the c->s pump on
+    // its write, and c->s is the direction that used to be read as "the client left" and silenced
+    // the kick. The backend is the one that went away, so it is reported, once.
+    [Fact]
+    public async Task ABackendResettingUnderClientTraffic_IsStillReportedExactlyOnce()
+    {
+        for (int round = 0; round < RaceRounds; round++)
+        {
+            using var harness = await SessionHarness.StartAsync("hub");
+            var kicks = new List<ServerKickedEvent>();
+            harness.Events.Subscribe<ServerKickedEvent>(evt => { lock (kicks) kicks.Add(evt); });
+            await harness.ReachReadyAsync();
+            var traffic = await WedgeBothPumpsInWritesAsync(harness, $"round {round}");
+
+            harness.Backends["hub"].AbortConnections();
+
+            Assert.Same(harness.Running, await Task.WhenAny(harness.Running, Task.Delay(5000)));
+            lock (kicks) Assert.Single(kicks);
+            await traffic;
+        }
+    }
+
+    // RetireSwapPredecessorAsync gives the old pumps a bounded wait and then commits anyway, and
+    // an old c->s pump parked in MintReservationAsync is not listening to the predecessor's
+    // cancellation: that call waits on the session token. When it finally came back it exited
+    // through the same accounting as the pair that had replaced it, claimed the new record and
+    // cancelled the new pumps, which took the backend the player had just been moved to down.
+    // The wait in PumpUntilClosedAsync had the same blind spot: the pair it finished waiting on
+    // was the old one, and with the swap long over it read that as the session being finished.
+    [Fact]
+    public async Task APredecessorPumpOutlivingItsRetirement_LeavesTheNewPairAlone()
+    {
+        var registry = new FakeRegistryClient { HoldMint = new TaskCompletionSource() };
+        var previousWait = ProxySession.RetireWait;
+        ProxySession.RetireWait = TimeSpan.FromMilliseconds(250);
+        try
+        {
+            using var harness = await SessionHarness.StartAsync(cfg =>
+            {
+                cfg.Transfers.AllowSeamless = true;
+                cfg.Transfers.EnableUnsafeSeamlessSplice = true;
+            }, registry, "hub");
+            var kicks = new List<ServerKickedEvent>();
+            harness.Events.Subscribe<ServerKickedEvent>(evt => { lock (kicks) kicks.Add(evt); });
+
+            // Opening on LoginTokenQuery leaves the reservation unminted at connect time, which is
+            // what puts the mint on the pump instead: the identity only turns up on a later frame.
+            await harness.SendAsync(ClientFrames.LoginTokenQuery());
+            await SessionHarness.WaitForAsync(() => harness.Backends["hub"].Connections > 0,
+                "the session never reached the backend");
+
+            // Both frames in one write so the sniffer sees the join and the ready in the chunk the
+            // pump is about to park on. Identification is what the swap needs to replay, and Ready
+            // is the phase a false kick would be reported from.
+            await harness.SendAsync([.. ClientFrames.Identification("uid-1", "alice"), .. ClientFrames.ClientPlaying()]);
+            await SessionHarness.WaitForAsync(() => registry.MintsSoFar().Count == 1,
+                "the c->s pump never reached the reservation mint");
+            await SessionHarness.WaitForAsync(() => harness.Session.Phase == SessionState.Phase.Ready,
+                $"the session never reached Ready (phase={harness.Session.Phase})");
+
+            // The swap cannot retire that pump, so it gives up waiting and installs the new pair
+            // over the top of a predecessor that is still alive.
+            Assert.Null(await harness.Session.RequestSeamlessAsync(harness.Endpoint("hub"), failOnRegistryError: false));
+
+            registry.HoldMint.SetResult();
+
+            // The new upstream is the only thing that can carry this, and the session has to still
+            // be running to carry it at all.
+            await harness.SendAsync(ChatFrames.Chatline("still connected"));
+            Assert.True(await WaitForSent(harness.Backends["hub"], "still connected"));
+            Assert.False(harness.Running.IsCompleted);
+            lock (kicks) Assert.Empty(kicks);
+        }
+        finally
+        {
+            ProxySession.RetireWait = previousWait;
+        }
+    }
+
     private static async Task<bool> WaitForSent(RecordingBackend backend, string needle, int millis = 8000)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(millis);

@@ -47,10 +47,16 @@ internal sealed class SessionHarness : IDisposable
     public static Task<SessionHarness> StartAsync(params string[] serverIds)
         => StartAsync(null, serverIds);
 
-    /// <summary>Brings up a session in front of one recording backend per id in
-    /// <paramref name="serverIds"/>, routed at the first of them.</summary>
-    public static async Task<SessionHarness> StartAsync(Action<ProxyConfig>? configure,
+    public static Task<SessionHarness> StartAsync(Action<ProxyConfig>? configure,
         params string[] serverIds)
+        => StartAsync(configure, registry: null, serverIds);
+
+    /// <summary>Brings up a session in front of one recording backend per id in
+    /// <paramref name="serverIds"/>, routed at the first of them. A
+    /// <paramref name="registry"/> is what puts the initial reservation in play: without one the
+    /// c->s pump never mints, so the tests about a pump parked in that call have to pass one.</summary>
+    public static async Task<SessionHarness> StartAsync(Action<ProxyConfig>? configure,
+        IRegistryClient? registry, params string[] serverIds)
     {
         if (serverIds.Length == 0) serverIds = new[] { "hub" };
 
@@ -81,7 +87,7 @@ internal sealed class SessionHarness : IDisposable
         var serverSide = await accepted;
 
         var session = new ProxySession(1, cfg, serverSide, cts.Token,
-            new SessionServices(Stickies: stickies, UdpOverrides: udpOverrides, Events: events));
+            new SessionServices(Stickies: stickies, Registry: registry, UdpOverrides: udpOverrides, Events: events));
 
         var harness = new SessionHarness(front, player, session, runner.RunAsync(session, serverSide), cts)
         {
@@ -118,6 +124,57 @@ internal sealed class SessionHarness : IDisposable
     /// <summary>Drops the player's socket and leaves the backend up, which is what a client
     /// crashing or losing its connection looks like from the proxy's side.</summary>
     public void DropPlayerSocket() => player.Close();
+
+    /// <summary>Resets the player's socket rather than closing it politely, so a write the proxy
+    /// has in flight to the client fails instead of the read just ending. That is the only way to
+    /// reach the write half of the pump exit paths from the client side.</summary>
+    public void AbortPlayerSocket()
+    {
+        try { player.LingerState = new LingerOption(true, 0); }
+        catch { /* the socket is already gone; there is nothing left to reset */ }
+        player.Close();
+    }
+
+    /// <summary>Bytes the client has handed to its socket through
+    /// <see cref="KeepPlayerSendingAsync"/>. It stops growing once the proxy's c->s pump is parked
+    /// inside its write to a backend that is not draining.</summary>
+    public long PlayerBytesSent => Interlocked.Read(ref playerBytesSent);
+
+    private long playerBytesSent;
+
+    /// <summary>Keeps chat frames going upstream until the socket dies. A pump only has a write to
+    /// fail on while the player is actually saying something, so the tests about a backend reset
+    /// landing on a write have to keep the traffic running.</summary>
+    public Task KeepPlayerSendingAsync()
+        => Task.Run(async () =>
+        {
+            var frame = ChatFrames.Chatline(new string('x', 16 * 1024));
+            try
+            {
+                while (!cts.IsCancellationRequested)
+                {
+                    await SendAsync(frame);
+                    Interlocked.Add(ref playerBytesSent, frame.Length);
+                }
+            }
+            catch { /* the socket went away, which is what the test arranged */ }
+        });
+
+    /// <summary>Waits until <paramref name="counter"/> has moved and then stopped, which is how a
+    /// test tells that the pump on that side is parked inside a write rather than idling on a
+    /// read. Fails rather than returning, so a scenario that never backed up is reported as the
+    /// setup problem it is instead of as a flaky assertion further down.</summary>
+    public static async Task WaitForStallAsync(Func<long> counter, string message, int millis = 8000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(millis);
+        while (DateTime.UtcNow < deadline)
+        {
+            long before = counter();
+            await Task.Delay(50);
+            if (before > 0 && counter() == before) return;
+        }
+        Assert.Fail(message);
+    }
 
     /// <summary>Sends Identification and waits for the session to have picked the uid up, which is
     /// what puts the gates, the sticky reconciliation and the transfer paths in play.</summary>
@@ -227,6 +284,21 @@ internal static class ForgedFrames
             yield return stream[(pos + 4)..(pos + 4 + len)];
             pos += 4 + len;
         }
+    }
+}
+
+/// <summary>Server-to-client frames, built with the independent wire writer.</summary>
+internal static class ServerFrames
+{
+    /// <summary>EntityPosition: Packet_Server field 51, tag 410 in PacketDispatch.ServerTags. The
+    /// frame a backend sends a player in the world over and over, and one that moves no session
+    /// phase, so a test can fill the s->c direction with it without changing what it is testing.
+    /// </summary>
+    public static byte[] EntityPosition(int payloadBytes)
+    {
+        var envelope = new MemoryStream();
+        ProtoWire.WriteBytes(envelope, 51, new byte[payloadBytes]);
+        return ProtoWire.Frame(envelope.ToArray());
     }
 }
 
