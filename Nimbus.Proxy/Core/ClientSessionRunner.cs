@@ -38,7 +38,7 @@ internal sealed class ClientSessionRunner
     {
         try
         {
-            var firstFrame = await TryReadFirstFrameAsync(client).ConfigureAwait(false);
+            var firstFrame = await TryReadFirstFrameAsync(session, client).ConfigureAwait(false);
             if (firstFrame.Length > 0 && await statusResponder.TryHandleAsync(client, firstFrame).ConfigureAwait(false))
                 return;
 
@@ -193,13 +193,14 @@ internal sealed class ClientSessionRunner
 
     // Bound on the frame this not-yet-identified client can declare, checked before the
     // allocation below ever runs. Real first frames are tiny: the status query and LoginTokenQuery
-    // carry next to no body, and Identification (name, uid, token, version strings, mod list) stays
-    // well under this even for a heavily modded client. A declared length past it is not a
-    // Vintage Story client opening a session, and its 4-byte header does not get to size an
-    // allocation on that word alone.
+    // carry next to no body, and Identification is nine fields (MdProtocolVersion, Playername,
+    // MpToken, ServerPassword, PlayerUID, NetworkVersion, ShortGameVersion, ViewDistance,
+    // RenderMetaBlocks, per the 1.22.6 Packet_ClientIdentification), all short strings or ints,
+    // never a mod list. A declared length past it is not a Vintage Story client opening a
+    // session, and its 4-byte header does not get to size an allocation on that word alone.
     internal const int MaxFirstFrameSize = 64 * 1024;
 
-    private async Task<byte[]> TryReadFirstFrameAsync(TcpClient client)
+    private async Task<byte[]> TryReadFirstFrameAsync(ProxySession session, TcpClient client)
     {
         var stream = client.GetStream();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(stopToken);
@@ -215,8 +216,9 @@ internal sealed class ClientSessionRunner
             return header;
         if (len > MaxFirstFrameSize)
         {
-            // The stream above is already live, so this connection has a remote endpoint by now.
-            Log.Trace($"[first-frame] {client.Client.RemoteEndPoint} declared {len} bytes, over the {MaxFirstFrameSize}-byte first-frame bound; dropping before allocating");
+            // session.ClientRemote is captured once at construction, so this stays safe even if
+            // a concurrent teardown has already torn the socket down by the time this logs.
+            Log.Trace($"[first-frame] {session.ClientRemote} declared {len} bytes, over the {MaxFirstFrameSize}-byte first-frame bound; dropping before allocating");
             throw new InvalidDataException($"first frame too large before identification: {len} bytes");
         }
 
