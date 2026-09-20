@@ -171,8 +171,10 @@ internal sealed partial class ProxySession
     // How long a committed swap gives the old pumps before it carries on regardless. An old c->s
     // pump can be parked in InspectClientChunkAsync on a registry that is not answering, which
     // waits on sessionStopToken and not on the predecessor source, so this cap is reachable in
-    // production. Settable so the test for what happens past it does not have to wait it out.
-    internal static TimeSpan RetireWait { get; set; } = TimeSpan.FromSeconds(5);
+    // production. Per session and not static: a test turning it down would otherwise shorten it
+    // for every other session in the process, and the suites run in parallel. Not an operator
+    // knob either, so it has no config entry; only the test for what happens past the cap sets it.
+    internal TimeSpan RetireWait { get; set; } = TimeSpan.FromSeconds(5);
 
     // Stop the old pumps before the new backend writes to the client stream. Past this point the
     // swap is committed, so the old side is torn down whatever it says and none of these steps

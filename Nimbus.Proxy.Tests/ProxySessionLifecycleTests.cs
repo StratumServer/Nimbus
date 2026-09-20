@@ -505,50 +505,43 @@ public class ProxySessionLifecycleTests
     public async Task APredecessorPumpOutlivingItsRetirement_LeavesTheNewPairAlone()
     {
         var registry = new FakeRegistryClient { HoldMint = new TaskCompletionSource() };
-        var previousWait = ProxySession.RetireWait;
-        ProxySession.RetireWait = TimeSpan.FromMilliseconds(250);
-        try
+        using var harness = await SessionHarness.StartAsync(cfg =>
         {
-            using var harness = await SessionHarness.StartAsync(cfg =>
-            {
-                cfg.Transfers.AllowSeamless = true;
-                cfg.Transfers.EnableUnsafeSeamlessSplice = true;
-            }, registry, "hub");
-            var kicks = new List<ServerKickedEvent>();
-            harness.Events.Subscribe<ServerKickedEvent>(evt => { lock (kicks) kicks.Add(evt); });
+            cfg.Transfers.AllowSeamless = true;
+            cfg.Transfers.EnableUnsafeSeamlessSplice = true;
+        }, registry, "hub");
+        // This session only, so the other suites running alongside keep the production cap.
+        harness.Session.RetireWait = TimeSpan.FromMilliseconds(250);
+        var kicks = new List<ServerKickedEvent>();
+        harness.Events.Subscribe<ServerKickedEvent>(evt => { lock (kicks) kicks.Add(evt); });
 
-            // Opening on LoginTokenQuery leaves the reservation unminted at connect time, which is
-            // what puts the mint on the pump instead: the identity only turns up on a later frame.
-            await harness.SendAsync(ClientFrames.LoginTokenQuery());
-            await SessionHarness.WaitForAsync(() => harness.Backends["hub"].Connections > 0,
-                "the session never reached the backend");
+        // Opening on LoginTokenQuery leaves the reservation unminted at connect time, which is
+        // what puts the mint on the pump instead: the identity only turns up on a later frame.
+        await harness.SendAsync(ClientFrames.LoginTokenQuery());
+        await SessionHarness.WaitForAsync(() => harness.Backends["hub"].Connections > 0,
+            "the session never reached the backend");
 
-            // Both frames in one write so the sniffer sees the join and the ready in the chunk the
-            // pump is about to park on. Identification is what the swap needs to replay, and Ready
-            // is the phase a false kick would be reported from.
-            await harness.SendAsync([.. ClientFrames.Identification("uid-1", "alice"), .. ClientFrames.ClientPlaying()]);
-            await SessionHarness.WaitForAsync(() => registry.MintsSoFar().Count == 1,
-                "the c->s pump never reached the reservation mint");
-            await SessionHarness.WaitForAsync(() => harness.Session.Phase == SessionState.Phase.Ready,
-                $"the session never reached Ready (phase={harness.Session.Phase})");
+        // Both frames in one write so the sniffer sees the join and the ready in the chunk the
+        // pump is about to park on. Identification is what the swap needs to replay, and Ready
+        // is the phase a false kick would be reported from.
+        await harness.SendAsync([.. ClientFrames.Identification("uid-1", "alice"), .. ClientFrames.ClientPlaying()]);
+        await SessionHarness.WaitForAsync(() => registry.MintsSoFar().Count == 1,
+            "the c->s pump never reached the reservation mint");
+        await SessionHarness.WaitForAsync(() => harness.Session.Phase == SessionState.Phase.Ready,
+            $"the session never reached Ready (phase={harness.Session.Phase})");
 
-            // The swap cannot retire that pump, so it gives up waiting and installs the new pair
-            // over the top of a predecessor that is still alive.
-            Assert.Null(await harness.Session.RequestSeamlessAsync(harness.Endpoint("hub"), failOnRegistryError: false));
+        // The swap cannot retire that pump, so it gives up waiting and installs the new pair
+        // over the top of a predecessor that is still alive.
+        Assert.Null(await harness.Session.RequestSeamlessAsync(harness.Endpoint("hub"), failOnRegistryError: false));
 
-            registry.HoldMint.SetResult();
+        registry.HoldMint.SetResult();
 
-            // The new upstream is the only thing that can carry this, and the session has to still
-            // be running to carry it at all.
-            await harness.SendAsync(ChatFrames.Chatline("still connected"));
-            Assert.True(await WaitForSent(harness.Backends["hub"], "still connected"));
-            Assert.False(harness.Running.IsCompleted);
-            lock (kicks) Assert.Empty(kicks);
-        }
-        finally
-        {
-            ProxySession.RetireWait = previousWait;
-        }
+        // The new upstream is the only thing that can carry this, and the session has to still
+        // be running to carry it at all.
+        await harness.SendAsync(ChatFrames.Chatline("still connected"));
+        Assert.True(await WaitForSent(harness.Backends["hub"], "still connected"));
+        Assert.False(harness.Running.IsCompleted);
+        lock (kicks) Assert.Empty(kicks);
     }
 
     private static async Task<bool> WaitForSent(RecordingBackend backend, string needle, int millis = 8000)
