@@ -191,6 +191,14 @@ internal sealed class ClientSessionRunner
         try { client.Close(); } catch { /* the write path above may have closed it already */ }
     }
 
+    // Bound on the frame this not-yet-identified client can declare, checked before the
+    // allocation below ever runs. Real first frames are tiny: the status query and LoginTokenQuery
+    // carry next to no body, and Identification (name, uid, token, version strings, mod list) stays
+    // well under this even for a heavily modded client. A declared length past it is not a
+    // Vintage Story client opening a session, and its 4-byte header does not get to size an
+    // allocation on that word alone.
+    internal const int MaxFirstFrameSize = 64 * 1024;
+
     private async Task<byte[]> TryReadFirstFrameAsync(TcpClient client)
     {
         var stream = client.GetStream();
@@ -205,8 +213,12 @@ internal sealed class ClientSessionRunner
         int len = rawLen & 0x7FFFFFFF;
         if (len == 0)
             return header;
-        if (len > 256 * 1024 * 1024)
-            throw new InvalidDataException($"client frame too large: {len} bytes");
+        if (len > MaxFirstFrameSize)
+        {
+            var remote = client.Client?.RemoteEndPoint?.ToString() ?? "?";
+            Log.Trace($"[first-frame] {remote} declared {len} bytes, over the {MaxFirstFrameSize}-byte first-frame bound; dropping before allocating");
+            throw new InvalidDataException($"first frame too large before identification: {len} bytes");
+        }
 
         var frame = new byte[4 + len];
         Buffer.BlockCopy(header, 0, frame, 0, 4);
