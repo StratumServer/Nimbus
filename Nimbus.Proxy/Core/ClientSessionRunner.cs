@@ -215,8 +215,8 @@ internal sealed class ClientSessionRunner
             return header;
         if (len > MaxFirstFrameSize)
         {
-            var remote = client.Client?.RemoteEndPoint?.ToString() ?? "?";
-            Log.Trace($"[first-frame] {remote} declared {len} bytes, over the {MaxFirstFrameSize}-byte first-frame bound; dropping before allocating");
+            // The stream above is already live, so this connection has a remote endpoint by now.
+            Log.Trace($"[first-frame] {client.Client.RemoteEndPoint} declared {len} bytes, over the {MaxFirstFrameSize}-byte first-frame bound; dropping before allocating");
             throw new InvalidDataException($"first frame too large before identification: {len} bytes");
         }
 
