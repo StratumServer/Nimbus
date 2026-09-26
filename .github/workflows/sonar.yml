@@ -25,6 +25,9 @@ env:
 jobs:
   sonar:
     name: SonarCloud analysis
+    # Dependabot and fork pull requests get no Actions secrets, so the scanner cannot
+    # authenticate there: skipping is honest, failing red is noise.
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -38,7 +41,7 @@ jobs:
 
       # The scanner is a Java program; the dotnet tool is a wrapper around it.
       - name: Setup Java 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
