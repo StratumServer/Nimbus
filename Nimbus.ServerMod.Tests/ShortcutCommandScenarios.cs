@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Atlas.Api;
 using Atlas.XUnit;
 using Xunit;
@@ -41,6 +42,20 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
         throw new Xunit.Sdk.XunitException($"registry snapshot never listed '{backendId}'");
     }
 
+    // The status text only says a transfer began; the intent the registry received is what moves
+    // the player, so check that it was posted, for whom, to where and on whose behalf.
+    private async Task AssertIntentPosted(FakeRegistry registry, ITestPlayer player, string target)
+    {
+        await World.Until(() => registry.Requests.Any(r => r.Path == "/api/transfer-intents"));
+        var intent = registry.Requests.Last(r => r.Path == "/api/transfer-intents");
+        Assert.True(intent.SignatureValid, "transfer intents must be HMAC-signed");
+
+        using JsonDocument body = JsonDocument.Parse(intent.Body);
+        Assert.Equal(player.Player.PlayerUID, body.RootElement.GetProperty("PlayerUid").GetString());
+        Assert.Equal(target, body.RootElement.GetProperty("TargetServerId").GetString());
+        Assert.Equal("player:" + player.Player.PlayerUID, body.RootElement.GetProperty("RequestedBy").GetString());
+    }
+
     [AtlasScenario]
     public async Task Shortcut_TransfersToItsTarget()
     {
@@ -53,10 +68,11 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
         ITestPlayer alice = await World.JoinPlayer("alice");
         await WaitForSnapshot("hub2");
 
-        CommandResult hub = await NimbusHarness.ExecuteAs(World, alice, "/hub");
+        CommandResult hub = await alice.ExecuteCommand("/hub");
 
         Assert.True(hub.Ok, hub.Message);
         Assert.Contains("hub2", hub.Message);
+        await AssertIntentPosted(registry, alice, "hub2");
     }
 
     [AtlasScenario]
@@ -72,7 +88,7 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
         ITestPlayer bob = await World.JoinPlayer("bob");
         await WaitForSnapshot("hub2");
 
-        CommandResult lobby = await NimbusHarness.ExecuteAs(World, bob, "/lobby");
+        CommandResult lobby = await bob.ExecuteCommand("/lobby");
 
         Assert.True(lobby.Ok, lobby.Message);
         Assert.Contains("hub2", lobby.Message);
@@ -93,7 +109,7 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
         ITestPlayer carol = await World.JoinPlayer("carol");
         await WaitForSnapshot("hub2");
 
-        CommandResult lobby = await NimbusHarness.ExecuteAs(World, carol, "/lobby");
+        CommandResult lobby = await carol.ExecuteCommand("/lobby");
 
         Assert.True(lobby.Ok, lobby.Message);
         Assert.Contains("hub2", lobby.Message);
@@ -111,10 +127,9 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
         await WaitForSnapshot("hub2");
 
         // 'staff' is never in the snapshot: the player deserves a reason, not silence.
-        CommandResult staff = await NimbusHarness.ExecuteAs(World, dave, "/staff");
+        CommandResult staff = await dave.ExecuteCommand("/staff");
 
-        Assert.False(staff.Ok);
-        Assert.Contains("No server available", staff.Message);
+        CommandAssert.RefusedByTheHandler(staff, "No server available");
     }
 
     [AtlasScenario]
@@ -128,10 +143,9 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
         ITestPlayer erin = await World.JoinPlayer("erin");
         await WaitForSnapshot("hub2");
 
-        CommandResult home = await NimbusHarness.ExecuteAs(World, erin, "/home");
+        CommandResult home = await erin.ExecuteCommand("/home");
 
-        Assert.False(home.Ok);
-        Assert.Contains("already there", home.Message);
+        CommandAssert.RefusedByTheHandler(home, "already there");
     }
 
     [AtlasScenario]
@@ -172,10 +186,11 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
             reservationRequired: false,
             shortcutCommandsJson: """[ { "Name": "hub", "Targets": [ "creative" ] } ]""");
 
-        CommandResult hub = await NimbusHarness.ExecuteAs(World, frank, "/hub");
+        CommandResult hub = await frank.ExecuteCommand("/hub");
 
         Assert.True(hub.Ok, hub.Message);
         Assert.Contains("creative", hub.Message);
+        await AssertIntentPosted(registry, frank, "creative");
     }
 
     [AtlasScenario]
@@ -190,24 +205,43 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
         ITestPlayer gina = await World.JoinPlayer("gina");
         await WaitForSnapshot("hub2");
 
-        // Open to everyone at boot: an ordinary player gets through.
-        CommandResult before = await NimbusHarness.ExecuteAs(World, gina, "/hub");
-        Assert.True(before.Ok, before.Message);
+        // A joined test player is admin by default (IsSinglePlayerClient). Downgrade gina to an
+        // ordinary role up front: "everyone gets through" before the reload, and the refusal
+        // after it, both need a real non-admin player to mean anything. Nothing between the
+        // downgrade and the last assertion is a command Atlas's ExecuteCommand docs list as
+        // putting a test player back on the highest-privilege role (/op, /self role,
+        // /group create, /player role or privilege, whitelist, a rejoin, a mod granting or
+        // denying a privilege), and the privilege check is repeated before the call that relies
+        // on it. The role is put back in a finally anyway, so the next scenario in this world
+        // starts from the player it joined as.
+        string originalRole = gina.Player.Role.Code;
+        gina.Player.SetRole("suplayer");
+        try
+        {
+            Assert.False(gina.Player.HasPrivilege("controlserver"), "test setup: player should not be privileged here");
 
-        // The operator locks it down and reloads. The engine gate keeps the privilege it was
-        // registered with, so without the handler-side re-check this silently stays open.
-        await NimbusHarness.ConfigureAsync(World, registry.Url, Secret,
-            reservationRequired: false,
-            shortcutCommandsJson: """[ { "Name": "hub", "Targets": [ "hub2" ], "Privilege": "controlserver" } ]""");
+            // Open to everyone at boot: an ordinary player gets through.
+            CommandResult before = await gina.ExecuteCommand("/hub");
+            Assert.True(before.Ok, before.Message);
 
-        // Atlas test players join privileged, so take the privilege away explicitly: this is
-        // about whether the handler honours the CURRENT config value, not about VS's roles.
-        World.Api.Permissions.DenyPrivilege(gina.Player.PlayerUID, "controlserver");
-        Assert.False(gina.Player.HasPrivilege("controlserver"), "test setup: player should not be privileged here");
+            // The operator locks it down and reloads. The mod does not touch the privilege the engine
+            // gate was registered with, so without the handler-side re-check this silently stays open.
+            await NimbusHarness.ConfigureAsync(World, registry.Url, Secret,
+                reservationRequired: false,
+                shortcutCommandsJson: """[ { "Name": "hub", "Targets": [ "hub2" ], "Privilege": "controlserver" } ]""");
 
-        CommandResult after = await NimbusHarness.ExecuteAs(World, gina, "/hub");
+            Assert.False(gina.Player.HasPrivilege("controlserver"), "the reload must not have restored the player's role");
+            CommandResult after = await gina.ExecuteCommand("/hub");
 
-        Assert.False(after.Ok, "tightening a shortcut's privilege must take effect on reload");
-        Assert.Contains("permission", after.Message);
+            // The engine gate still lets "chat" through (an engine refusal would read "noprivilege"),
+            // so this refusal is the handler's own re-check. The empty error code pins that mechanism:
+            // a reload that re-applied RequiresPrivilege to the command would also refuse, but with
+            // "noprivilege", and would need this assertion changed.
+            CommandAssert.RefusedByTheHandler(after, "permission");
+        }
+        finally
+        {
+            gina.Player.SetRole(originalRole);
+        }
     }
 }

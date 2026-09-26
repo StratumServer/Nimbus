@@ -72,20 +72,16 @@ public class TransferCommandScenarios : AtlasScenarioBase
         await WaitForSnapshot("hub-stale");
 
         CommandResult unknown = await World.ExecuteCommand("/nimbus send victor nowhere");
-        Assert.False(unknown.Ok);
-        Assert.Contains("not in the registry snapshot", unknown.Message);
+        CommandAssert.RefusedByTheHandler(unknown, "not in the registry snapshot");
 
         CommandResult stale = await World.ExecuteCommand("/nimbus send victor hub-stale");
-        Assert.False(stale.Ok);
-        Assert.Contains("stale", stale.Message);
+        CommandAssert.RefusedByTheHandler(stale, "stale");
 
         CommandResult maint = await World.ExecuteCommand("/nimbus send victor hub-maint");
-        Assert.False(maint.Ok);
-        Assert.Contains("maintenance", maint.Message);
+        CommandAssert.RefusedByTheHandler(maint, "maintenance");
 
         CommandResult self = await World.ExecuteCommand("/nimbus send victor backend-test");
-        Assert.False(self.Ok);
-        Assert.Contains("already on", self.Message);
+        CommandAssert.RefusedByTheHandler(self, "already on");
 
         // All four were rejected before any registry call.
         Assert.DoesNotContain(registry.Requests, r => r.Path == "/api/transfer-intents");
@@ -99,14 +95,17 @@ public class TransferCommandScenarios : AtlasScenarioBase
             reservationRequired: false, allowPlayerServerCommand: false);
         ITestPlayer walter = await World.JoinPlayer("walter");
 
-        CommandResult disabled = await ExecuteAs(walter, "/server hub2");
-        Assert.False(disabled.Ok);
-        Assert.Contains("disabled", disabled.Message);
+        CommandResult disabled = await walter.ExecuteCommand("/server hub2");
+        CommandAssert.RefusedByTheHandler(disabled, "disabled");
 
         // Console callers never reach the handler: the engine-side RequiresPlayer
-        // precondition rejects them first.
+        // precondition rejects them first. The gate is still closed here, so a console call that
+        // did reach the handler would be told "disabled" (or "in-game"), not the engine's own text.
         CommandResult console = await World.ExecuteCommand("/server hub2");
-        Assert.False(console.Ok, $"console unexpectedly ok: '{console.Message}' status={console.Raw.Status}");
+        Assert.Equal(EnumCommandStatus.Error, console.Status);
+        Assert.Contains("must be player", console.Message);
+        Assert.DoesNotContain("disabled", console.Message);
+        Assert.DoesNotContain("in-game", console.Message);
 
         await NimbusHarness.ConfigureAsync(World, registry.Url, Secret,
             reservationRequired: false, allowPlayerServerCommand: true);
@@ -114,14 +113,9 @@ public class TransferCommandScenarios : AtlasScenarioBase
         // Gate open, but the target is unknown: BeginTransfer's eager snapshot check.
         // LastSnapshot survives reconfiguration (scenarios in this class share the mod
         // instance), so aim at a name no scenario ever puts in a snapshot.
-        CommandResult unknown = await ExecuteAs(walter, "/server nowhere-at-all");
-        Assert.False(unknown.Ok);
-        Assert.Contains("not in the registry snapshot", unknown.Message);
+        CommandResult unknown = await walter.ExecuteCommand("/server nowhere-at-all");
+        CommandAssert.RefusedByTheHandler(unknown, "not in the registry snapshot");
     }
-
-    /// <summary>Runs a chat command as the given player; shared with the shortcut scenarios.</summary>
-    private Task<CommandResult> ExecuteAs(ITestPlayer player, string command)
-        => NimbusHarness.ExecuteAs(World, player, command);
 
     [AtlasScenario]
     public async Task Seamless_WithoutClientAck_AbortsBeforeAnyRegistryCall()

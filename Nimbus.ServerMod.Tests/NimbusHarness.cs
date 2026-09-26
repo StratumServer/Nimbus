@@ -80,27 +80,6 @@ public sealed class NimbusHarness
             """);
     }
 
-    /// <summary>Runs a command with a player caller. World.ExecuteCommand runs as the console,
-    /// which the RequiresPlayer precondition on /server and the shortcuts rejects.</summary>
-    public static Task<CommandResult> ExecuteAs(IWorldSession world, ITestPlayer player, string command)
-    {
-        var tcs = new TaskCompletionSource<CommandResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        world.Api.ChatCommands.ExecuteUnparsed(command, new TextCommandCallingArgs
-        {
-            Caller = new Caller
-            {
-                Player = player.Player,
-                FromChatGroupId = GlobalConstants.GeneralChatGroup,
-            },
-        }, result =>
-        {
-            if (result.Status == EnumCommandStatus.Deferred) return;
-            tcs.TrySetResult(new CommandResult(
-                result.Status == EnumCommandStatus.Success, result.StatusMessage ?? "", result));
-        });
-        return tcs.Task;
-    }
-
     /// <summary>The mod's LastSeamlessCommit, empty until the target sends a commit.</summary>
     public string LastSeamlessCommit
         => (string)(modSystem.GetType().GetProperty("LastSeamlessCommit")!.GetValue(modSystem) ?? "");
