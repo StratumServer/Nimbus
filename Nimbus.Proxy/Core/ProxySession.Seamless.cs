@@ -64,11 +64,11 @@ internal sealed partial class ProxySession
         return null;
     }
 
-    // What a committed swap has to retire: the sockets, the token source and the pumps this
-    // session was running when it claimed the swap. Captured under swapLock in one go, because
-    // reading them one at a time afterwards can catch a half-installed set.
-    private readonly record struct SwapPredecessor(
-        TcpClient? Upstream, CancellationTokenSource? Cts, Task? PumpC2S, Task? PumpS2C);
+    // What a committed swap has to retire: the upstream socket and the pump generation this
+    // session was running when it claimed the swap. One field for the generation rather than its
+    // cancellation source and its two pumps separately, so there is nothing here for a caller to
+    // read apart and catch half-installed the way PumpUntilClosedAsync could (#127).
+    private readonly record struct SwapPredecessor(TcpClient? Upstream, PumpGeneration? Generation);
 
     // Refusals that apply before this session has claimed the swap, so none of them has anything
     // to undo. Returns the reason, or null to carry on to the claim.
@@ -91,7 +91,7 @@ internal sealed partial class ProxySession
         {
             if (swapping) return null;
             swapping = true;
-            return new SwapPredecessor(upstream, pumps?.Cts, pumpC2S, pumpS2C);
+            return new SwapPredecessor(upstream, pumps);
         }
     }
 
@@ -183,19 +183,17 @@ internal sealed partial class ProxySession
     // own; the stream corruption warned about below is what is actually at stake.
     private async Task RetireSwapPredecessorAsync(SwapPredecessor predecessor)
     {
-        try { if (predecessor.Cts != null) await predecessor.Cts.CancelAsync().ConfigureAwait(false); }
+        try { if (predecessor.Generation != null) await predecessor.Generation.Cts.CancelAsync().ConfigureAwait(false); }
         catch { /* the old pumps already stopped on their own */ }
         try { predecessor.Upstream?.Close(); } catch { /* the old backend already dropped the socket */ }
         try
         {
-            var waitC2S = predecessor.PumpC2S != null ? SafeAwait(predecessor.PumpC2S) : Task.CompletedTask;
-            var waitS2C = predecessor.PumpS2C != null ? SafeAwait(predecessor.PumpS2C) : Task.CompletedTask;
+            var exited = predecessor.Generation?.Exited ?? Task.CompletedTask;
             using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
             var cap = RetireWait;
             waitCts.CancelAfter(cap);
-            var waitAll = Task.WhenAll(waitC2S, waitS2C);
-            var completed = await Task.WhenAny(waitAll, Task.Delay(Timeout.Infinite, waitCts.Token)).ConfigureAwait(false);
-            if (completed != waitAll)
+            var completed = await Task.WhenAny(exited, Task.Delay(Timeout.Infinite, waitCts.Token)).ConfigureAwait(false);
+            if (completed != exited)
                 Log.Warn($"[s{Id}] seamless: old pumps did not exit within {cap.TotalSeconds:0.###}s; proceeding anyway (may cause stream corruption)");
         }
         catch { /* the wait itself failing is the same outcome as the timeout, already warned above */ }

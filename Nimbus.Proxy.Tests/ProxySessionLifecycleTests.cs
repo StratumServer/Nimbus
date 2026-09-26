@@ -544,6 +544,180 @@ public class ProxySessionLifecycleTests
         lock (kicks) Assert.Empty(kicks);
     }
 
+    // Two stragglers, not one. APredecessorPumpOutlivingItsRetirement above forces a single pump
+    // to outlive its retirement and shows the new pair is left alone. That alone does not pin the
+    // #127 snapshot being atomic: with one straggler, PumpUntilClosedAsync's re-snapshot always
+    // lands on a `pumps` that has been fully settled by the time it is read. The interleaving that
+    // used to matter needs a second straggler queued up behind the first, so that the loop's
+    // re-snapshot can land in the narrow gap right after a new generation is published but before
+    // its predecessor (a *different* straggler than the one the loop is still waiting on) is done.
+    // AfterPumpsPublished and AfterLoopSnapshot pin exactly that gap.
+    [Fact]
+    public async Task TwoStragglersAcrossTwoSwaps_TheLoopsSnapshotStaysAtomic()
+    {
+        var hold0 = new TaskCompletionSource();
+        var registry = new FakeRegistryClient { HoldMint = hold0 };
+        using var harness = await SessionHarness.StartAsync(cfg =>
+        {
+            cfg.Transfers.AllowSeamless = true;
+            cfg.Transfers.EnableUnsafeSeamlessSplice = true;
+        }, registry, "hub");
+        using var elsewhere = SessionHarness.ExtraBackend();
+        harness.Session.RetireWait = TimeSpan.FromMilliseconds(250);
+
+        // Step 1: the c->s pump mints the initial reservation inline and parks on hold0 (straggler
+        // #1), same setup as the single-straggler test above.
+        await harness.SendAsync(ClientFrames.LoginTokenQuery());
+        await SessionHarness.WaitForAsync(() => harness.Backends["hub"].Connections > 0,
+            "the session never reached the backend");
+        await harness.SendAsync([.. ClientFrames.Identification("uid-1", "alice"), .. ClientFrames.ClientPlaying()]);
+        await SessionHarness.WaitForAsync(() => registry.MintsSoFar().Count == 1, "the first mint never happened");
+        await SessionHarness.WaitForAsync(() => harness.Session.Phase == SessionState.Phase.Ready,
+            $"the session never reached Ready (phase={harness.Session.Phase})");
+
+        // Step 2: swap 1. The retirement wait cannot free straggler #1 (parked in MintReservationAsync,
+        // not listening to the cancellation), so it gives up and installs the new pair anyway. The
+        // outer PumpUntilClosedAsync loop is still awaiting straggler #1's generation, unaware.
+        Assert.Null(await harness.Session.RequestSeamlessAsync(harness.Endpoint("hub"), failOnRegistryError: false));
+
+        // Step 3: a second chunk from the client lands on the new pair's c->s pump.
+        // initialReservationState is still 0 (straggler #1 never got to set it), so this pump also
+        // tries to mint and parks on hold1 (straggler #2).
+        var hold1 = new TaskCompletionSource();
+        registry.HoldMint = hold1;
+        await harness.SendAsync(ChatFrames.Chatline("keep the session busy"));
+        await SessionHarness.WaitForAsync(() => registry.MintsSoFar().Count == 2, "the second mint never happened");
+
+        // Step 4: swap 2, timed to release straggler #1 exactly when swap 2 has just published its
+        // new generation, so the loop's re-snapshot (if it were not atomic) would have a stale
+        // pairing to land on.
+        var snapshotHit = new ManualResetEventSlim(false);
+        bool inGapSnapshotObserved = false;
+        harness.Session.AfterPumpsPublished = () =>
+        {
+            harness.Session.AfterLoopSnapshot = () => snapshotHit.Set();
+            hold0.SetResult(); // free straggler #1; its generation can now finish exiting
+            inGapSnapshotObserved = snapshotHit.Wait(TimeSpan.FromSeconds(10));
+        };
+        Assert.Null(await harness.Session.RequestSeamlessAsync(elsewhere.Endpoint("elsewhere"), failOnRegistryError: false));
+        Assert.True(inGapSnapshotObserved, "the loop never re-snapshotted while swap 2's predecessor was still a straggler");
+
+        // Step 5: free straggler #2 too and confirm the live pair (over `elsewhere` now) was never
+        // torn down by either straggler finishing late. Checking this needs a bounded wait, not an
+        // immediate read: on the pre-fix snapshot the loop tears the session down only once
+        // straggler #2's own exit lands, which is a hop or two of continuations after
+        // hold1.SetResult() returns, so an immediate Assert.False(harness.Running.IsCompleted)
+        // passes on both the fix and the bug it is meant to catch.
+        hold1.SetResult();
+        var raced = await Task.WhenAny(harness.Running, Task.Delay(TimeSpan.FromSeconds(2)));
+        Assert.NotSame(harness.Running, raced);
+        await harness.SendAsync(ChatFrames.Chatline("still alive after both swaps"));
+        Assert.True(await WaitForSent(elsewhere, "still alive after both swaps"));
+        Assert.False(harness.Running.IsCompleted);
+    }
+
+    // A buffer size the validator lets through (it only enforces a floor of 1024) but that makes
+    // `new byte[cfg.Advanced.BufferSize]` throw before PumpAsync's try ever starts, every time.
+    // A guard on the exit signalling, not a reproduction of a published bug: the generation's
+    // Exited is completed from each pump task's completion, so a fault before PumpAsync's own
+    // try has to complete it too, or PumpUntilClosedAsync would wait on that generation's Exited
+    // regardless of Close(). The wait for AfterLoopSnapshot is not incidental: it pins the
+    // assertion to after the loop has already committed to awaiting this generation's Exited, so
+    // Close() cannot instead win the race against the loop's own `!closed` check and exit the
+    // session trivially before either matters.
+    [Fact]
+    public async Task ABufferAllocationFault_StillEndsTheSession()
+    {
+        using var harness = await SessionHarness.StartAsync(cfg => cfg.Advanced.BufferSize = int.MaxValue, "hub");
+        var loopEntered = new ManualResetEventSlim(false);
+        harness.Session.AfterLoopSnapshot = () => loopEntered.Set();
+        Assert.True(loopEntered.Wait(TimeSpan.FromSeconds(5)), "PumpUntilClosedAsync never reached its first snapshot");
+
+        harness.Session.Close();
+
+        var completed = await Task.WhenAny(harness.Running, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(harness.Running, completed);
+    }
+
+    // A guard on the exit signalling, not a reproduction of a published bug. GetStream() now runs
+    // ahead of `pumps = gen` so that once a generation is published both of its pumps are
+    // guaranteed to start, and each one's task completion feeds the generation's Exited. Race a
+    // Close() into the gap right after publication, using the same predecessor-outliving-retirement
+    // setup as the tests above, and confirm the session still ends rather than leaving a published
+    // generation whose Exited can never complete.
+    [Fact]
+    public async Task ACloseRacingStartPumps_StillEndsTheSession()
+    {
+        var hold = new TaskCompletionSource();
+        var registry = new FakeRegistryClient { HoldMint = hold };
+        using var harness = await SessionHarness.StartAsync(cfg =>
+        {
+            cfg.Transfers.AllowSeamless = true;
+            cfg.Transfers.EnableUnsafeSeamlessSplice = true;
+        }, registry, "hub");
+        using var elsewhere = SessionHarness.ExtraBackend();
+        harness.Session.RetireWait = TimeSpan.FromMilliseconds(250);
+
+        await harness.SendAsync(ClientFrames.LoginTokenQuery());
+        await SessionHarness.WaitForAsync(() => harness.Backends["hub"].Connections > 0,
+            "the session never reached the backend");
+        await harness.SendAsync([.. ClientFrames.Identification("uid-1", "alice"), .. ClientFrames.ClientPlaying()]);
+        await SessionHarness.WaitForAsync(() => registry.MintsSoFar().Count == 1,
+            "the c->s pump never reached the reservation mint");
+        await SessionHarness.WaitForAsync(() => harness.Session.Phase == SessionState.Phase.Ready,
+            $"the session never reached Ready (phase={harness.Session.Phase})");
+
+        // The swap cannot retire the straggler, so it installs the new pair anyway. Release the
+        // straggler and close the session from inside AfterPumpsPublished, right after the new
+        // generation goes live but before this call is known to have finished starting both pumps.
+        var snapshotHit = new ManualResetEventSlim(false);
+        harness.Session.AfterPumpsPublished = () =>
+        {
+            harness.Session.AfterLoopSnapshot = () => snapshotHit.Set();
+            hold.SetResult();
+            snapshotHit.Wait(TimeSpan.FromSeconds(10));
+            harness.Session.Close();
+        };
+        await harness.Session.RequestSeamlessAsync(elsewhere.Endpoint("elsewhere"), failOnRegistryError: false);
+
+        var completed = await Task.WhenAny(harness.Running, Task.Delay(TimeSpan.FromSeconds(3)));
+        Assert.Same(harness.Running, completed);
+    }
+
+    // A second #127-shaped gap, this one inside the loop itself rather than between StartPumps and
+    // the loop: `swapping` and `pumps` are two separate volatile reads, and a swap's own two writes
+    // (`pumps = gen` then `swapping = false`) can land in the window between them. Reading `pumps`
+    // first and `swapping` second (the pre-fix order) lets that window pair a stale `pumps` read
+    // with a fresh `swapping` read and break on a session that just moved to its new backend
+    // without trouble; reading `swapping` first closes it, because a swap only clears `swapping`
+    // after publishing the new generation. AfterSwapFlagRead pins the delay to right after the
+    // `swapping` read, standing in for the loop thread being preempted there.
+    [Fact]
+    public async Task ASwapCompletingBetweenTheLoopsTwoReads_DoesNotTearDownTheSession()
+    {
+        using var harness = await SessionHarness.StartAsync(cfg =>
+        {
+            cfg.Transfers.AllowSeamless = true;
+            cfg.Transfers.EnableUnsafeSeamlessSplice = true;
+        }, "hub");
+        using var elsewhere = SessionHarness.ExtraBackend();
+        await harness.IdentifyAsync();
+        await SessionHarness.WaitForAsync(() => harness.Backends["hub"].Sent("uid-1"), "the join never reached hub");
+
+        var fired = 0;
+        harness.Session.AfterSwapFlagRead = () =>
+        {
+            if (Interlocked.Exchange(ref fired, 1) == 0) Thread.Sleep(300);
+        };
+
+        Assert.Null(await harness.Session.RequestSeamlessAsync(elsewhere.Endpoint("elsewhere"), failOnRegistryError: false));
+
+        var completed = await Task.WhenAny(harness.Running, Task.Delay(TimeSpan.FromSeconds(1.5)));
+        Assert.NotSame(harness.Running, completed);
+        await harness.SendAsync(ChatFrames.Chatline("still alive after the swap"));
+        Assert.True(await WaitForSent(elsewhere, "still alive after the swap"));
+    }
+
     private static async Task<bool> WaitForSent(RecordingBackend backend, string needle, int millis = 8000)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(millis);

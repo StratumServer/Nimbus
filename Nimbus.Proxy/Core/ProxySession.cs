@@ -41,9 +41,19 @@ internal sealed partial class ProxySession : IPlayer
     private BackendEndpoint? currentBackend;
     // The pump pair currently installed. Replaced wholesale by StartPumps rather than reset in
     // place, so a pump started under a previous pair can never reach this one. See PumpGeneration.
+    // A single read of this field is the whole snapshot a reader needs: generation, cancellation
+    // source and both exit signals, all reached through the one object that read returns.
     private volatile PumpGeneration? pumps;
-    private Task? pumpC2S;
-    private Task? pumpS2C;
+
+    // Test seams only, both no-ops in production (null, invoked with `?.Invoke()`). They mark the
+    // two moments a regression for #127's two-straggler interleaving needs to pin exactly: the new
+    // generation going live in StartPumps, and the loop re-snapshotting `pumps` in
+    // PumpUntilClosedAsync. See ProxySessionLifecycleTests.
+    internal Action? AfterPumpsPublished;
+    internal volatile Action? AfterLoopSnapshot;
+    // Third seam: marks the gap between the loop's two post-await reads (`swapping` then
+    // `pumps`), which is where a swap racing to completion could still be observed torn apart.
+    internal volatile Action? AfterSwapFlagRead;
 
     private byte[]? capturedIdentification;
     private string? capturedPlayerUid;
@@ -683,18 +693,30 @@ internal sealed partial class ProxySession : IPlayer
     {
         while (!sessionStopToken.IsCancellationRequested && !closed)
         {
-            // Read before the tasks, which is the order StartPumps installs them in, so a pair
-            // caught half-installed reads as a generation change rather than as the current one.
-            var awaited = pumps;
-            await Task.WhenAll(SafeAwait(pumpC2S!), SafeAwait(pumpS2C!)).ConfigureAwait(false);
+            // One read of the field, and everything below comes off the object that read handed
+            // back: its own generation, its own exit signal. Nothing here reads a second field
+            // that StartPumps could still be in the middle of assigning (#127).
+            var gen = pumps;
+            AfterLoopSnapshot?.Invoke();
+            await gen!.Exited.ConfigureAwait(false);
+
+            // Read `swapping` before re-reading `pumps`, the reverse of the order a swap
+            // publishes them in (StartPumps sets pumps, then the swap clears swapping). A swap
+            // that retired `gen` always claimed `swapping` before it moved on, so a false read
+            // here can only happen after the new generation is already published; reading them
+            // in publish order instead would let this thread be preempted between the two reads
+            // and pair a stale `pumps` read (the retired generation) with the just-cleared flag,
+            // tearing down a session that moved to the new backend without trouble (#127).
+            var wasSwapping = swapping;
+            AfterSwapFlagRead?.Invoke();
 
             // A swap installed a new pair while this was waiting. That normally happens under
-            // `swapping` below, but a predecessor that outlived the retirement cap finishes long
+            // `swapping` above, but a predecessor that outlived the retirement cap finishes long
             // after the swap is done, and what finished then is the old pair: the session carries
             // on waiting on the one that replaced it rather than tearing down a live player.
-            if (awaited != pumps) continue;
+            if (gen != pumps) continue;
 
-            if (!swapping) break;  // pumps ended because of client/upstream close, not a swap
+            if (!wasSwapping) break;  // pumps ended because of client/upstream close, not a swap
 
             // The swap routine installs the new pumps before it clears this flag.
             while (swapping && !sessionStopToken.IsCancellationRequested && !closed)
@@ -940,17 +962,33 @@ internal sealed partial class ProxySession : IPlayer
     internal static PumpExitOrigin EndpointThatEnded(bool isC2S, bool onRead)
         => isC2S == onRead ? PumpExitOrigin.Client : PumpExitOrigin.Backend;
 
-    // One pump pair's own cancellation source and its own first-exit claim. Per pair and never
-    // reset, because a retired predecessor can outlive the swap that replaced it: the retirement
-    // wait is capped, and an old c->s pump parked in InspectClientChunkAsync waits on
-    // sessionStopToken rather than on this source. It must not be able to claim the exit of the
-    // pair that took its place, nor cancel that pair's source, so there is nothing shared between
-    // the two pairs to race over.
-    private sealed class PumpGeneration(CancellationTokenSource cts)
+    // One pump pair's own cancellation source, its own first-exit claim and its own exit signal.
+    // Per pair and never reset, because a retired predecessor can outlive the swap that replaced
+    // it: the retirement wait is capped, and an old c->s pump parked in InspectClientChunkAsync
+    // waits on sessionStopToken rather than on this source. It must not be able to claim the exit
+    // of the pair that took its place, nor cancel that pair's source, so there is nothing shared
+    // between the two pairs to race over.
+    //
+    // The two exit signals live here, rather than in fields PumpUntilClosedAsync or a swap would
+    // read next to `pumps`, so that a single read of the volatile `pumps` field is the whole
+    // snapshot a reader needs: this object's own generation and its own two pumps, never another
+    // pair's (#127).
+    private sealed class PumpGeneration
     {
         private int firstExit;
+        private readonly TaskCompletionSource c2sExited = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource s2cExited = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public CancellationTokenSource Cts { get; } = cts;
+        public PumpGeneration(CancellationTokenSource cts)
+        {
+            Cts = cts;
+            Exited = Task.WhenAll(c2sExited.Task, s2cExited.Task);
+        }
+
+        public CancellationTokenSource Cts { get; }
+
+        // Completes once both of this pair's pumps have exited. A reader awaits this alone.
+        public Task Exited { get; }
 
         // True for the one pump of this pair that gets to say why the pair ended. The sibling
         // exits through the same path once the cancellation below reaches it and would otherwise
@@ -958,6 +996,13 @@ internal sealed partial class ProxySession : IPlayer
         // and the loser reports nothing.
         public bool TryClaimExit(PumpExitOrigin origin)
             => Interlocked.CompareExchange(ref firstExit, (int)origin, 0) == 0;
+
+        // Called from the continuation StartPumps attaches to each pump task, once that task has
+        // finished, which is after PumpAsync's finally (and the RecordPumpExit call inside it) has
+        // already decided what the exit means. RunContinuationsAsynchronously above keeps a
+        // waiter's continuation from running inline on the thread that completes this TCS, rather
+        // than the other way round.
+        public void MarkExited(bool isC2S) => (isC2S ? c2sExited : s2cExited).TrySetResult();
     }
 
     private void StartPumps()
@@ -965,9 +1010,29 @@ internal sealed partial class ProxySession : IPlayer
         // A swap installs a fresh pair, and the fresh pair gets a fresh generation: nothing of the
         // previous pair's exit is carried over and nothing of it is left for a straggler to reach.
         var gen = new PumpGeneration(CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken));
+        // Fetched before the generation is published, not after: a Close() racing this call closes
+        // `upstream`, and GetStream() on a closed TcpClient throws ObjectDisposedException. Exited is
+        // completed from the continuation on each pump task, so a generation published with a pump
+        // that never started would have nothing to complete it and PumpUntilClosedAsync would wait
+        // on it forever. Fetching first means a published generation always starts both pumps (#127).
+        var upStream = upstream!.GetStream();
+        // Published before either pump exists. RecordPumpExit's `gen == pumps` check depends on
+        // this: PumpAsync runs synchronously up to its first await, so a pump can exit inline, from
+        // this very call, before StartPumps returns, and that exit has to see its own generation
+        // already installed.
         pumps = gen;
-        pumpC2S = PumpAsync("c->s", clientStream, upstream!.GetStream(), sniffC2S, isC2S: true, gen);
-        pumpS2C = PumpAsync("s->c", upstream.GetStream(), clientStream, sniffS2C, isC2S: false, gen);
+        AfterPumpsPublished?.Invoke();
+        var c2s = PumpAsync("c->s", clientStream, upStream, sniffC2S, isC2S: true, gen);
+        var s2c = PumpAsync("s->c", upStream, clientStream, sniffS2C, isC2S: false, gen);
+        // The signal is tied to the pump task's own completion, not to a call inside its finally:
+        // a fault before the try (e.g. the buffer allocation) or one thrown by RecordPumpExit
+        // itself would otherwise skip the finally's call and hang PumpUntilClosedAsync forever,
+        // since nothing else wakes it. A continuation still runs after the finally, so the
+        // "signalled after RecordPumpExit has decided the exit's meaning" ordering still holds.
+        c2s.ContinueWith(static (_, state) => ((PumpGeneration)state!).MarkExited(true), gen,
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        s2c.ContinueWith(static (_, state) => ((PumpGeneration)state!).MarkExited(false), gen,
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     // The three exceptions a dying stream throws at a pump. Cancellation, a broken socket and a
@@ -1029,6 +1094,11 @@ internal sealed partial class ProxySession : IPlayer
             // whatever endpoint the break named.
             if (token.IsCancellationRequested) origin = PumpExitOrigin.Cancelled;
             RecordPumpExit(label, isC2S, total, origin, gen);
+            // MarkExited itself is signalled from StartPumps' continuation on this task, not from
+            // here: that also covers a fault this finally throws (RecordPumpExit included), which
+            // would otherwise skip a call made from inside it. It still only fires once this
+            // finally returns, so the kick and the cancellation of the sibling (if any) are
+            // already decided by the time a reader waiting on Exited wakes up.
         }
     }
 
@@ -1133,8 +1203,8 @@ internal sealed partial class ProxySession : IPlayer
         return null;
     }
 
-    // Await a task purely to know it has finished. Callers use this on pumps and on the forged
-    // disconnect, both of which already log and handle their own failures on the way out.
+    // Await a task purely to know it has finished. The only caller left is the forged disconnect,
+    // which already logs and handles its own failure on the way out.
     private static async Task SafeAwait(Task t) { try { await t.ConfigureAwait(false); } catch { /* the task reported for itself */ } }
 
     private static string FormatDuration(TimeSpan t)
