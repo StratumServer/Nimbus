@@ -12,7 +12,7 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
     <!-- Emits the opencover report the sonar workflow feeds to SonarCloud. -->
     <PackageReference Include="coverlet.collector" Version="10.0.1" />
-    <PackageReference Include="Pixnop.Atlas.XUnit" Version="0.13.1" />
+    <PackageReference Include="Pixnop.Atlas.XUnit" Version="0.14.1" />
   </ItemGroup>
 
   <ItemGroup>
