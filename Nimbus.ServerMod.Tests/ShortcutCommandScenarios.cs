@@ -16,6 +16,19 @@ namespace Nimbus.ServerMod.Tests;
 /// filled, so scenarios that need a live target rewire the mod to a fake registry first.
 /// </summary>
 [AtlasDataFiles("data/shortcuts/nimbus-server.json", TargetPath = "ModConfig")]
+[AtlasWorld(StrictBootDiagnostics = true)]
+// Deliberate: the seeded config's "tp" shortcut collides with vanilla /tp on purpose
+// (Shortcut_DoesNotShadowAVanillaCommand asserts on the resulting registration).
+[AtlasAllowBootDiagnostic("shortcut '/tp' already exists as another command, skipping", Level = "Warning", Source = "unknown")]
+// Deliberate: the seeded config's "broken" shortcut has no Targets on purpose, so a shortcut
+// with nothing usable is skipped rather than registered half-working
+// (Shortcut_BootsWithTheFixtureWarnings asserts on that).
+[AtlasAllowBootDiagnostic("ignoring shortcut command with no name or no targets", Level = "Warning", Source = "unknown")]
+// Deliberate: the seeded config points the registry at a dead port on purpose (see the
+// class doc comment above); in practice the first heartbeat attempt fails during boot. The
+// pattern is Nimbus's own message start, so it accepts any failure of that first round, not
+// only the dead port; HeartbeatScenarios checks the payload after boot.
+[AtlasAllowBootDiagnostic(@"^Nimbus heartbeat failed \(1x\):", Level = "Warning", Source = "unknown")]
 public class ShortcutCommandScenarios : AtlasScenarioBase
 {
     private const string Secret = "shortcut-secret";
@@ -54,6 +67,29 @@ public class ShortcutCommandScenarios : AtlasScenarioBase
         Assert.Equal(player.Player.PlayerUID, body.RootElement.GetProperty("PlayerUid").GetString());
         Assert.Equal(target, body.RootElement.GetProperty("TargetServerId").GetString());
         Assert.Equal("player:" + player.Player.PlayerUID, body.RootElement.GetProperty("RequestedBy").GetString());
+    }
+
+    [AtlasScenario]
+    public async Task Shortcut_BootsWithTheFixtureWarnings()
+    {
+        // World.BootDiagnostics keeps growing while the class host lives, scenario time included,
+        // so this must hold wherever xUnit happens to run it in the class: no total count, and no
+        // "exactly once" for anything later scenarios can log again.
+        // The two registration warnings are only ever logged while the commands are registered
+        // at boot, so exactly one entry each is stable.
+        foreach (string fragment in new[]
+        {
+            "shortcut '/tp' already exists as another command, skipping",
+            "ignoring shortcut command with no name or no targets",
+        })
+            Assert.Single(World.BootDiagnostics, e => e.Message.Contains(fragment));
+
+        // The heartbeat failure comes from a background loop, so wait for it rather than assume
+        // it landed before the world was ready; later scenarios may add more of the same entry.
+        await World.Until(() => World.BootDiagnostics.Any(e => e.Message.Contains("Nimbus heartbeat failed (1x):")));
+
+        // The unusable shortcut was skipped, not registered half-working.
+        Assert.Null(World.Api.ChatCommands.Get("broken"));
     }
 
     [AtlasScenario]

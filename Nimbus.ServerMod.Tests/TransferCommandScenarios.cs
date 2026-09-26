@@ -13,6 +13,8 @@ namespace Nimbus.ServerMod.Tests;
 /// intent POST, and the seamless prepare/ack timeout. The fake registry serves the
 /// snapshot the mod polls through its heartbeat loop (1s interval in test config).
 /// </summary>
+[AtlasWorld(StrictBootDiagnostics = true)]
+[AtlasAllowBootDiagnostic(NimbusHarness.UnconfiguredBootWarning, Level = "Warning", Source = "unknown")]
 public class TransferCommandScenarios : AtlasScenarioBase
 {
     private const string Secret = "transfer-secret";

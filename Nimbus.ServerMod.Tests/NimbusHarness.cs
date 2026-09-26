@@ -18,6 +18,14 @@ namespace Nimbus.ServerMod.Tests;
 /// </summary>
 public sealed class NimbusHarness
 {
+    /// <summary>The warning the mod logs, through api.Logger (so Source is "unknown"), when it boots
+    /// enabled on a data path whose nimbus-server.json has none of its required fields: the mod's own
+    /// WarnUnconfigured. Every class that boots without a config of its own allows exactly this,
+    /// field list included, through [AtlasAllowBootDiagnostic]; a class whose fixture is complete
+    /// does not, so the warning would fail its boot.</summary>
+    public const string UnconfiguredBootWarning =
+        @"^Nimbus server mod is enabled but nimbus-server\.json still needs: ServerId, RegistryUrl, PublicHost, SharedSecret\. ";
+
     private readonly ModSystem modSystem;
 
     private NimbusHarness(ModSystem modSystem) => this.modSystem = modSystem;
