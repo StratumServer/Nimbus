@@ -39,7 +39,9 @@ internal sealed partial class ProxySession : IPlayer
 
     private TcpClient? upstream;
     private BackendEndpoint? currentBackend;
-    private CancellationTokenSource? pumpCts;
+    // The pump pair currently installed. Replaced wholesale by StartPumps rather than reset in
+    // place, so a pump started under a previous pair can never reach this one. See PumpGeneration.
+    private volatile PumpGeneration? pumps;
     private Task? pumpC2S;
     private Task? pumpS2C;
 
@@ -231,7 +233,7 @@ internal sealed partial class ProxySession : IPlayer
         // Every step here is best-effort: Close races the pumps and the teardown in RunAsync's
         // finally, so any of the three can already be disposed. Whoever gets there first wins and
         // the loser has nothing left to do.
-        try { pumpCts?.Cancel(); } catch { /* already disposed by an earlier teardown */ }
+        try { pumps?.Cts.Cancel(); } catch { /* already disposed by an earlier teardown */ }
         try { upstream?.Close(); } catch { /* backend socket may be gone already */ }
         try { client.Close(); } catch { /* the client may have dropped first */ }
     }
@@ -681,7 +683,17 @@ internal sealed partial class ProxySession : IPlayer
     {
         while (!sessionStopToken.IsCancellationRequested && !closed)
         {
+            // Read before the tasks, which is the order StartPumps installs them in, so a pair
+            // caught half-installed reads as a generation change rather than as the current one.
+            var awaited = pumps;
             await Task.WhenAll(SafeAwait(pumpC2S!), SafeAwait(pumpS2C!)).ConfigureAwait(false);
+
+            // A swap installed a new pair while this was waiting. That normally happens under
+            // `swapping` below, but a predecessor that outlived the retirement cap finishes long
+            // after the swap is done, and what finished then is the old pair: the session carries
+            // on waiting on the one that replaced it rather than tearing down a live player.
+            if (awaited != pumps) continue;
+
             if (!swapping) break;  // pumps ended because of client/upstream close, not a swap
 
             // The swap routine installs the new pumps before it clears this flag.
@@ -908,11 +920,54 @@ internal sealed partial class ProxySession : IPlayer
         }
     }
 
+    // Which endpoint ended a pump. Not the same question as which direction the pump ran in: a
+    // pump ends on a read from one end or a write to the other, so a backend reset ends the c->s
+    // pump on its write exactly as readily as it ends s->c on its read.
+    internal enum PumpExitOrigin
+    {
+        // Nothing about the wire: this pump only stopped because its own source was cancelled,
+        // which is a Close(), a swap retiring the pair, or the sibling's claim reaching it.
+        // Zero so that it can never be written into the per-pair claim below.
+        Cancelled = 0,
+        Client,
+        Backend,
+        Proxy,      // the proxy itself refused to carry the chunk: gate rejection or a failed reservation
+    }
+
+    // Which endpoint a read or write failure belongs to. c->s reads the client and writes the
+    // backend, s->c has the two the other way round, which is the whole of the mapping. Kept pure
+    // and separate from the pump so the four cases can be checked without a socket.
+    internal static PumpExitOrigin EndpointThatEnded(bool isC2S, bool onRead)
+        => isC2S == onRead ? PumpExitOrigin.Client : PumpExitOrigin.Backend;
+
+    // One pump pair's own cancellation source and its own first-exit claim. Per pair and never
+    // reset, because a retired predecessor can outlive the swap that replaced it: the retirement
+    // wait is capped, and an old c->s pump parked in InspectClientChunkAsync waits on
+    // sessionStopToken rather than on this source. It must not be able to claim the exit of the
+    // pair that took its place, nor cancel that pair's source, so there is nothing shared between
+    // the two pairs to race over.
+    private sealed class PumpGeneration(CancellationTokenSource cts)
+    {
+        private int firstExit;
+
+        public CancellationTokenSource Cts { get; } = cts;
+
+        // True for the one pump of this pair that gets to say why the pair ended. The sibling
+        // exits through the same path once the cancellation below reaches it and would otherwise
+        // look exactly like its own end of the wire going away, so the claim is a compare-exchange
+        // and the loser reports nothing.
+        public bool TryClaimExit(PumpExitOrigin origin)
+            => Interlocked.CompareExchange(ref firstExit, (int)origin, 0) == 0;
+    }
+
     private void StartPumps()
     {
-        pumpCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
-        pumpC2S = PumpAsync("c->s", clientStream, upstream!.GetStream(), sniffC2S, isC2S: true, pumpCts.Token);
-        pumpS2C = PumpAsync("s->c", upstream.GetStream(), clientStream, sniffS2C, isC2S: false, pumpCts.Token);
+        // A swap installs a fresh pair, and the fresh pair gets a fresh generation: nothing of the
+        // previous pair's exit is carried over and nothing of it is left for a straggler to reach.
+        var gen = new PumpGeneration(CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken));
+        pumps = gen;
+        pumpC2S = PumpAsync("c->s", clientStream, upstream!.GetStream(), sniffC2S, isC2S: true, gen);
+        pumpS2C = PumpAsync("s->c", upstream.GetStream(), clientStream, sniffS2C, isC2S: false, gen);
     }
 
     // The three exceptions a dying stream throws at a pump. Cancellation, a broken socket and a
@@ -929,18 +984,22 @@ internal sealed partial class ProxySession : IPlayer
     // Both awaits below are on the stream calls directly rather than behind helpers. Wrapping
     // either one would add an async state machine per chunk on a path that runs for every packet
     // of every player, which is the same reasoning that keeps BanStore.FindBlocking a loop.
-    private async Task PumpAsync(string label, NetworkStream from, NetworkStream to, FrameSniffer? sniffer, bool isC2S, CancellationToken token)
+    private async Task PumpAsync(string label, NetworkStream from, NetworkStream to, FrameSniffer? sniffer, bool isC2S, PumpGeneration gen)
     {
+        var token = gen.Cts.Token;
         var buf = new byte[cfg.Advanced.BufferSize];
         long total = 0;
+        // Stays Cancelled for the loop condition falling through, which only happens on a
+        // cancellation; every other way out names the endpoint it came from.
+        var origin = PumpExitOrigin.Cancelled;
         try
         {
             while (!token.IsCancellationRequested)
             {
                 int read;
                 try { read = await from.ReadAsync(buf.AsMemory(0, buf.Length), token).ConfigureAwait(false); }
-                catch (Exception ex) when (IsStreamGone(ex)) { break; }
-                if (read <= 0) break;
+                catch (Exception ex) when (IsStreamGone(ex)) { origin = EndpointThatEnded(isC2S, onRead: true); break; }
+                if (read <= 0) { origin = EndpointThatEnded(isC2S, onRead: true); break; }
 
                 total += read;
                 var chunk = buf.AsMemory(0, read);
@@ -948,10 +1007,13 @@ internal sealed partial class ProxySession : IPlayer
                 // c->s is inspected before the bytes are forwarded, so the gates and the initial
                 // reservation get to act on the frame before any backend sees it.
                 if (isC2S && !await InspectClientChunkAsync(sniffer, chunk).ConfigureAwait(false))
+                {
+                    origin = PumpExitOrigin.Proxy;
                     break;
+                }
 
                 try { await to.WriteAsync(chunk, token).ConfigureAwait(false); }
-                catch (Exception ex) when (IsStreamGone(ex)) { break; }
+                catch (Exception ex) when (IsStreamGone(ex)) { origin = EndpointThatEnded(isC2S, onRead: false); break; }
 
                 // s->c is inspected after the forward instead: nothing here gates it, so the
                 // player's frame is not made to wait on the parse.
@@ -961,7 +1023,12 @@ internal sealed partial class ProxySession : IPlayer
         }
         finally
         {
-            RecordPumpExit(label, isC2S, total);
+            // IsStreamGone also matches the OperationCanceledException a cancelled read or write
+            // throws, and a socket torn down by our own Close() throws IOException just as a dead
+            // peer does. Neither says anything about who went away, so a cancelled source outranks
+            // whatever endpoint the break named.
+            if (token.IsCancellationRequested) origin = PumpExitOrigin.Cancelled;
+            RecordPumpExit(label, isC2S, total, origin, gen);
         }
     }
 
@@ -1001,7 +1068,7 @@ internal sealed partial class ProxySession : IPlayer
 
     // Close out one pump: bill the bytes to its direction and work out whether its exit means the
     // backend dropped a live player. Runs from PumpAsync's finally, so it runs on every exit path.
-    private void RecordPumpExit(string label, bool isC2S, long total)
+    private void RecordPumpExit(string label, bool isC2S, long total, PumpExitOrigin origin, PumpGeneration gen)
     {
         if (isC2S)
         {
@@ -1013,16 +1080,33 @@ internal sealed partial class ProxySession : IPlayer
             Interlocked.Add(ref s2cBytes, total);
             ProxyMetrics.AddBytes(0, total);
         }
-        Log.Trace($"[s{Id}] {label} pump exited ({total} bytes this segment)");
+        Log.Trace($"[s{Id}] {label} pump exited ({total} bytes this segment, origin={origin})");
 
-        // s->c pump exiting without our own Close() or a swap in flight means the backend
-        // dropped the connection while the player was live.
-        if (!isC2S && !closed && !swapping)
+        // A pump that only stopped because its source was cancelled has nothing to report: it is
+        // the loser of the race below, or a Close(), or a swap retiring this pair.
+        if (origin == PumpExitOrigin.Cancelled) return;
+
+        // Only one of the two can be the reason this pair is ending, and that one is decided per
+        // pair. A predecessor that outlived its retirement therefore lands on its own generation
+        // here and can neither speak for the pair that replaced it nor cancel it.
+        if (!gen.TryClaimExit(origin)) return;
+
+        // A backend that went away while the player was live is a kick. Only the pair currently
+        // installed may say so: past the retirement cap `swapping` is already false again, so a
+        // late predecessor would otherwise blame the backend for the socket its own swap closed.
+        if (origin == PumpExitOrigin.Backend && gen == pumps && !closed && !swapping)
         {
             var ph = Phase;
             if (ph == SessionState.Phase.Ready || ph == SessionState.Phase.Disconnecting)
                 kickedByBackend = true;
         }
+
+        // Whichever endpoint ended first ends the session, so stop the sibling instead of leaving
+        // it blocked on a read that only returns when the far end notices on its own. Until it did,
+        // the session sat in the table and PlayerDisconnectEvent had not fired, so `list` and the
+        // metrics counted a player who had already gone (#89).
+        if (!closed && !swapping)
+            try { gen.Cts.Cancel(); } catch { /* teardown disposed it first */ }
     }
 
     private async Task<string?> EnsureInitialReservationAsync(BackendEndpoint? target, string reason)

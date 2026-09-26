@@ -91,7 +91,7 @@ internal sealed partial class ProxySession
         {
             if (swapping) return null;
             swapping = true;
-            return new SwapPredecessor(upstream, pumpCts, pumpC2S, pumpS2C);
+            return new SwapPredecessor(upstream, pumps?.Cts, pumpC2S, pumpS2C);
         }
     }
 
@@ -168,9 +168,19 @@ internal sealed partial class ProxySession
         return (newUp, null);
     }
 
+    // How long a committed swap gives the old pumps before it carries on regardless. An old c->s
+    // pump can be parked in InspectClientChunkAsync on a registry that is not answering, which
+    // waits on sessionStopToken and not on the predecessor source, so this cap is reachable in
+    // production. Per session and not static: a test turning it down would otherwise shorten it
+    // for every other session in the process, and the suites run in parallel. Not an operator
+    // knob either, so it has no config entry; only the test for what happens past the cap sets it.
+    internal TimeSpan RetireWait { get; set; } = TimeSpan.FromSeconds(5);
+
     // Stop the old pumps before the new backend writes to the client stream. Past this point the
     // swap is committed, so the old side is torn down whatever it says and none of these steps
-    // can refuse: the worst case is the 5s cap expiring, which is warned about and carried on from.
+    // can refuse: the worst case is the cap expiring, which is warned about and carried on from.
+    // A straggler that outlives it is harmless to the new pair, which owns a generation of its
+    // own; the stream corruption warned about below is what is actually at stake.
     private async Task RetireSwapPredecessorAsync(SwapPredecessor predecessor)
     {
         try { if (predecessor.Cts != null) await predecessor.Cts.CancelAsync().ConfigureAwait(false); }
@@ -181,11 +191,12 @@ internal sealed partial class ProxySession
             var waitC2S = predecessor.PumpC2S != null ? SafeAwait(predecessor.PumpC2S) : Task.CompletedTask;
             var waitS2C = predecessor.PumpS2C != null ? SafeAwait(predecessor.PumpS2C) : Task.CompletedTask;
             using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(sessionStopToken);
-            waitCts.CancelAfter(TimeSpan.FromSeconds(5));
+            var cap = RetireWait;
+            waitCts.CancelAfter(cap);
             var waitAll = Task.WhenAll(waitC2S, waitS2C);
             var completed = await Task.WhenAny(waitAll, Task.Delay(Timeout.Infinite, waitCts.Token)).ConfigureAwait(false);
             if (completed != waitAll)
-                Log.Warn($"[s{Id}] seamless: old pumps did not exit within 5s; proceeding anyway (may cause stream corruption)");
+                Log.Warn($"[s{Id}] seamless: old pumps did not exit within {cap.TotalSeconds:0.###}s; proceeding anyway (may cause stream corruption)");
         }
         catch { /* the wait itself failing is the same outcome as the timeout, already warned above */ }
     }
