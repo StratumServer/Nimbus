@@ -38,7 +38,7 @@ internal sealed class ClientSessionRunner
     {
         try
         {
-            var firstFrame = await TryReadFirstFrameAsync(client).ConfigureAwait(false);
+            var firstFrame = await TryReadFirstFrameAsync(session, client).ConfigureAwait(false);
             if (firstFrame.Length > 0 && await statusResponder.TryHandleAsync(client, firstFrame).ConfigureAwait(false))
                 return;
 
@@ -191,7 +191,16 @@ internal sealed class ClientSessionRunner
         try { client.Close(); } catch { /* the write path above may have closed it already */ }
     }
 
-    private async Task<byte[]> TryReadFirstFrameAsync(TcpClient client)
+    // Bound on the frame this not-yet-identified client can declare, checked before the
+    // allocation below ever runs. Real first frames are tiny: the status query and LoginTokenQuery
+    // carry next to no body, and Identification is nine fields (MdProtocolVersion, Playername,
+    // MpToken, ServerPassword, PlayerUID, NetworkVersion, ShortGameVersion, ViewDistance,
+    // RenderMetaBlocks, per the 1.22.6 Packet_ClientIdentification), all short strings or ints,
+    // never a mod list. A declared length past it is not a Vintage Story client opening a
+    // session, and its 4-byte header does not get to size an allocation on that word alone.
+    internal const int MaxFirstFrameSize = 64 * 1024;
+
+    private async Task<byte[]> TryReadFirstFrameAsync(ProxySession session, TcpClient client)
     {
         var stream = client.GetStream();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(stopToken);
@@ -205,8 +214,13 @@ internal sealed class ClientSessionRunner
         int len = rawLen & 0x7FFFFFFF;
         if (len == 0)
             return header;
-        if (len > 256 * 1024 * 1024)
-            throw new InvalidDataException($"client frame too large: {len} bytes");
+        if (len > MaxFirstFrameSize)
+        {
+            // session.ClientRemote is captured once at construction, so this stays safe even if
+            // a concurrent teardown has already torn the socket down by the time this logs.
+            Log.Trace($"[first-frame] {session.ClientRemote} declared {len} bytes, over the {MaxFirstFrameSize}-byte first-frame bound; dropping before allocating");
+            throw new InvalidDataException($"first frame too large before identification: {len} bytes");
+        }
 
         var frame = new byte[4 + len];
         Buffer.BlockCopy(header, 0, frame, 0, 4);
