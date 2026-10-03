@@ -66,6 +66,11 @@ internal sealed class FakeRegistryClient : IRegistryClient
     public bool FailMint;
     public bool ThrowMint;
 
+    /// <summary>When set, a mint is recorded and then parks on this until it is completed, which
+    /// is what a registry that has stopped answering does to whatever called it. The c->s pump
+    /// mints the initial reservation inline, so this is how a test holds a pump open.</summary>
+    public TaskCompletionSource? HoldMint;
+
     public Task<TransferReservation?> MintReservationAsync(string playerUid, string playerName,
         string targetServerId, string? reason, CancellationToken ct,
         string? realRemoteIp = null, int realRemotePort = 0, string? clientTransferId = null)
@@ -73,14 +78,24 @@ internal sealed class FakeRegistryClient : IRegistryClient
         lock (Mints) Mints.Add(new MintCall(playerUid, playerName, targetServerId, reason, clientTransferId));
         if (ThrowMint) throw new InvalidOperationException("mint failed unexpectedly");
         if (FailMint) return Task.FromResult<TransferReservation?>(null);
-        return Task.FromResult<TransferReservation?>(new TransferReservation
+        var reservation = new TransferReservation
         {
             Id = "fake-reservation",
             PlayerUid = playerUid,
             PlayerName = playerName,
             TargetServerId = targetServerId,
             ExpiresAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60,
-        });
+        };
+        var hold = HoldMint;
+        // Kept off the async path when nothing is holding: ThrowMint above has to throw at the
+        // call rather than through a faulted task, which is what the tests scripting it expect.
+        return hold == null ? Task.FromResult<TransferReservation?>(reservation) : Held(hold, reservation);
+
+        static async Task<TransferReservation?> Held(TaskCompletionSource gate, TransferReservation held)
+        {
+            await gate.Task.ConfigureAwait(false);
+            return held;
+        }
     }
 
     /// <summary>Snapshot of <see cref="Mints"/>, safe to read while the dispatcher is running.</summary>
