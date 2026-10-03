@@ -690,8 +690,10 @@ public class ProxySessionLifecycleTests
     // first and `swapping` second (the pre-fix order) lets that window pair a stale `pumps` read
     // with a fresh `swapping` read and break on a session that just moved to its new backend
     // without trouble; reading `swapping` first closes it, because a swap only clears `swapping`
-    // after publishing the new generation. AfterSwapFlagRead pins the delay to right after the
-    // `swapping` read, standing in for the loop thread being preempted there.
+    // after publishing the new generation. AfterSwapFlagRead holds the loop thread between its two
+    // reads, the first time only, until RequestSeamlessAsync has returned (so `pumps` is published
+    // and `swapping` cleared), which forces the interleaving instead of betting on a delay. The
+    // swap never needs the loop thread, so holding it cannot stall the swap.
     [Fact]
     public async Task ASwapCompletingBetweenTheLoopsTwoReads_DoesNotTearDownTheSession()
     {
@@ -704,16 +706,24 @@ public class ProxySessionLifecycleTests
         await harness.IdentifyAsync();
         await SessionHarness.WaitForAsync(() => harness.Backends["hub"].Sent("uid-1"), "the join never reached hub");
 
+        // The first firing parks the loop until the swap below has returned. A generous cap, and a
+        // flag the test asserts on, so a gate that never opens fails loudly instead of hanging.
+        var swapReturned = new ManualResetEventSlim(false);
         var fired = 0;
+        var gateTimedOut = false;
         harness.Session.AfterSwapFlagRead = () =>
         {
-            if (Interlocked.Exchange(ref fired, 1) == 0) Thread.Sleep(300);
+            if (Interlocked.Exchange(ref fired, 1) != 0) return;
+            if (!swapReturned.Wait(TimeSpan.FromSeconds(10))) gateTimedOut = true;
         };
 
         Assert.Null(await harness.Session.RequestSeamlessAsync(elsewhere.Endpoint("elsewhere"), failOnRegistryError: false));
+        swapReturned.Set();
 
         var completed = await Task.WhenAny(harness.Running, Task.Delay(TimeSpan.FromSeconds(1.5)));
         Assert.NotSame(harness.Running, completed);
+        Assert.Equal(1, Volatile.Read(ref fired));
+        Assert.False(gateTimedOut, "the loop was held for the full cap: the swap never returned while the loop waited");
         await harness.SendAsync(ChatFrames.Chatline("still alive after the swap"));
         Assert.True(await WaitForSent(elsewhere, "still alive after the swap"));
     }
