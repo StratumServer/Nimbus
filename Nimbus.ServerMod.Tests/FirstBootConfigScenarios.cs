@@ -13,6 +13,8 @@ namespace Nimbus.ServerMod.Tests;
 /// anything in the suite has written a config into it: scenarios share a world with the rest of
 /// their class.
 /// </summary>
+[AtlasWorld(StrictBootDiagnostics = true)]
+[AtlasAllowBootDiagnostic(NimbusHarness.UnconfiguredBootWarning, Level = "Warning", Source = "unknown")]
 public class FirstBootConfigScenarios : AtlasScenarioBase
 {
     [AtlasScenario]

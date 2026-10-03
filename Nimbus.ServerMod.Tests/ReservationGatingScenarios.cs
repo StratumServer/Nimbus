@@ -10,6 +10,8 @@ namespace Nimbus.ServerMod.Tests;
 /// One embedded server is shared by every scenario in this class; each scenario writes its
 /// own config (file + /nimbus reload) and uses its own player name.
 /// </summary>
+[AtlasWorld(StrictBootDiagnostics = true)]
+[AtlasAllowBootDiagnostic(NimbusHarness.UnconfiguredBootWarning, Level = "Warning", Source = "unknown")]
 public class ReservationGatingScenarios : AtlasScenarioBase
 {
     private const string Secret = "atlas-shared-secret";
