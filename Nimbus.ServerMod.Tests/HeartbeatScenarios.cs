@@ -9,6 +9,8 @@ namespace Nimbus.ServerMod.Tests;
 /// Covers the heartbeat loop's payload and the /nimbus status and servers commands.
 /// The test config sets HeartbeatIntervalSeconds to 1, so beats arrive fast.
 /// </summary>
+[AtlasWorld(StrictBootDiagnostics = true)]
+[AtlasAllowBootDiagnostic(NimbusHarness.UnconfiguredBootWarning, Level = "Warning", Source = "unknown")]
 public class HeartbeatScenarios : AtlasScenarioBase
 {
     private const string Secret = "heartbeat-secret";

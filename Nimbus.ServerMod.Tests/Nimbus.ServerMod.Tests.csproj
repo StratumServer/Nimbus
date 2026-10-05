@@ -12,7 +12,7 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
     <!-- Emits the opencover report the sonar workflow feeds to SonarCloud. -->
     <PackageReference Include="coverlet.collector" Version="10.1.0" />
-    <PackageReference Include="Pixnop.Atlas.XUnit" Version="0.15.0" />
+    <PackageReference Include="Pixnop.Atlas.XUnit" Version="0.16.1" />
   </ItemGroup>
 
   <ItemGroup>
@@ -36,13 +36,54 @@
     <Content Include="data\**\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- Stage the mod under test next to the test assembly, where [assembly: AtlasMods]
-       expects it (mod/Nimbus.ServerMod.dll + its Nimbus.Shared dependency). -->
+  <!-- Stage the mod under test next to the test assembly, as a folder mod, where
+       [assembly: AtlasMods] expects it (mod/Nimbus.ServerMod/). Same shape as the release
+       bundle (.github/workflows/release.yml, "Build the bundle" step): Nimbus.ServerMod.dll,
+       Nimbus.Shared.dll and their deps.json next to a generated modinfo.json, so
+       Nimbus.Shared.dll resolves as a dependency instead of being loaded as its own mod.
+       Atlas's own folder staging (a ProjectReference tagged AtlasMod) needs a modinfo.json in
+       the mod project, which would put an identity into Nimbus.ServerMod and decide #61, so the
+       folder is assembled here instead. -->
   <Target Name="StageModUnderTest" AfterTargets="Build">
     <ItemGroup>
       <ModDll Include="..\Nimbus.ServerMod\bin\$(Configuration)\$(TargetFramework)\Nimbus.ServerMod.dll" />
+      <ModDll Include="..\Nimbus.ServerMod\bin\$(Configuration)\$(TargetFramework)\Nimbus.ServerMod.deps.json" />
       <ModDll Include="..\Nimbus.Shared\bin\$(Configuration)\$(TargetFramework)\Nimbus.Shared.dll" />
+      <ModDll Include="..\Nimbus.Shared\bin\$(Configuration)\$(TargetFramework)\Nimbus.Shared.deps.json" />
     </ItemGroup>
-    <Copy SourceFiles="@(ModDll)" DestinationFolder="$(OutDir)mod" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(ModDll)" DestinationFolder="$(OutDir)mod\Nimbus.ServerMod" SkipUnchangedFiles="true" />
+
+    <PropertyGroup>
+      <ServerModVersion>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\Nimbus.ServerMod\AssemblyInfo.cs')), '(?&lt;=\bVersion = ")[^"]+').Value)</ServerModVersion>
+    </PropertyGroup>
+
+    <!-- Same fields, in the same order, as the modinfo.json release.yml writes for the shipped
+         bundle: the suite has to boot the identity operators actually run. "modid" here is
+         "Nimbus.ServerMod", not the "nimbusserver" from the assembly's own [ModInfo] attribute
+         (Nimbus.ServerMod/AssemblyInfo.cs); that mismatch is issue #61, still open and not
+         decided by this file; remove this note once #61 picks one identity. Only "version" is
+         generated, read the same way release.yml reads it (the ModInfo Version in
+         AssemblyInfo.cs, not the assembly's own file version); every other field must be kept in
+         sync with release.yml by hand. The file comes out unindented: MSBuild trims an item's
+         leading spaces. -->
+    <Error Condition="'$(ServerModVersion)' == ''"
+           Text="Could not read the ModInfo Version from Nimbus.ServerMod/AssemblyInfo.cs; the staged modinfo.json would have an empty version." />
+
+    <ItemGroup>
+      <NimbusModInfoLine Include="{" />
+      <NimbusModInfoLine Include='&quot;type&quot;: &quot;code&quot;,' />
+      <NimbusModInfoLine Include='&quot;name&quot;: &quot;Nimbus&quot;,' />
+      <NimbusModInfoLine Include='&quot;modid&quot;: &quot;Nimbus.ServerMod&quot;,' />
+      <NimbusModInfoLine Include='&quot;version&quot;: &quot;$(ServerModVersion)&quot;,' />
+      <NimbusModInfoLine Include='&quot;description&quot;: &quot;The backend servermod for Nimbus&quot;,' />
+      <NimbusModInfoLine Include='&quot;authors&quot;: [ &quot;imtsubaki (tsu)&quot;, &quot;Pixnop&quot; ],' />
+      <NimbusModInfoLine Include='&quot;requiredOnClient&quot;: false,' />
+      <NimbusModInfoLine Include='&quot;requiredOnServer&quot;: true,' />
+      <NimbusModInfoLine Include='&quot;dependencies&quot;: {' />
+      <NimbusModInfoLine Include='&quot;game&quot;: &quot;&quot;' />
+      <NimbusModInfoLine Include='}' />
+      <NimbusModInfoLine Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(OutDir)mod\Nimbus.ServerMod\modinfo.json" Lines="@(NimbusModInfoLine)" Overwrite="true" WriteOnlyWhenDifferent="true" />
   </Target>
 </Project>

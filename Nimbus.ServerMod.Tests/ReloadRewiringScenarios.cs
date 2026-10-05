@@ -10,6 +10,8 @@ namespace Nimbus.ServerMod.Tests;
 /// nimbus-server.json into the live data path and reloads. This is exactly what a
 /// server operator does; the shared NimbusHarness helper does the same for every class.
 /// </summary>
+[AtlasWorld(StrictBootDiagnostics = true)]
+[AtlasAllowBootDiagnostic(NimbusHarness.UnconfiguredBootWarning, Level = "Warning", Source = "unknown")]
 public class ReloadRewiringScenarios : AtlasScenarioBase
 {
     private const string Secret = "reload-secret";
