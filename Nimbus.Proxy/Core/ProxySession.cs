@@ -43,6 +43,7 @@ internal sealed partial class ProxySession : IPlayer
     private Task? pumpC2S;
     private Task? pumpS2C;
 
+    private const string IdentificationPacket = "Identification";
     private byte[]? capturedIdentification;
     private readonly UdpAuthorizationTable? udpAuthorizations;
     private string? udpLoginToken;
@@ -119,7 +120,7 @@ internal sealed partial class ProxySession : IPlayer
         this.sniffS2C = new FrameSniffer(id, "s->c", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffC2S.OnRawFrame = OnClientFrame;
         this.sniffS2C.OnRawFrame = OnBackendFrame;
-        this.sniffS2C.RawFrameFilter = name => name is "TokenAnswer" or "Identification" or "ServerReady"
+        this.sniffS2C.RawFrameFilter = name => name is "TokenAnswer" or IdentificationPacket or "ServerReady"
             || name.StartsWith("Id=77(", StringComparison.Ordinal)
             || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
             || name.StartsWith("Id=73(", StringComparison.Ordinal);
@@ -253,7 +254,7 @@ internal sealed partial class ProxySession : IPlayer
             && VsWire.TryFindNestedField(raw.Span[4..], 77, out var answer)
             && VsWire.TryFindNestedField(answer, 1, out var token))
             udpLoginToken = System.Text.Encoding.UTF8.GetString(token);
-        if (name is "Identification" or "ServerReady"
+        if (name is IdentificationPacket or "ServerReady"
             || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
             || name.StartsWith("Id=73(", StringComparison.Ordinal)) backendAuthenticated = true;
         if (backendAuthenticated && udpLoginToken != null)
@@ -262,7 +263,7 @@ internal sealed partial class ProxySession : IPlayer
 
     private void OnClientFrame(string name, ReadOnlyMemory<byte> raw)
     {
-        if (name == "Identification")
+        if (name == IdentificationPacket)
         {
             CaptureIdentification(raw.Span, source: "sniffer");
             return;
@@ -822,7 +823,7 @@ internal sealed partial class ProxySession : IPlayer
         // identity at all and handing it to the capture path made every single session log a
         // parse failure for a frame that never had a UID in it (#57).
         string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
-        if (firstName == "Identification")
+        if (firstName == IdentificationPacket)
             CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
         else
             Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");

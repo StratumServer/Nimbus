@@ -70,21 +70,32 @@ internal sealed class UdpAuthorizationTable
         {
             if (!VsWire.TryReadVarint(packet, ref pos, out ulong key) || key >> 3 is 0 or > 536870911) return false;
             int field = (int)(key >> 3), wire = (int)(key & 7);
-            if (field == 1)
+            bool valid = field switch
             {
-                if (seenId || wire != 0 || !VsWire.TryReadVarint(packet, ref pos, out ulong id) || id != 1) return false;
-                seenId = true;
-            }
-            else if (field == 5)
-            {
-                if (seenConnection || wire != 2 || !VsWire.TryReadLength(packet, ref pos, out int length)) return false;
-                seenConnection = true;
-                if (!ReadTokenBody(packet.Slice(pos, length), out token)) return false;
-                pos += length;
-            }
-            else if (!VsWire.SkipField(packet, ref pos, wire)) return false;
+                1 => ReadPacketId(packet, ref pos, wire, ref seenId),
+                5 => ReadConnection(packet, ref pos, wire, ref seenConnection, out token),
+                _ => VsWire.SkipField(packet, ref pos, wire),
+            };
+            if (!valid) return false;
         }
         return seenId && seenConnection && token.Length > 0;
+    }
+
+    private static bool ReadPacketId(ReadOnlySpan<byte> packet, ref int pos, int wire, ref bool seen)
+    {
+        if (seen || wire != 0 || !VsWire.TryReadVarint(packet, ref pos, out ulong id) || id != 1) return false;
+        seen = true;
+        return true;
+    }
+
+    private static bool ReadConnection(ReadOnlySpan<byte> packet, ref int pos, int wire, ref bool seen, out string token)
+    {
+        token = "";
+        if (seen || wire != 2 || !VsWire.TryReadLength(packet, ref pos, out int length)) return false;
+        seen = true;
+        if (!ReadTokenBody(packet.Slice(pos, length), out token)) return false;
+        pos += length;
+        return true;
     }
 
     private static bool ReadTokenBody(ReadOnlySpan<byte> body, out string token)
@@ -99,8 +110,7 @@ internal sealed class UdpAuthorizationTable
             if (field == 1)
             {
                 if (seen || wire != 2 || !VsWire.TryReadLength(body, ref pos, out int length)) return false;
-                try { token = StrictUtf8.GetString(body.Slice(pos, length)); }
-                catch (DecoderFallbackException) { return false; }
+                if (!DecodeToken(body.Slice(pos, length), out token)) return false;
                 pos += length;
                 seen = true;
             }
@@ -109,13 +119,33 @@ internal sealed class UdpAuthorizationTable
         return seen && token.Length > 0;
     }
 
-    internal sealed class Authorization(IPAddress address, BackendEndpoint target)
+    private static bool DecodeToken(ReadOnlySpan<byte> bytes, out string token)
+    {
+        token = "";
+        try { token = StrictUtf8.GetString(bytes); return true; }
+        catch (DecoderFallbackException) { return false; }
+    }
+
+    internal sealed class Authorization : IDisposable
     {
         private readonly CancellationTokenSource revoked = new();
-        public IPAddress Address { get; } = address;
+        private int disposed;
+        public Authorization(IPAddress address, BackendEndpoint target)
+        {
+            Address = address;
+            Target = target;
+            Revoked = revoked.Token;
+        }
+        public IPAddress Address { get; }
         public IPEndPoint? Endpoint { get; set; }
-        public BackendEndpoint Target = target;
-        public CancellationToken Revoked => revoked.Token;
-        public void Revoke() => revoked.Cancel();
+        public BackendEndpoint Target;
+        public CancellationToken Revoked { get; }
+        public void Revoke() => Dispose();
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+            try { revoked.Cancel(); }
+            finally { revoked.Dispose(); }
+        }
     }
 }

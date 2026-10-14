@@ -57,33 +57,8 @@ internal sealed class UdpRelay
 
                 var src = res.RemoteEndPoint;
                 if (res.Buffer.Length > 5000) continue;
-                if (sessions.TryGetValue(src, out var sess) && sess.IsDisposed)
-                {
-                    sessions.TryRemove(src, out _);
-                    sess = null;
-                }
-                if (sess == null)
-                {
-                    var authorization = authorizations.Claim(src, res.Buffer);
-                    if (authorization == null || authorization.Revoked.IsCancellationRequested) continue;
-                    var lease = admission.TryAcquire(src.Address);
-                    if (lease == null) continue;
-                    try { sess = CreateSession(src, inbound, authorization.Target, authorization, lease); }
-                    catch (Exception ex) { Log.Warn($"udp session connect failed: {ex.Message}"); continue; }
-                    sessions[src] = sess;
-                }
-                if (sess.Authorization.Revoked.IsCancellationRequested) { sess.Dispose(); continue; }
-                var currentTarget = sess.Authorization.Target;
-                if (!EndpointEquals(sess.Target, currentTarget))
-                {
-                    sess.Dispose();
-                    sessions.TryRemove(src, out _);
-                    var lease = admission.TryAcquire(src.Address);
-                    if (lease == null) continue;
-                    try { sess = CreateSession(src, inbound, currentTarget, sess.Authorization, lease); }
-                    catch (Exception ex) { Log.Warn($"udp session retarget failed: {ex.Message}"); continue; }
-                    sessions[src] = sess;
-                }
+                var sess = GetSession(src, res.Buffer, inbound);
+                if (sess == null) continue;
 
                 sess.LastActivityUtc = DateTime.UtcNow;
                 try
@@ -103,6 +78,40 @@ internal sealed class UdpRelay
             sessions.Clear();
             Log.Info("udp relay stopped");
         }
+    }
+
+    private ClientUdpSession? GetSession(IPEndPoint src, byte[] packet, UdpClient inbound)
+    {
+        if (sessions.TryGetValue(src, out var session) && session.IsDisposed)
+        {
+            sessions.TryRemove(src, out _);
+            session = null;
+        }
+        if (session == null)
+        {
+            var authorization = authorizations.Claim(src, packet);
+            return authorization == null ? null : OpenSession(src, inbound, authorization);
+        }
+        if (session.Authorization.Revoked.IsCancellationRequested) { session.Dispose(); return null; }
+        if (EndpointEquals(session.Target, session.Authorization.Target)) return session;
+        session.Dispose();
+        sessions.TryRemove(src, out _);
+        return OpenSession(src, inbound, session.Authorization);
+    }
+
+    private ClientUdpSession? OpenSession(IPEndPoint src, UdpClient inbound,
+        UdpAuthorizationTable.Authorization authorization)
+    {
+        if (authorization.Revoked.IsCancellationRequested) return null;
+        var lease = admission.TryAcquire(src.Address);
+        if (lease == null) return null;
+        try
+        {
+            var session = CreateSession(src, inbound, authorization.Target, authorization, lease);
+            sessions[src] = session;
+            return session;
+        }
+        catch (Exception ex) { Log.Warn($"udp session connect failed: {ex.Message}"); return null; }
     }
 
     private static bool EndpointEquals(BackendEndpoint a, BackendEndpoint b)
@@ -125,31 +134,28 @@ internal sealed class UdpRelay
         var sess = new ClientUdpSession(clientSrc, upstream, target, authorization, lease, lifetime);
         CancellationToken sessionToken = lifetime.Token;
 
-        // Pump replies backend->client.
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                while (!sessionToken.IsCancellationRequested)
-                {
-                    UdpReceiveResult res;
-                    try { res = await upstream.ReceiveAsync(sessionToken).ConfigureAwait(false); }
-                    catch (OperationCanceledException) { return; }
-                    catch (ObjectDisposedException) { return; }
-                    catch (SocketException) { return; }
-
-                    sess.LastActivityUtc = DateTime.UtcNow;
-                    try { await inbound.SendAsync(res.Buffer, res.Buffer.Length, clientSrc).ConfigureAwait(false); }
-                    catch (Exception ex) { Log.Warn($"udp s->c send failed for {clientSrc}: {ex.Message}"); }
-                }
-            }
-            catch { /* the three socket exits above are the expected ones; anything else ends this
-                       one client's reply pump and nothing more, since the relay keeps serving the
-                       others and a new packet from this client rebuilds the session */ }
-            finally { sess.Dispose(); }
-        });
+        _ = Task.Run(() => PumpRepliesAsync(sess, inbound, sessionToken), CancellationToken.None);
 
         return sess;
+    }
+
+    private async Task PumpRepliesAsync(ClientUdpSession session, UdpClient inbound, CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                UdpReceiveResult res;
+                try { res = await session.Upstream.ReceiveAsync(token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+                catch (ObjectDisposedException) { return; }
+                catch (SocketException) { return; }
+                session.LastActivityUtc = DateTime.UtcNow;
+                try { await inbound.SendAsync(res.Buffer, res.Buffer.Length, session.Client).ConfigureAwait(false); }
+                catch (Exception ex) { Log.Warn($"udp s->c send failed for {session.Client}: {ex.Message}"); }
+            }
+        }
+        finally { session.Dispose(); }
     }
 
     private async Task IdleSweepAsync()
