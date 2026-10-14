@@ -9,6 +9,8 @@ internal sealed class ProxyListener
     private readonly ProxyConfig cfg;
     private readonly CancellationToken stopToken;
     private long sessionCounter;
+    private readonly ConnectionAdmission admission;
+    internal int PendingCount => admission.PendingCount;
     public ConcurrentDictionary<long, ProxySession> Sessions { get; } = new();
 
     // Non-null when a registry is configured (mode = "embedded" or "remote").
@@ -39,6 +41,7 @@ internal sealed class ProxyListener
         PersistentDrainStore? drainStore = null)
     {
         this.cfg = cfg;
+        admission = new ConnectionAdmission(cfg.Advanced);
         UdpAuthorizations = new UdpAuthorizationTable(cfg.Advanced.MaxUdpAuthorizations);
         this.stopToken = stopToken;
         Registry = registry;
@@ -85,20 +88,27 @@ internal sealed class ProxyListener
                 try { client = await listener.AcceptTcpClientAsync(stopToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
 
+                if (client.Client.RemoteEndPoint is not System.Net.IPEndPoint remote)
+                {
+                    client.Dispose();
+                    continue;
+                }
+                IDisposable? lease = admission.TryAcquire(remote.Address);
+                if (lease == null)
+                {
+                    client.Dispose();
+                    continue;
+                }
                 long id = Interlocked.Increment(ref sessionCounter);
-                var session = new ProxySession(id, cfg, client, stopToken,
+                var handshake = CancellationTokenSource.CreateLinkedTokenSource(stopToken);
+                handshake.CancelAfter(TimeSpan.FromSeconds(cfg.Advanced.HandshakeTimeoutSeconds));
+                var session = new ProxySession(id, cfg, client, handshake.Token,
                     new SessionServices(Stickies, Registry, UdpOverrides, Events, Bans, Whitelist, UdpAuthorizations));
                 Sessions[id] = session;
                 ProxyMetrics.SessionAccepted();
-                _ = Task.Run(async () =>
-                {
-                    try { await sessionRunner.RunAsync(session, client).ConfigureAwait(false); }
-                    finally
-                    {
-                        Sessions.TryRemove(id, out _);
-                        ProxyMetrics.SessionClosed();
-                    }
-                }, stopToken);
+                // Do not pass the stop token to Task.Run: cancellation before scheduling
+                // must still run the finally that closes the socket and releases admission.
+                _ = Task.Run(() => RunAdmittedSessionAsync(session, client, lease, handshake, sessionRunner), CancellationToken.None);
             }
         }
         finally
@@ -107,4 +117,32 @@ internal sealed class ProxyListener
             Log.Info("listener stopped");
         }
     }
+    private async Task RunAdmittedSessionAsync(ProxySession session, TcpClient client,
+        IDisposable lease, CancellationTokenSource handshake, ClientSessionRunner runner)
+    {
+        IDisposable? pendingLease = lease;
+        using var deadlineRegistration = handshake.Token.Register(session.Close);
+        try
+        {
+            Task run = runner.RunAsync(session, client);
+            if (await Task.WhenAny(run, session.AuthenticationCompleted).ConfigureAwait(false)
+                == session.AuthenticationCompleted && !handshake.IsCancellationRequested)
+            {
+                handshake.CancelAfter(Timeout.InfiniteTimeSpan);
+                pendingLease.Dispose();
+                pendingLease = null;
+            }
+            await run.ConfigureAwait(false);
+        }
+        finally
+        {
+            session.Close();
+            client.Dispose();
+            pendingLease?.Dispose();
+            handshake.Dispose();
+            Sessions.TryRemove(session.Id, out _);
+            ProxyMetrics.SessionClosed();
+        }
+    }
+
 }

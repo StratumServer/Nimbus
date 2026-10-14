@@ -45,6 +45,10 @@ internal sealed partial class ProxySession : IPlayer
     // source and both exit signals, all reached through the one object that read returns.
     private volatile PumpGeneration? pumps;
 
+    private const string IdentificationPacket = "Identification";
+    private byte[]? capturedIdentification;
+    private readonly TaskCompletionSource authentication = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal Task AuthenticationCompleted => authentication.Task;
     // Test seams only, both no-ops in production (null, invoked with `?.Invoke()`). They mark the
     // two moments a regression for #127's two-straggler interleaving needs to pin exactly: the new
     // generation going live in StartPumps, and the loop re-snapshotting `pumps` in
@@ -55,8 +59,6 @@ internal sealed partial class ProxySession : IPlayer
     // `pumps`), which is where a swap racing to completion could still be observed torn apart.
     internal volatile Action? AfterSwapFlagRead;
 
-    private const string IdentificationPacket = "Identification";
-    private byte[]? capturedIdentification;
     private readonly UdpAuthorizationTable? udpAuthorizations;
     private string? udpLoginToken;
     private bool backendAuthenticated;
@@ -260,15 +262,19 @@ internal sealed partial class ProxySession : IPlayer
 
     private void OnBackendFrame(string name, ReadOnlyMemory<byte> raw)
     {
+        if (name is IdentificationPacket or "ServerReady"
+            || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
+            || name.StartsWith("Id=73(", StringComparison.Ordinal))
+        {
+            authentication.TrySetResult();
+            backendAuthenticated = true;
+        }
         if (udpAuthorizations == null || clientAddress == null || currentBackend == null) return;
         if (VsWire.TryParseHeader(raw.Span, out bool compressed, out int length) && !compressed
             && length == raw.Length - 4
             && VsWire.TryFindNestedField(raw.Span[4..], 77, out var answer)
             && VsWire.TryFindNestedField(answer, 1, out var token))
             udpLoginToken = System.Text.Encoding.UTF8.GetString(token);
-        if (name is IdentificationPacket or "ServerReady"
-            || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
-            || name.StartsWith("Id=73(", StringComparison.Ordinal)) backendAuthenticated = true;
         if (backendAuthenticated && udpLoginToken != null)
             udpAuthorizations.Publish(Id, clientAddress, udpLoginToken, currentBackend);
     }
