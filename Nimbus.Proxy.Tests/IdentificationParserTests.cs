@@ -40,14 +40,9 @@ public class IdentificationParserTests
     }
 
     [Fact]
-    public void Extracts_FromAFlattenedIdentificationBody()
+    public void FlattenedBody_IsRejected()
     {
-        // Some forks flatten the envelope: the payload IS the Identification body.
-        byte[] frame = ProtoWire.Frame(IdentBody("bob", "uid-456"));
-
-        Assert.True(IdentificationParser.TryExtract(frame, out string uid, out string name));
-        Assert.Equal("uid-456", uid);
-        Assert.Equal("bob", name);
+        Assert.False(IdentificationParser.TryExtract(ProtoWire.Frame(IdentBody("bob", "uid-456")), out _, out _));
     }
 
     [Fact]

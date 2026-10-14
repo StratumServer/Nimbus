@@ -56,6 +56,9 @@ internal sealed partial class ProxySession : IPlayer
     internal volatile Action? AfterSwapFlagRead;
 
     private byte[]? capturedIdentification;
+    private readonly ClientFrameGate clientFrameGate;
+    private volatile bool backendLoginAcknowledged;
+    private bool firstFrameInspected;
     private string? capturedPlayerUid;
     private string? capturedPlayerName;
 
@@ -126,6 +129,17 @@ internal sealed partial class ProxySession : IPlayer
         this.sniffC2S = new FrameSniffer(id, "c->s", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffS2C = new FrameSniffer(id, "s->c", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffC2S.OnRawFrame = OnClientFrame;
+        this.sniffC2S.RawFrameFilter = name => name == "Chatline";
+        clientFrameGate = new ClientFrameGate(() => backendLoginAcknowledged);
+        this.sniffS2C.OnRawFrame = (name, _) =>
+        {
+            if (name is "Identification" or "ServerReady"
+                || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
+                || name.StartsWith("Id=73(", StringComparison.Ordinal)) backendLoginAcknowledged = true;
+        };
+        this.sniffS2C.RawFrameFilter = name => name is "Identification" or "ServerReady"
+            || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
+            || name.StartsWith("Id=73(", StringComparison.Ordinal);
     }
 
     // The client address as everything that reads a log line or a sticky route expects it: an
@@ -250,12 +264,6 @@ internal sealed partial class ProxySession : IPlayer
 
     private void OnClientFrame(string name, ReadOnlyMemory<byte> raw)
     {
-        if (name == "Identification")
-        {
-            CaptureIdentification(raw.Span, source: "sniffer");
-            return;
-        }
-
         if (name == "Chatline")
             SurfaceChatLine(raw.Span);
     }
@@ -826,15 +834,16 @@ internal sealed partial class ProxySession : IPlayer
     {
         if (firstClientFrame.IsEmpty) return null;
 
-        // Classify before capturing. A stock client opens with LoginTokenQuery and only sends
-        // Identification once the backend has answered, so the first frame usually holds no
-        // identity at all and handing it to the capture path made every single session log a
-        // parse failure for a frame that never had a UID in it (#57).
-        string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
-        if (firstName == "Identification")
-            CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
-        else
-            Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
+        if (!firstFrameInspected)
+        {
+            await clientFrameGate.ForwardAsync(firstClientFrame, (frame, identification) =>
+            {
+                if (identification && !CaptureIdentification(frame.Span, "first frame", target))
+                    rejectedAtGate = true;
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false);
+            firstFrameInspected = true;
+        }
 
         // A player the gate refused must not cause an upstream connection at all. The gate has
         // already told the client why it is going.
@@ -1071,19 +1080,41 @@ internal sealed partial class ProxySession : IPlayer
 
                 // c->s is inspected before the bytes are forwarded, so the gates and the initial
                 // reservation get to act on the frame before any backend sees it.
-                if (isC2S && !await InspectClientChunkAsync(sniffer, chunk).ConfigureAwait(false))
+                try
                 {
+                    if (isC2S)
+                    {
+                        await clientFrameGate.ForwardAsync(chunk, async (frame, identification) =>
+                        {
+                            if (identification && !CaptureIdentification(frame.Span, "client stream"))
+                                throw new InvalidDataException("Identification refused at the gate.");
+                            if (!await InspectClientChunkAsync(sniffer, frame).ConfigureAwait(false))
+                                throw new InvalidDataException("Client frame refused at the gate.");
+                            await to.WriteAsync(frame, token).ConfigureAwait(false);
+                        }).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        // Publish the backend acknowledgement before the client can react
+                        // to it by sending a larger post-login frame.
+                        sniffer?.OnBytes(chunk.Span);
+                        await to.WriteAsync(chunk, token).ConfigureAwait(false);
+                    }
+                }
+                catch (InvalidDataException)
+                {
+                    var rejection = gateDisconnect;
+                    if (rejection != null) await SafeAwait(rejection).ConfigureAwait(false);
+                    Close();
                     origin = PumpExitOrigin.Proxy;
                     break;
                 }
+                catch (Exception ex) when (IsStreamGone(ex))
+                {
+                    origin = EndpointThatEnded(isC2S, onRead: false);
+                    break;
+                }
 
-                try { await to.WriteAsync(chunk, token).ConfigureAwait(false); }
-                catch (Exception ex) when (IsStreamGone(ex)) { origin = EndpointThatEnded(isC2S, onRead: false); break; }
-
-                // s->c is inspected after the forward instead: nothing here gates it, so the
-                // player's frame is not made to wait on the parse.
-                if (!isC2S)
-                    sniffer?.OnBytes(chunk.Span);
             }
         }
         finally

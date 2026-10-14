@@ -48,6 +48,14 @@ internal sealed class RecordingBackend : IDisposable
         lock (gate) return Encoding.UTF8.GetString(received.ToArray()).Contains(needle);
     }
 
+    public async Task SendAsync(byte[] frame)
+    {
+        TcpClient[] current;
+        lock (gate) current = accepted.ToArray();
+        foreach (var client in current)
+            await client.GetStream().WriteAsync(frame, cts.Token).ConfigureAwait(false);
+    }
+
     private async Task AcceptLoopAsync()
     {
         try

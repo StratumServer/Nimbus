@@ -527,6 +527,7 @@ public class ProxySessionLifecycleTests
         await harness.SendAsync([.. ClientFrames.Identification("uid-1", "alice"), .. ClientFrames.ClientPlaying()]);
         await SessionHarness.WaitForAsync(() => registry.MintsSoFar().Count == 1,
             "the c->s pump never reached the reservation mint");
+        await harness.Backends["hub"].SendAsync(ServerFrames.ServerReady());
         await SessionHarness.WaitForAsync(() => harness.Session.Phase == SessionState.Phase.Ready,
             $"the session never reached Ready (phase={harness.Session.Phase})");
 
@@ -572,6 +573,7 @@ public class ProxySessionLifecycleTests
             "the session never reached the backend");
         await harness.SendAsync([.. ClientFrames.Identification("uid-1", "alice"), .. ClientFrames.ClientPlaying()]);
         await SessionHarness.WaitForAsync(() => registry.MintsSoFar().Count == 1, "the first mint never happened");
+        await harness.Backends["hub"].SendAsync(ServerFrames.ServerReady());
         await SessionHarness.WaitForAsync(() => harness.Session.Phase == SessionState.Phase.Ready,
             $"the session never reached Ready (phase={harness.Session.Phase})");
 
@@ -664,6 +666,7 @@ public class ProxySessionLifecycleTests
         await harness.SendAsync([.. ClientFrames.Identification("uid-1", "alice"), .. ClientFrames.ClientPlaying()]);
         await SessionHarness.WaitForAsync(() => registry.MintsSoFar().Count == 1,
             "the c->s pump never reached the reservation mint");
+        await harness.Backends["hub"].SendAsync(ServerFrames.ServerReady());
         await SessionHarness.WaitForAsync(() => harness.Session.Phase == SessionState.Phase.Ready,
             $"the session never reached Ready (phase={harness.Session.Phase})");
 
