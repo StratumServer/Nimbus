@@ -81,10 +81,12 @@ internal static class VsWire
     public static bool TryReadVarint(ReadOnlySpan<byte> buf, ref int pos, out ulong value)
     {
         value = 0;
+        if ((uint)pos > (uint)buf.Length) return false;
         int shift = 0;
         while (pos < buf.Length)
         {
             byte b = buf[pos++];
+            if (shift == 63 && (b & 0xFE) != 0) return false;
             value |= (ulong)(b & 0x7F) << shift;
             if ((b & 0x80) == 0) return true;
             shift += 7;
@@ -106,8 +108,8 @@ internal static class VsWire
         len = 0;
         if (!TryReadVarint(buf, ref pos, out ulong raw)) return false;
         // TryReadVarint leaves pos between 0 and buf.Length, so the subtraction is non-negative.
-        if (raw > (ulong)(buf.Length - pos)) return false;
-        len = (int)raw;
+        if (raw > int.MaxValue || raw > (ulong)(buf.Length - pos)) return false;
+        len = checked((int)raw);
         return true;
     }
 
@@ -115,12 +117,13 @@ internal static class VsWire
     // wire types the proxy never needs (groups).
     public static bool SkipField(ReadOnlySpan<byte> buf, ref int pos, int wireType)
     {
+        if ((uint)pos > (uint)buf.Length) return false;
         switch (wireType)
         {
             case 0: // varint
                 return TryReadVarint(buf, ref pos, out _);
             case 1: // 64-bit
-                if (pos + 8 > buf.Length) return false;
+                if (buf.Length - pos < 8) return false;
                 pos += 8;
                 return true;
             case 2: // length-delimited
@@ -128,7 +131,7 @@ internal static class VsWire
                 pos += len;
                 return true;
             case 5: // 32-bit
-                if (pos + 4 > buf.Length) return false;
+                if (buf.Length - pos < 4) return false;
                 pos += 4;
                 return true;
             default:
@@ -144,7 +147,9 @@ internal static class VsWire
         int pos = 0;
         while (pos < body.Length)
         {
+            int before = pos;
             if (!TryReadVarint(body, ref pos, out ulong key)) return false;
+            if ((key >> 3) is 0 or > 536870911) return false;
             int field = (int)(key >> 3);
             int wireType = (int)(key & 0x7);
             if (field == fieldNumber && wireType == 2)
@@ -154,6 +159,7 @@ internal static class VsWire
                 return true;
             }
             if (!SkipField(body, ref pos, wireType)) return false;
+            if (pos <= before) return false;
         }
         return false;
     }

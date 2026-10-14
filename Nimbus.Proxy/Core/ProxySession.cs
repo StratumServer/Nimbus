@@ -45,6 +45,10 @@ internal sealed partial class ProxySession : IPlayer
     // source and both exit signals, all reached through the one object that read returns.
     private volatile PumpGeneration? pumps;
 
+    private const string IdentificationPacket = "Identification";
+    private byte[]? capturedIdentification;
+    private readonly TaskCompletionSource authentication = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal Task AuthenticationCompleted => authentication.Task;
     // Test seams only, both no-ops in production (null, invoked with `?.Invoke()`). They mark the
     // two moments a regression for #127's two-straggler interleaving needs to pin exactly: the new
     // generation going live in StartPumps, and the loop re-snapshotting `pumps` in
@@ -55,10 +59,12 @@ internal sealed partial class ProxySession : IPlayer
     // `pumps`), which is where a swap racing to completion could still be observed torn apart.
     internal volatile Action? AfterSwapFlagRead;
 
-    private byte[]? capturedIdentification;
     private readonly ClientFrameGate clientFrameGate;
     private volatile bool backendLoginAcknowledged;
     private bool firstFrameInspected;
+    private readonly UdpAuthorizationTable? udpAuthorizations;
+    private string? udpLoginToken;
+    private bool backendAuthenticated;
     private string? capturedPlayerUid;
     private string? capturedPlayerName;
 
@@ -122,6 +128,7 @@ internal sealed partial class ProxySession : IPlayer
         this.events = svc.Events;
         this.bans = svc.Bans;
         this.whitelist = svc.Whitelist;
+        this.udpAuthorizations = svc.UdpAuthorizations;
 
         // Sniffers always run on the client stream so registry-backed joins and transfers have
         // the player UID even when SniffFrames is disabled.
@@ -131,13 +138,9 @@ internal sealed partial class ProxySession : IPlayer
         this.sniffC2S.OnRawFrame = OnClientFrame;
         this.sniffC2S.RawFrameFilter = name => name == "Chatline";
         clientFrameGate = new ClientFrameGate(() => backendLoginAcknowledged);
-        this.sniffS2C.OnRawFrame = (name, _) =>
-        {
-            if (name is "Identification" or "ServerReady"
-                || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
-                || name.StartsWith("Id=73(", StringComparison.Ordinal)) backendLoginAcknowledged = true;
-        };
-        this.sniffS2C.RawFrameFilter = name => name is "Identification" or "ServerReady"
+        this.sniffS2C.OnRawFrame = OnBackendFrame;
+        this.sniffS2C.RawFrameFilter = name => name is "TokenAnswer" or IdentificationPacket or "ServerReady"
+            || name.StartsWith("Id=77(", StringComparison.Ordinal)
             || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
             || name.StartsWith("Id=73(", StringComparison.Ordinal);
     }
@@ -260,6 +263,26 @@ internal sealed partial class ProxySession : IPlayer
         try { pumps?.Cts.Cancel(); } catch { /* already disposed by an earlier teardown */ }
         try { upstream?.Close(); } catch { /* backend socket may be gone already */ }
         try { client.Close(); } catch { /* the client may have dropped first */ }
+    }
+
+    private void OnBackendFrame(string name, ReadOnlyMemory<byte> raw)
+    {
+        if (name is IdentificationPacket or "ServerReady"
+            || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
+            || name.StartsWith("Id=73(", StringComparison.Ordinal))
+        {
+            authentication.TrySetResult();
+            backendLoginAcknowledged = true;
+            backendAuthenticated = true;
+        }
+        if (udpAuthorizations == null || clientAddress == null || currentBackend == null) return;
+        if (VsWire.TryParseHeader(raw.Span, out bool compressed, out int length) && !compressed
+            && length == raw.Length - 4
+            && VsWire.TryFindNestedField(raw.Span[4..], 77, out var answer)
+            && VsWire.TryFindNestedField(answer, 1, out var token))
+            udpLoginToken = System.Text.Encoding.UTF8.GetString(token);
+        if (backendAuthenticated && udpLoginToken != null)
+            udpAuthorizations.Publish(Id, clientAddress, udpLoginToken, currentBackend);
     }
 
     private void OnClientFrame(string name, ReadOnlyMemory<byte> raw)
@@ -751,6 +774,7 @@ internal sealed partial class ProxySession : IPlayer
         // client socket has been closed either by this teardown or by Close(), and
         // TcpClient.Close() nulls Client, so reading the endpoint back gives nothing to clear
         // under and the override outlives the session.
+        udpAuthorizations?.Remove(Id);
         if (udpOverrides != null && clientAddress != null)
             udpOverrides.Clear(clientAddress);
 
@@ -909,6 +933,7 @@ internal sealed partial class ProxySession : IPlayer
         // No usable client address means no override to pin, and UDP falls back to the default.
         if (udpOverrides == null || clientAddress == null) return;
         udpOverrides.Set(clientAddress, target);
+        udpAuthorizations?.Update(Id, target);
     }
 
     private async Task<bool> TryWriteFirstClientFrameAsync(TcpClient up, ReadOnlyMemory<byte> frame)

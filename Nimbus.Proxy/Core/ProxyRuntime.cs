@@ -22,7 +22,7 @@ internal sealed class ProxyRuntime : IDisposable
             drainStore = new PersistentDrainStore(ResolveStatePath(cfg.Persistence.DrainFlagsFile));
 
         listener = new ProxyListener(cfg, stopToken, registry, drainStore);
-        udp = new UdpRelay(cfg, stopToken, listener.UdpOverrides);
+        udp = new UdpRelay(cfg, stopToken, listener.UdpOverrides, listener.UdpAuthorizations);
         plugins = new PluginLoader(new PluginLoaderOptions
         {
             Enabled = cfg.Plugins.Enabled,

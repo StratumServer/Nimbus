@@ -316,3 +316,15 @@ dotnet build Nimbus.slnx -c Release
 See [LICENSE](LICENSE). Source-available, no resale, no rebrand-and-redistribute.
 
 Nimbus is an unofficial third-party project. Not affiliated with or endorsed by Anego Studios. "Vintage Story" is a trademark of Anego Studios. See [NOTICE](NOTICE) for the full attribution.
+
+## Pre-login connection limits
+
+The proxy keeps the first-frame limit of 64 KiB and bounds incomplete TCP handshakes before starting a session task. Admission stays pending until the backend acknowledges login; client-sent readiness packets do not release it. A 60-second deadline closes handshakes that do not finish.
+
+The `[advanced]` defaults are `max_pending_connections = 256`, `max_pending_connections_per_address = 8`, `max_connections_per_minute = 600`, `max_connections_per_address_per_minute = 60`, `max_tracked_addresses = 4096`, and `handshake_timeout_seconds = 60`. All must be positive. Increase the per-address values for large groups behind a shared address and the deadline for deployments with slow authentication. The address table is bounded even during source-address churn, and closing a connection does not reset its creation-rate budget. These admission settings require a proxy restart.
+
+## UDP admission
+
+UDP sessions require the login token observed on the client's TCP connection and a backend login acknowledgement. Each authenticated TCP session can bind one UDP source endpoint; players sharing an address keep separate tokens and backend routes. Closing TCP revokes UDP and closes its upstream socket. Early UDP handshakes are dropped until login succeeds; clients can retry or fall back to TCP. A UDP source-port change requires reconnecting TCP.
+
+The `[advanced]` defaults limit UDP to 1024 sockets globally and 8 per address, with 600 new sockets per minute globally and 60 per address. Configure `max_udp_sessions`, `max_udp_sessions_per_address`, `max_udp_session_creations_per_minute`, and `max_udp_session_creations_per_address_per_minute` for the deployment. `max_udp_tracked_addresses` and `max_udp_authorizations` both default to 4096 and bound admission metadata. These admission settings require a proxy restart.
