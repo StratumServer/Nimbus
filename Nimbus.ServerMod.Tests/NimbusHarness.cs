@@ -18,6 +18,14 @@ namespace Nimbus.ServerMod.Tests;
 /// </summary>
 public sealed class NimbusHarness
 {
+    /// <summary>The warning the mod logs, through api.Logger (so Source is "unknown"), when it boots
+    /// enabled on a data path whose nimbus-server.json has none of its required fields: the mod's own
+    /// WarnUnconfigured. Every class that boots without a config of its own allows exactly this,
+    /// field list included, through [AtlasAllowBootDiagnostic]; a class whose fixture is complete
+    /// does not, so the warning would fail its boot.</summary>
+    public const string UnconfiguredBootWarning =
+        @"^Nimbus server mod is enabled but nimbus-server\.json still needs: ServerId, RegistryUrl, PublicHost, SharedSecret\. ";
+
     private readonly ModSystem modSystem;
 
     private NimbusHarness(ModSystem modSystem) => this.modSystem = modSystem;
@@ -78,27 +86,6 @@ public sealed class NimbusHarness
               "ShortcutCommands": {{shortcutCommandsJson ?? "[]"}}
             }
             """);
-    }
-
-    /// <summary>Runs a command with a player caller. World.ExecuteCommand runs as the console,
-    /// which the RequiresPlayer precondition on /server and the shortcuts rejects.</summary>
-    public static Task<CommandResult> ExecuteAs(IWorldSession world, ITestPlayer player, string command)
-    {
-        var tcs = new TaskCompletionSource<CommandResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        world.Api.ChatCommands.ExecuteUnparsed(command, new TextCommandCallingArgs
-        {
-            Caller = new Caller
-            {
-                Player = player.Player,
-                FromChatGroupId = GlobalConstants.GeneralChatGroup,
-            },
-        }, result =>
-        {
-            if (result.Status == EnumCommandStatus.Deferred) return;
-            tcs.TrySetResult(new CommandResult(
-                result.Status == EnumCommandStatus.Success, result.StatusMessage ?? "", result));
-        });
-        return tcs.Task;
     }
 
     /// <summary>The mod's LastSeamlessCommit, empty until the target sends a commit.</summary>
