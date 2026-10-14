@@ -158,6 +158,14 @@ public sealed class FakeRegistry : IDisposable
         {
             var reservation = NextReservation;
             NextReservation = null; // single-use, like the real ReservationStore
+            if (reservation != null)
+            {
+                var reservationJson = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(reservation))!;
+                // The real registry returns the identity used for the lookup. Tests may set
+                // an explicit different UID to exercise a malformed response.
+                if (reservationJson["playerUid"]?.GetValue<string>() == "") reservationJson["playerUid"] = query["uid"];
+                reservation = reservationJson;
+            }
             payload = reservation is null
                 ? new { ok = false, error = "no reservation" }
                 : new { ok = true, reservation };

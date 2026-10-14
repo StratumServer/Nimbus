@@ -37,7 +37,10 @@ public class FirstFrameBoundTests
         using var harness = await SessionHarness.StartAsync();
         var backend = harness.Backends["hub"];
 
-        var body = new byte[ClientSessionRunner.MaxFirstFrameSize];
+        using var payload = new MemoryStream();
+        ProtoWire.WriteBytes(payload, 100, new byte[ClientSessionRunner.MaxFirstFrameSize - 5]);
+        byte[] body = payload.ToArray();
+        Assert.Equal(ClientSessionRunner.MaxFirstFrameSize, body.Length);
         await harness.SendAsync(Frame(body));
 
         await SessionHarness.WaitForAsync(() => backend.BytesReceived >= 4 + body.Length,

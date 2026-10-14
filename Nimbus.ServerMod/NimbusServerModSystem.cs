@@ -368,6 +368,14 @@ public sealed class NimbusServerModSystem : ModSystem
 
             if (reservation != null)
             {
+                if (!string.Equals(reservation.PlayerUid, playerUid, StringComparison.Ordinal)
+                    || !string.Equals(reservation.TargetServerId, config.ServerId, StringComparison.OrdinalIgnoreCase))
+                {
+                    api?.Logger.Warning($"[Nimbus] {playerName} blocked: proxy reservation identity mismatch");
+                    KickForReservation(player);
+                    return;
+                }
+
                 // Store the forwarded identity so other systems can trust the real IP.
                 forwarding[playerUid] = reservation;
                 var realIp = string.IsNullOrEmpty(reservation.RealRemoteIp) ? "?" : reservation.RealRemoteIp;

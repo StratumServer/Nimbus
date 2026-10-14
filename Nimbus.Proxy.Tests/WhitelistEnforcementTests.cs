@@ -18,6 +18,43 @@ public class WhitelistEnforcementTests
     private const string ListedUid = "uid-on-the-list";
 
     [Fact]
+    public async Task FragmentedUnlistedIdentification_AfterTokenQuery_ForwardsNoIdentityBytes()
+    {
+        using var hub = new RecordingBackend();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var cfg = Config(("hub", hub));
+        cfg.Whitelist.Network = true;
+        var whitelist = await WhitelistWith(cts.Token, new WhitelistEntry { PlayerUid = ListedUid });
+        using var live = await StartAsync(cfg, new StickyRouteTable(), whitelist, cts.Token);
+        byte[] query = ClientFrames.LoginTokenQuery();
+        await live.SendAsync(query, cts.Token);
+        await WaitFor(() => hub.BytesReceived == query.Length, cts.Token);
+        byte[] identification = ClientFrames.Identification(Uid, "stranger");
+        await live.SendAsync(identification[..^1], cts.Token);
+        await live.SendAsync(identification[^1..], cts.Token);
+        var response = Encoding.UTF8.GetString(await live.ReadClientBytesAsync(2000, cts.Token));
+        Assert.Contains("This network is whitelisted.", response);
+        Assert.Equal(query.Length, hub.BytesReceived);
+    }
+
+    [Fact]
+    public async Task RepeatedIdentification_CannotReplaceAWhitelistedIdentity()
+    {
+        using var hub = new RecordingBackend();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var cfg = Config(("hub", hub));
+        cfg.Whitelist.Network = true;
+        var whitelist = await WhitelistWith(cts.Token, new WhitelistEntry { PlayerUid = ListedUid });
+        using var live = await StartAsync(cfg, new StickyRouteTable(), whitelist, cts.Token);
+        byte[] allowed = ClientFrames.Identification(ListedUid, "builder");
+        await live.SendAsync(allowed, cts.Token);
+        await WaitFor(() => hub.BytesReceived == allowed.Length, cts.Token);
+        await live.SendAsync(ClientFrames.Identification(Uid, "stranger"), cts.Token);
+        await live.ReadClientBytesAsync(2000, cts.Token);
+        Assert.Equal(allowed.Length, hub.BytesReceived);
+    }
+
+    [Fact]
     public async Task UnlistedPlayer_LandingOnAWhitelistedBackend_IsDroppedAtTheDoor()
     {
         using var creative = new RecordingBackend();

@@ -17,7 +17,7 @@ public class ReservationGatingScenarios : AtlasScenarioBase
     private static object MakeReservation(string realIp, string clientTransferId = "") => new
     {
         id = "res-atlas-1",
-        playerUid = "",              // the mod matches by its own join UID, not this field
+        playerUid = "",              // filled from the lookup UID by the fake registry
         playerName = "test",
         sourceServerId = "hub",
         targetServerId = "backend-test",
@@ -27,6 +27,27 @@ public class ReservationGatingScenarios : AtlasScenarioBase
         realRemotePort = 54321,
         clientTransferId,
     };
+
+    [AtlasScenario]
+    public async Task Join_WithMismatchedReservationUid_IsKicked_EvenWhenOptional()
+    {
+        using var registry = new FakeRegistry(Secret);
+        var nimbus = await NimbusHarness.ConfigureAsync(World, registry.Url, Secret, reservationRequired: false);
+        registry.NextReservation = new
+        {
+            id = "wrong-identity", playerUid = "another-account", targetServerId = "backend-test",
+            realRemoteIp = "203.0.113.55",
+        };
+        ITestPlayer? player = null;
+        try { player = await World.JoinPlayer("mismatch"); }
+        catch (AtlasSetupException) { }
+        if (player != null)
+        {
+            await World.Until(() => !player.IsConnected, timeoutTicks: 300);
+            Assert.Null(nimbus.GetForwardedPlayer(player.Player.PlayerUID));
+        }
+        Assert.False(player is { IsConnected: true });
+    }
 
     [AtlasScenario]
     public async Task Join_WithASeamlessTransferId_SendsTheCommit()

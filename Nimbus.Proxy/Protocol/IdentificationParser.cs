@@ -2,69 +2,73 @@ using System.Text;
 
 namespace Nimbus.Proxy;
 
-// Extracts the PlayerUID (and Playername) from a captured client Identification frame so the
-// proxy can mint a pre-swap reservation against the registry.
-//
-// Frame layout: VS TCP header (4 BE bytes) then a Packet_Client envelope. Inside that,
-// field 2 (wire-type 2) holds the nested Packet_ClientIdentification. Relevant string fields:
-//   2 -> Playername     6 -> PlayerUID
 internal static class IdentificationParser
 {
-    // Parse player UID + name out of a captured raw client-to-server frame (length-prefixed,
-    // the way it lives in ProxySession.capturedIdentification). Returns false on malformed input.
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
     public static bool TryExtract(ReadOnlySpan<byte> rawFrame, out string playerUid, out string playerName)
     {
-        playerUid = "";
-        playerName = "";
-        if (!VsWire.TryParseHeader(rawFrame, out bool compressed, out int payloadLen)) return false;
-        if (compressed) return false; // Identification frames are never compressed.
-        if (payloadLen <= 0 || 4 + payloadLen > rawFrame.Length) return false;
-
-        var payload = rawFrame.Slice(4, payloadLen);
-
-        // Preferred path: outer envelope field 2 contains Packet_ClientIdentification.
-        // Some forks/dev builds flatten this once, so fall back to parsing the payload
-        // directly as an Identification body.
-        if (VsWire.TryFindNestedField(payload, fieldNumber: 2, out var ident) && ParseIdentBody(ident, out playerUid, out playerName))
-            return true;
-
-        return ParseIdentBody(payload, out playerUid, out playerName);
+        playerUid = playerName = "";
+        return VsWire.TryParseHeader(rawFrame, out bool compressed, out int length)
+            && !compressed && length == rawFrame.Length - 4
+            && TryInspectPayload(rawFrame[4..], out bool identification, out playerUid, out playerName)
+            && identification;
     }
 
-    // Essential complexity (S3776 reports cognitive complexity 25). This walks a protobuf body one
-    // field at a time: read the tag, and for a length-delimited Playername (field 2) or PlayerUID
-    // (field 6) decode and bounds-check the string, otherwise skip the field. Two interesting
-    // fields, each length-delimited read carrying its own bounds check, plus the early return once
-    // both are in hand, is what the wire format costs; the count is the layout's, not the code's.
-    // Splitting the per-field handling into helpers would pull the field-number-to-output mapping
-    // away from the loop that reads it and thread `ref pos` plus the out-parameters through every
-    // helper, making the frame harder to check against the layout documented at the top of this
-    // file rather than easier. It is clearest as one flat pass down the body.
-    private static bool ParseIdentBody(ReadOnlySpan<byte> body, out string playerUid, out string playerName) // NOSONAR
+    // Inspect the complete envelope: Identification need not be the first field.
+    public static bool TryInspectPayload(ReadOnlySpan<byte> payload, out bool identification,
+        out string playerUid, out string playerName)
     {
-        playerUid = "";
-        playerName = "";
+        identification = false;
+        playerUid = playerName = "";
+        int pos = 0;
+        ulong? packetId = null;
+        while (pos < payload.Length)
+        {
+            if (!VsWire.TryReadVarint(payload, ref pos, out ulong key) || key >> 3 is 0 or > 536870911) return false;
+            int field = (int)(key >> 3);
+            int wire = (int)(key & 7);
+            if (field == 1)
+            {
+                if (packetId != null || wire != 0 || !VsWire.TryReadVarint(payload, ref pos, out ulong id)) return false;
+                packetId = id;
+            }
+            else if (field == 2)
+            {
+                if (identification || wire != 2 || !VsWire.TryReadLength(payload, ref pos, out int len)) return false;
+                identification = true;
+                if (!ParseBody(payload.Slice(pos, len), out playerUid, out playerName)) return false;
+                pos += len;
+            }
+            else if (!VsWire.SkipField(payload, ref pos, wire)) return false;
+        }
+        return identification ? packetId is null or 1 : packetId != 1;
+    }
+
+    private static bool ParseBody(ReadOnlySpan<byte> body, out string uid, out string name)
+    {
+        uid = name = "";
+        bool seenName = false, seenUid = false;
         int pos = 0;
         while (pos < body.Length)
         {
-            if (!VsWire.TryReadVarint(body, ref pos, out ulong key)) return false;
-            int fieldNum = (int)(key >> 3);
-            int wireType = (int)(key & 0x7);
-            if (wireType == 2 && (fieldNum == 2 || fieldNum == 6))
+            if (!VsWire.TryReadVarint(body, ref pos, out ulong key) || key >> 3 is 0 or > 536870911) return false;
+            int field = (int)(key >> 3);
+            int wire = (int)(key & 7);
+            // Vintage Story 1.22.x: Playername = 2, PlayerUID = 6 (wire tag 50).
+            if (field is 2 or 6)
             {
-                if (!VsWire.TryReadLength(body, ref pos, out int len)) return false;
-                string val = Encoding.UTF8.GetString(body.Slice(pos, len));
+                if (wire != 2 || (field == 2 ? seenName : seenUid)
+                    || !VsWire.TryReadLength(body, ref pos, out int len)) return false;
+                string value;
+                try { value = StrictUtf8.GetString(body.Slice(pos, len)); }
+                catch (DecoderFallbackException) { return false; }
                 pos += len;
-                if (fieldNum == 2) playerName = val;
-                else playerUid = val;
-                if (playerName.Length > 0 && playerUid.Length > 0) return true;
+                if (field == 2) { seenName = true; name = value; }
+                else { seenUid = true; uid = value; }
             }
-            else
-            {
-                if (!VsWire.SkipField(body, ref pos, wireType)) return false;
-            }
+            else if (!VsWire.SkipField(body, ref pos, wire)) return false;
         }
-        return playerUid.Length > 0; // PlayerUID is required, name is best-effort.
+        return seenUid && uid.Length > 0;
     }
-
 }
