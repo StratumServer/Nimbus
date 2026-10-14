@@ -14,6 +14,8 @@ namespace Nimbus.ServerMod.Tests;
 /// The placeholders are treated as unset rather than as a secret, which is what the proxy's
 /// validator already does for its own copy of the same value.
 /// </summary>
+[AtlasWorld(StrictBootDiagnostics = true)]
+[AtlasAllowBootDiagnostic(NimbusHarness.UnconfiguredBootWarning, Level = "Warning", Source = "unknown")]
 public class PlaceholderSecretScenarios : AtlasScenarioBase
 {
     private const string Secret = "the-secret-this-network-runs-on";

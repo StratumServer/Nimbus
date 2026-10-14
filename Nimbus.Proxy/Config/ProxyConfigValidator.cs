@@ -253,6 +253,10 @@ internal static class ProxyConfigValidator
             || cfg.Advanced.MaxConnectionsPerMinute <= 0 || cfg.Advanced.MaxConnectionsPerAddressPerMinute <= 0
             || cfg.Advanced.MaxTrackedAddresses <= 0 || cfg.Advanced.HandshakeTimeoutSeconds <= 0)
             result.Error("advanced admission limits and handshake_timeout_seconds must be greater than zero");
+        if (cfg.Advanced.MaxUdpSessions <= 0 || cfg.Advanced.MaxUdpSessionsPerAddress <= 0
+            || cfg.Advanced.MaxUdpSessionCreationsPerMinute <= 0 || cfg.Advanced.MaxUdpSessionCreationsPerAddressPerMinute <= 0
+            || cfg.Advanced.MaxUdpTrackedAddresses <= 0 || cfg.Advanced.MaxUdpAuthorizations <= 0)
+            result.Error("advanced UDP admission limits must be greater than zero");
         if (cfg.Advanced.ConnectTimeoutMs <= 0)
             result.Error("advanced.connect_timeout_ms must be greater than zero");
         if (cfg.Advanced.BufferSize < 1024)

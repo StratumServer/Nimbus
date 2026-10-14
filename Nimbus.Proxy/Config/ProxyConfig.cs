@@ -353,5 +353,11 @@ internal sealed class AdvancedConfig
     public int MaxConnectionsPerAddressPerMinute { get; set; } = 60;
     public int MaxTrackedAddresses { get; set; } = 4096;
     public int HandshakeTimeoutSeconds { get; set; } = 60;
+    public int MaxUdpSessions { get; set; } = 1024;
+    public int MaxUdpSessionsPerAddress { get; set; } = 8;
+    public int MaxUdpSessionCreationsPerMinute { get; set; } = 600;
+    public int MaxUdpSessionCreationsPerAddressPerMinute { get; set; } = 60;
+    public int MaxUdpTrackedAddresses { get; set; } = 4096;
+    public int MaxUdpAuthorizations { get; set; } = 4096;
     public int BufferSize { get; set; } = 16 * 1024;
 }

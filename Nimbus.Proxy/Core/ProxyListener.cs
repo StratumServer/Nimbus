@@ -23,6 +23,7 @@ internal sealed class ProxyListener
 
     // UDP follows TCP swaps through this per-client-IP table.
     public UdpRouteOverrides UdpOverrides { get; } = new();
+    public UdpAuthorizationTable UdpAuthorizations { get; }
 
     public RegistryConfig RegistryCfg => cfg.Registry;
     public ProxyConfig Cfg => cfg;
@@ -41,6 +42,7 @@ internal sealed class ProxyListener
     {
         this.cfg = cfg;
         admission = new ConnectionAdmission(cfg.Advanced);
+        UdpAuthorizations = new UdpAuthorizationTable(cfg.Advanced.MaxUdpAuthorizations);
         this.stopToken = stopToken;
         Registry = registry;
         Router = new BackendRouter(cfg, registry, drainStore);
@@ -101,7 +103,7 @@ internal sealed class ProxyListener
                 var handshake = CancellationTokenSource.CreateLinkedTokenSource(stopToken);
                 handshake.CancelAfter(TimeSpan.FromSeconds(cfg.Advanced.HandshakeTimeoutSeconds));
                 var session = new ProxySession(id, cfg, client, handshake.Token,
-                    new SessionServices(Stickies, Registry, UdpOverrides, Events, Bans, Whitelist));
+                    new SessionServices(Stickies, Registry, UdpOverrides, Events, Bans, Whitelist, UdpAuthorizations));
                 Sessions[id] = session;
                 ProxyMetrics.SessionAccepted();
                 // Do not pass the stop token to Task.Run: cancellation before scheduling

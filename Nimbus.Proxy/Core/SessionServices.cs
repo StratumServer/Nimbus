@@ -17,4 +17,5 @@ internal sealed record SessionServices(
     UdpRouteOverrides? UdpOverrides = null,
     EventBus? Events = null,
     BanCache? Bans = null,
-    WhitelistCache? Whitelist = null);
+    WhitelistCache? Whitelist = null,
+    UdpAuthorizationTable? UdpAuthorizations = null);

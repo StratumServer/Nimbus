@@ -3,8 +3,7 @@ using Xunit;
 
 [assembly: CollectionBehavior(DisableTestParallelization = true)]
 
-// Both dlls are staged flat into the embedded server's mods folder by the
-// StageModUnderTest target: the ModLoader recognizes Nimbus.ServerMod.dll as a mod
-// (assembly-level ModInfo attribute) and Nimbus.Shared.dll sits next to it so the
-// runtime can resolve the dependency.
-[assembly: AtlasMods("mod/Nimbus.ServerMod.dll", "mod/Nimbus.Shared.dll")]
+// Staged as a folder mod by the StageModUnderTest target, the same shape release.yml
+// ships: Nimbus.ServerMod.dll + Nimbus.Shared.dll + their deps.json next to a modinfo.json,
+// so Nimbus.Shared.dll is a dependency inside the mod folder rather than a mod of its own.
+[assembly: AtlasMods("mod/Nimbus.ServerMod")]
