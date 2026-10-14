@@ -35,6 +35,7 @@ internal sealed class FrameSniffer
     // Optional raw frame sink (includes the 4-byte header). Used to capture the client's
     // Identification frame so it can be replayed against a different backend during a swap.
     public Action<string, ReadOnlyMemory<byte>>? OnRawFrame { get; set; }
+    public Func<string, bool>? RawFrameFilter { get; set; }
 
     // If true, log a line per frame. When false, frames are still parsed silently so
     // OnRawFrame and SessionState still fire.
@@ -148,7 +149,7 @@ internal sealed class FrameSniffer
         }
 
         // Hand the raw frame to any listener. They get a copy so we can recycle buf.
-        if (OnRawFrame != null)
+        if (OnRawFrame != null && (RawFrameFilter == null || RawFrameFilter(name)))
         {
             var copy = new byte[4 + payloadLen];
             Buffer.BlockCopy(buf, start, copy, 0, 4 + payloadLen);

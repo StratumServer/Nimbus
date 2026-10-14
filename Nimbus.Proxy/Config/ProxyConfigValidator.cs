@@ -249,6 +249,10 @@ internal static class ProxyConfigValidator
 
     private static void ValidateAdvanced(ProxyConfig cfg, ProxyConfigValidation result)
     {
+        if (cfg.Advanced.MaxPendingConnections <= 0 || cfg.Advanced.MaxPendingConnectionsPerAddress <= 0
+            || cfg.Advanced.MaxConnectionsPerMinute <= 0 || cfg.Advanced.MaxConnectionsPerAddressPerMinute <= 0
+            || cfg.Advanced.MaxTrackedAddresses <= 0 || cfg.Advanced.HandshakeTimeoutSeconds <= 0)
+            result.Error("advanced admission limits and handshake_timeout_seconds must be greater than zero");
         if (cfg.Advanced.ConnectTimeoutMs <= 0)
             result.Error("advanced.connect_timeout_ms must be greater than zero");
         if (cfg.Advanced.BufferSize < 1024)

@@ -9,6 +9,8 @@ internal sealed class ProxyListener
     private readonly ProxyConfig cfg;
     private readonly CancellationToken stopToken;
     private long sessionCounter;
+    private readonly ConnectionAdmission admission;
+    internal int PendingCount => admission.PendingCount;
     public ConcurrentDictionary<long, ProxySession> Sessions { get; } = new();
 
     // Non-null when a registry is configured (mode = "embedded" or "remote").
@@ -38,6 +40,7 @@ internal sealed class ProxyListener
         PersistentDrainStore? drainStore = null)
     {
         this.cfg = cfg;
+        admission = new ConnectionAdmission(cfg.Advanced);
         this.stopToken = stopToken;
         Registry = registry;
         Router = new BackendRouter(cfg, registry, drainStore);
@@ -83,20 +86,50 @@ internal sealed class ProxyListener
                 try { client = await listener.AcceptTcpClientAsync(stopToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
 
+                if (client.Client.RemoteEndPoint is not System.Net.IPEndPoint remote)
+                {
+                    client.Dispose();
+                    continue;
+                }
+                IDisposable? lease = admission.TryAcquire(remote.Address);
+                if (lease == null)
+                {
+                    client.Dispose();
+                    continue;
+                }
                 long id = Interlocked.Increment(ref sessionCounter);
-                var session = new ProxySession(id, cfg, client, stopToken,
+                var handshake = CancellationTokenSource.CreateLinkedTokenSource(stopToken);
+                handshake.CancelAfter(TimeSpan.FromSeconds(cfg.Advanced.HandshakeTimeoutSeconds));
+                var session = new ProxySession(id, cfg, client, handshake.Token,
                     new SessionServices(Stickies, Registry, UdpOverrides, Events, Bans, Whitelist));
                 Sessions[id] = session;
                 ProxyMetrics.SessionAccepted();
+                // Do not pass the stop token to Task.Run: cancellation before scheduling
+                // must still run the finally that closes the socket and releases admission.
                 _ = Task.Run(async () =>
                 {
-                    try { await sessionRunner.RunAsync(session, client).ConfigureAwait(false); }
+                    using var deadlineRegistration = handshake.Token.Register(session.Close);
+                    try
+                    {
+                        Task run = sessionRunner.RunAsync(session, client);
+                        if (await Task.WhenAny(run, session.AuthenticationCompleted).ConfigureAwait(false)
+                            == session.AuthenticationCompleted && !handshake.IsCancellationRequested)
+                        {
+                            handshake.CancelAfter(Timeout.InfiniteTimeSpan);
+                            lease.Dispose();
+                        }
+                        await run.ConfigureAwait(false);
+                    }
                     finally
                     {
+                        session.Close();
+                        client.Dispose();
+                        lease.Dispose();
+                        handshake.Dispose();
                         Sessions.TryRemove(id, out _);
                         ProxyMetrics.SessionClosed();
                     }
-                }, stopToken);
+                });
             }
         }
         finally

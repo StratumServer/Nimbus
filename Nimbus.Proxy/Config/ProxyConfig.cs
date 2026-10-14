@@ -347,5 +347,11 @@ internal sealed class PersistenceConfig
 internal sealed class AdvancedConfig
 {
     public int ConnectTimeoutMs { get; set; } = 5000;
+    public int MaxPendingConnections { get; set; } = 256;
+    public int MaxPendingConnectionsPerAddress { get; set; } = 8;
+    public int MaxConnectionsPerMinute { get; set; } = 600;
+    public int MaxConnectionsPerAddressPerMinute { get; set; } = 60;
+    public int MaxTrackedAddresses { get; set; } = 4096;
+    public int HandshakeTimeoutSeconds { get; set; } = 60;
     public int BufferSize { get; set; } = 16 * 1024;
 }

@@ -316,3 +316,9 @@ dotnet build Nimbus.slnx -c Release
 See [LICENSE](LICENSE). Source-available, no resale, no rebrand-and-redistribute.
 
 Nimbus is an unofficial third-party project. Not affiliated with or endorsed by Anego Studios. "Vintage Story" is a trademark of Anego Studios. See [NOTICE](NOTICE) for the full attribution.
+
+## Pre-login connection limits
+
+The proxy keeps the first-frame limit of 64 KiB and bounds incomplete TCP handshakes before starting a session task. Admission stays pending until the backend acknowledges login; client-sent readiness packets do not release it. A 60-second deadline closes handshakes that do not finish.
+
+The `[advanced]` defaults are `max_pending_connections = 256`, `max_pending_connections_per_address = 8`, `max_connections_per_minute = 600`, `max_connections_per_address_per_minute = 60`, `max_tracked_addresses = 4096`, and `handshake_timeout_seconds = 60`. All must be positive. Increase the per-address values for large groups behind a shared address and the deadline for deployments with slow authentication. The address table is bounded even during source-address churn, and closing a connection does not reset its creation-rate budget. These admission settings require a proxy restart.
