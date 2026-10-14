@@ -106,30 +106,7 @@ internal sealed class ProxyListener
                 ProxyMetrics.SessionAccepted();
                 // Do not pass the stop token to Task.Run: cancellation before scheduling
                 // must still run the finally that closes the socket and releases admission.
-                _ = Task.Run(async () =>
-                {
-                    using var deadlineRegistration = handshake.Token.Register(session.Close);
-                    try
-                    {
-                        Task run = sessionRunner.RunAsync(session, client);
-                        if (await Task.WhenAny(run, session.AuthenticationCompleted).ConfigureAwait(false)
-                            == session.AuthenticationCompleted && !handshake.IsCancellationRequested)
-                        {
-                            handshake.CancelAfter(Timeout.InfiniteTimeSpan);
-                            lease.Dispose();
-                        }
-                        await run.ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        session.Close();
-                        client.Dispose();
-                        lease.Dispose();
-                        handshake.Dispose();
-                        Sessions.TryRemove(id, out _);
-                        ProxyMetrics.SessionClosed();
-                    }
-                });
+                _ = Task.Run(() => RunAdmittedSessionAsync(session, client, lease, handshake, sessionRunner), CancellationToken.None);
             }
         }
         finally
@@ -138,4 +115,32 @@ internal sealed class ProxyListener
             Log.Info("listener stopped");
         }
     }
+    private async Task RunAdmittedSessionAsync(ProxySession session, TcpClient client,
+        IDisposable lease, CancellationTokenSource handshake, ClientSessionRunner runner)
+    {
+        IDisposable? pendingLease = lease;
+        using var deadlineRegistration = handshake.Token.Register(session.Close);
+        try
+        {
+            Task run = runner.RunAsync(session, client);
+            if (await Task.WhenAny(run, session.AuthenticationCompleted).ConfigureAwait(false)
+                == session.AuthenticationCompleted && !handshake.IsCancellationRequested)
+            {
+                handshake.CancelAfter(Timeout.InfiniteTimeSpan);
+                pendingLease.Dispose();
+                pendingLease = null;
+            }
+            await run.ConfigureAwait(false);
+        }
+        finally
+        {
+            session.Close();
+            client.Dispose();
+            pendingLease?.Dispose();
+            handshake.Dispose();
+            Sessions.TryRemove(session.Id, out _);
+            ProxyMetrics.SessionClosed();
+        }
+    }
+
 }

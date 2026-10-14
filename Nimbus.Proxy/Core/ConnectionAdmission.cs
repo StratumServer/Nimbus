@@ -30,18 +30,8 @@ internal sealed class ConnectionAdmission
             if (now - window >= TimeSpan.FromMinutes(1)) { window = now; attempts = 0; }
             if (attempts >= cfg.MaxConnectionsPerMinute) return null;
             attempts++;
-            if (!addresses.TryGetValue(address, out AddressState? state))
-            {
-                if (addresses.Count >= cfg.MaxTrackedAddresses)
-                {
-                    foreach (var entry in addresses.ToArray())
-                        if (entry.Value.Pending == 0 && now - entry.Value.Window >= TimeSpan.FromMinutes(1))
-                            addresses.Remove(entry.Key);
-                    if (addresses.Count >= cfg.MaxTrackedAddresses) return null;
-                }
-                state = new AddressState { Window = now };
-                addresses.Add(address, state);
-            }
+            AddressState? state = GetOrCreateAddress(address, now);
+            if (state == null) return null;
             if (now - state.Window >= TimeSpan.FromMinutes(1)) { state.Window = now; state.Attempts = 0; }
             if (state.Attempts >= cfg.MaxConnectionsPerAddressPerMinute) return null;
             state.Attempts++;
@@ -50,6 +40,21 @@ internal sealed class ConnectionAdmission
             state.Pending++;
             return new Lease(this, state);
         }
+    }
+
+    private AddressState? GetOrCreateAddress(IPAddress address, DateTimeOffset now)
+    {
+        if (addresses.TryGetValue(address, out AddressState? state)) return state;
+        if (addresses.Count >= cfg.MaxTrackedAddresses)
+        {
+            foreach (var entry in addresses.ToArray())
+                if (entry.Value.Pending == 0 && now - entry.Value.Window >= TimeSpan.FromMinutes(1))
+                    addresses.Remove(entry.Key);
+            if (addresses.Count >= cfg.MaxTrackedAddresses) return null;
+        }
+        state = new AddressState { Window = now };
+        addresses.Add(address, state);
+        return state;
     }
 
     private void Release(AddressState state)

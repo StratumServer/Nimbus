@@ -43,6 +43,7 @@ internal sealed partial class ProxySession : IPlayer
     private Task? pumpC2S;
     private Task? pumpS2C;
 
+    private const string IdentificationPacket = "Identification";
     private byte[]? capturedIdentification;
     private readonly TaskCompletionSource authentication = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal Task AuthenticationCompleted => authentication.Task;
@@ -120,10 +121,10 @@ internal sealed partial class ProxySession : IPlayer
         {
             // ClientPlaying is client-controlled. Only a backend login acknowledgement can release
             // a pre-authentication slot and its deadline.
-            if (name is "Identification" or "ServerReady" || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal) || name.StartsWith("Id=73(", StringComparison.Ordinal))
+            if (name is IdentificationPacket or "ServerReady" || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal) || name.StartsWith("Id=73(", StringComparison.Ordinal))
                 authentication.TrySetResult();
         };
-        this.sniffS2C.RawFrameFilter = name => name is "Identification" or "ServerReady"
+        this.sniffS2C.RawFrameFilter = name => name is IdentificationPacket or "ServerReady"
             || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
             || name.StartsWith("Id=73(", StringComparison.Ordinal);
     }
@@ -250,7 +251,7 @@ internal sealed partial class ProxySession : IPlayer
 
     private void OnClientFrame(string name, ReadOnlyMemory<byte> raw)
     {
-        if (name == "Identification")
+        if (name == IdentificationPacket)
         {
             CaptureIdentification(raw.Span, source: "sniffer");
             return;
@@ -809,7 +810,7 @@ internal sealed partial class ProxySession : IPlayer
         // identity at all and handing it to the capture path made every single session log a
         // parse failure for a frame that never had a UID in it (#57).
         string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
-        if (firstName == "Identification")
+        if (firstName == IdentificationPacket)
             CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
         else
             Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
