@@ -44,7 +44,8 @@ internal sealed partial class ProxySession : IPlayer
     private Task? pumpS2C;
 
     private byte[]? capturedIdentification;
-    private readonly ClientFrameGate clientFrameGate = new();
+    private readonly ClientFrameGate clientFrameGate;
+    private volatile bool backendLoginAcknowledged;
     private bool firstFrameInspected;
     private string? capturedPlayerUid;
     private string? capturedPlayerName;
@@ -116,6 +117,16 @@ internal sealed partial class ProxySession : IPlayer
         this.sniffC2S = new FrameSniffer(id, "c->s", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffS2C = new FrameSniffer(id, "s->c", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffC2S.OnRawFrame = OnClientFrame;
+        clientFrameGate = new ClientFrameGate(() => backendLoginAcknowledged);
+        this.sniffS2C.OnRawFrame = (name, _) =>
+        {
+            if (name is "Identification" or "ServerReady"
+                || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
+                || name.StartsWith("Id=73(", StringComparison.Ordinal)) backendLoginAcknowledged = true;
+        };
+        this.sniffS2C.RawFrameFilter = name => name is "Identification" or "ServerReady"
+            || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
+            || name.StartsWith("Id=73(", StringComparison.Ordinal);
     }
 
     // The client address as everything that reads a log line or a sticky route expects it: an

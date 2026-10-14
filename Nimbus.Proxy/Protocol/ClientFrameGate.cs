@@ -11,6 +11,9 @@ internal sealed class ClientFrameGate
     private byte[]? frame;
     private int frameBytes;
     private bool identified;
+    private readonly Func<bool> authenticated;
+    public ClientFrameGate(Func<bool>? authenticated = null)
+        => this.authenticated = authenticated ?? (() => false);
 
     public async ValueTask ForwardAsync(ReadOnlyMemory<byte> bytes,
         Func<ReadOnlyMemory<byte>, bool, ValueTask> forward)
@@ -25,7 +28,7 @@ internal sealed class ClientFrameGate
                 bytes = bytes[take..];
                 if (headerBytes < 4) return;
                 _ = VsWire.TryParseHeader(header, out _, out int length);
-                int limit = identified ? VsWire.MaxFrameSize : ClientSessionRunner.MaxFirstFrameSize;
+                int limit = authenticated() ? VsWire.MaxFrameSize : ClientSessionRunner.MaxFirstFrameSize;
                 if (length > limit) throw new InvalidDataException("Client frame exceeds the admission limit.");
                 frame = new byte[4 + length];
                 header.CopyTo(frame, 0);
@@ -60,7 +63,7 @@ internal sealed class ClientFrameGate
             using var zlib = new ZLibStream(input, CompressionMode.Decompress);
             using var output = new MemoryStream();
             byte[] buffer = new byte[4096];
-            int limit = identified ? VsWire.MaxFrameSize : ClientSessionRunner.MaxFirstFrameSize;
+            int limit = authenticated() ? VsWire.MaxFrameSize : ClientSessionRunner.MaxFirstFrameSize;
             int read;
             while ((read = zlib.Read(buffer)) > 0)
             {

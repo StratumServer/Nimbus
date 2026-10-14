@@ -4,6 +4,16 @@ namespace Nimbus.Proxy.Tests;
 
 public class IdentitySecurityTests
 {
+    [Fact]
+    public async Task SelfReportedIdentityCannotRaiseThePreAuthenticationAllocationLimit()
+    {
+        var gate = new ClientFrameGate();
+        await gate.ForwardAsync(ClientFrames.Identification("uid", "name"), (_, _) => ValueTask.CompletedTask);
+        byte[] oversizedHeader = [0, 2, 0, 0];
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            await gate.ForwardAsync(oversizedHeader, (_, _) => ValueTask.CompletedTask));
+    }
+
     private static byte[] Envelope(Action<MemoryStream> writeBody, bool idFirst = false)
     {
         using var body = new MemoryStream();
