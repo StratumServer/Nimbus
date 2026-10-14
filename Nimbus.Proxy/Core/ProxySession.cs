@@ -55,7 +55,11 @@ internal sealed partial class ProxySession : IPlayer
     // `pumps`), which is where a swap racing to completion could still be observed torn apart.
     internal volatile Action? AfterSwapFlagRead;
 
+    private const string IdentificationPacket = "Identification";
     private byte[]? capturedIdentification;
+    private readonly UdpAuthorizationTable? udpAuthorizations;
+    private string? udpLoginToken;
+    private bool backendAuthenticated;
     private string? capturedPlayerUid;
     private string? capturedPlayerName;
 
@@ -119,6 +123,7 @@ internal sealed partial class ProxySession : IPlayer
         this.events = svc.Events;
         this.bans = svc.Bans;
         this.whitelist = svc.Whitelist;
+        this.udpAuthorizations = svc.UdpAuthorizations;
 
         // Sniffers always run on the client stream so registry-backed joins and transfers have
         // the player UID even when SniffFrames is disabled.
@@ -126,6 +131,11 @@ internal sealed partial class ProxySession : IPlayer
         this.sniffC2S = new FrameSniffer(id, "c->s", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffS2C = new FrameSniffer(id, "s->c", state) { Verbose = cfg.Logging.SniffFrames };
         this.sniffC2S.OnRawFrame = OnClientFrame;
+        this.sniffS2C.OnRawFrame = OnBackendFrame;
+        this.sniffS2C.RawFrameFilter = name => name is "TokenAnswer" or IdentificationPacket or "ServerReady"
+            || name.StartsWith("Id=77(", StringComparison.Ordinal)
+            || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
+            || name.StartsWith("Id=73(", StringComparison.Ordinal);
     }
 
     // The client address as everything that reads a log line or a sticky route expects it: an
@@ -248,9 +258,24 @@ internal sealed partial class ProxySession : IPlayer
         try { client.Close(); } catch { /* the client may have dropped first */ }
     }
 
+    private void OnBackendFrame(string name, ReadOnlyMemory<byte> raw)
+    {
+        if (udpAuthorizations == null || clientAddress == null || currentBackend == null) return;
+        if (VsWire.TryParseHeader(raw.Span, out bool compressed, out int length) && !compressed
+            && length == raw.Length - 4
+            && VsWire.TryFindNestedField(raw.Span[4..], 77, out var answer)
+            && VsWire.TryFindNestedField(answer, 1, out var token))
+            udpLoginToken = System.Text.Encoding.UTF8.GetString(token);
+        if (name is IdentificationPacket or "ServerReady"
+            || name.StartsWith("Id=1(ServerIdentification)", StringComparison.Ordinal)
+            || name.StartsWith("Id=73(", StringComparison.Ordinal)) backendAuthenticated = true;
+        if (backendAuthenticated && udpLoginToken != null)
+            udpAuthorizations.Publish(Id, clientAddress, udpLoginToken, currentBackend);
+    }
+
     private void OnClientFrame(string name, ReadOnlyMemory<byte> raw)
     {
-        if (name == "Identification")
+        if (name == IdentificationPacket)
         {
             CaptureIdentification(raw.Span, source: "sniffer");
             return;
@@ -743,6 +768,7 @@ internal sealed partial class ProxySession : IPlayer
         // client socket has been closed either by this teardown or by Close(), and
         // TcpClient.Close() nulls Client, so reading the endpoint back gives nothing to clear
         // under and the override outlives the session.
+        udpAuthorizations?.Remove(Id);
         if (udpOverrides != null && clientAddress != null)
             udpOverrides.Clear(clientAddress);
 
@@ -831,7 +857,7 @@ internal sealed partial class ProxySession : IPlayer
         // identity at all and handing it to the capture path made every single session log a
         // parse failure for a frame that never had a UID in it (#57).
         string firstName = PacketDispatch.DescribeFrame(clientToServer: true, firstClientFrame.Span);
-        if (firstName == "Identification")
+        if (firstName == IdentificationPacket)
             CaptureIdentification(firstClientFrame.Span, source: "first frame", landingOn: target);
         else
             Log.Trace($"[s{Id}] first frame is {firstName}; identity arrives on a later frame");
@@ -900,6 +926,7 @@ internal sealed partial class ProxySession : IPlayer
         // No usable client address means no override to pin, and UDP falls back to the default.
         if (udpOverrides == null || clientAddress == null) return;
         udpOverrides.Set(clientAddress, target);
+        udpAuthorizations?.Update(Id, target);
     }
 
     private async Task<bool> TryWriteFirstClientFrameAsync(TcpClient up, ReadOnlyMemory<byte> frame)

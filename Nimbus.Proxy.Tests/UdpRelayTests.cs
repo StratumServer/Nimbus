@@ -24,6 +24,16 @@ public class UdpRelayTests
         public required int Port { get; init; }
         public required Backend Default { get; init; }
         public required UdpRouteOverrides Overrides { get; init; }
+        public required UdpAuthorizationTable Authorizations { get; init; }
+        public required UdpRelay Instance { get; init; }
+        private long owner;
+        public void Retarget(IPAddress address, BackendEndpoint target)
+        {
+            Overrides.Set(address, target);
+            for (long id = 1; id <= owner; id++) Authorizations.Update(id, target);
+        }
+        public void ReturnToDefault(IPAddress address)
+            => Retarget(address, new BackendEndpoint { Host = "127.0.0.1", Port = Default.Port, ServerId = "hub" });
         public required CancellationTokenSource Cts { get; init; }
         public required Task Loop { get; init; }
 
@@ -39,12 +49,15 @@ public class UdpRelayTests
             };
             var cts = new CancellationTokenSource();
             var overrides = new UdpRouteOverrides();
-            var relay = new UdpRelay(cfg, cts.Token, overrides);
+            var authorizations = new UdpAuthorizationTable();
+            var relay = new UdpRelay(cfg, cts.Token, overrides, authorizations);
             var r = new Relay
             {
                 Port = port,
                 Default = backend,
                 Overrides = overrides,
+                Authorizations = authorizations,
+                Instance = relay,
                 Cts = cts,
                 Loop = Task.Run(relay.RunAsync),
             };
@@ -54,22 +67,19 @@ public class UdpRelayTests
 
         /// <summary>The relay binds its socket inside RunAsync, so a datagram sent before that
         /// lands nowhere. Poll until one gets through rather than sleeping a guessed interval.</summary>
-        private async Task WaitUntilListeningAsync()
-        {
-            using var probe = new UdpClient(0);
-            for (int attempt = 0; attempt < 200; attempt++)
-            {
-                await probe.SendAsync(Encoding.ASCII.GetBytes("probe"), 5,
-                    new IPEndPoint(IPAddress.Loopback, Port));
-                if (await Default.TryReceiveAsync(50) != null) return;
-            }
-            Assert.Fail($"the udp relay never came up on 127.0.0.1:{Port}");
-        }
+        private Task WaitUntilListeningAsync() => Instance.Listening.WaitAsync(TimeSpan.FromSeconds(5));
 
         public UdpClient NewClient()
         {
             var c = new UdpClient(0);
             c.Connect(IPAddress.Loopback, Port);
+            long id = Interlocked.Increment(ref owner);
+            string token = "test-login-" + id;
+            BackendEndpoint target = Overrides.TryGet(IPAddress.Loopback, out var selected)
+                ? selected : new BackendEndpoint { Host = "127.0.0.1", Port = Default.Port, ServerId = "hub" };
+            Authorizations.Publish(id, IPAddress.Loopback, token, target);
+            byte[] handshake = UdpSecurityTests.ConnectionPacket(token);
+            c.Send(handshake, handshake.Length);
             return c;
         }
 
@@ -106,7 +116,7 @@ public class UdpRelayTests
             {
                 var res = await TryReceiveAsync(500);
                 if (res == null) continue;
-                if (Encoding.ASCII.GetString(res.Value.Buffer) == "probe") continue;
+                if (UdpAuthorizationTable.TryReadToken(res.Value.Buffer, out _)) continue;
                 return res.Value;
             }
             Assert.Fail("no datagram reached the backend");
@@ -218,7 +228,7 @@ public class UdpRelayTests
     {
         await using var relay = await Relay.StartAsync();
         using var creative = new Backend();
-        relay.Overrides.Set(IPAddress.Loopback,
+        relay.Retarget(IPAddress.Loopback,
             new BackendEndpoint { Host = "127.0.0.1", Port = creative.Port, ServerId = "creative" });
         using var client = relay.NewClient();
 
@@ -243,7 +253,7 @@ public class UdpRelayTests
         // What a TCP swap does: the player is now on creative, and their positions have to
         // follow. Leaving UDP pointed at the old backend is how a swapped player ends up
         // standing still on everybody else's screen.
-        relay.Overrides.Set(IPAddress.Loopback,
+        relay.Retarget(IPAddress.Loopback,
             new BackendEndpoint { Host = "127.0.0.1", Port = creative.Port, ServerId = "creative" });
         await SendAsync(client, "after-swap");
 
@@ -260,7 +270,7 @@ public class UdpRelayTests
         await SendAsync(client, "before-swap");
         await relay.Default.ReceiveRealAsync();
 
-        relay.Overrides.Set(IPAddress.Loopback,
+        relay.Retarget(IPAddress.Loopback,
             new BackendEndpoint { Host = "127.0.0.1", Port = creative.Port, ServerId = "creative" });
         await SendAsync(client, "after-swap");
         var arrived = await creative.ReceiveRealAsync();
@@ -279,7 +289,7 @@ public class UdpRelayTests
         await SendAsync(client, "position-1");
         var first = await relay.Default.ReceiveRealAsync();
 
-        relay.Overrides.Set(IPAddress.Loopback,
+        relay.Retarget(IPAddress.Loopback,
             new BackendEndpoint { Host = "127.0.0.1", Port = relay.Default.Port, ServerId = "hub" });
         await SendAsync(client, "position-2");
         var second = await relay.Default.ReceiveRealAsync();
@@ -294,13 +304,13 @@ public class UdpRelayTests
     {
         await using var relay = await Relay.StartAsync();
         using var creative = new Backend();
-        relay.Overrides.Set(IPAddress.Loopback,
+        relay.Retarget(IPAddress.Loopback,
             new BackendEndpoint { Host = "127.0.0.1", Port = creative.Port, ServerId = "creative" });
         using var client = relay.NewClient();
         await SendAsync(client, "on-creative");
         await creative.ReceiveRealAsync();
 
-        relay.Overrides.Clear(IPAddress.Loopback);
+        relay.ReturnToDefault(IPAddress.Loopback);
         await SendAsync(client, "back-on-hub");
 
         // The TCP layer clears the override when the session closes, and a stale one would keep

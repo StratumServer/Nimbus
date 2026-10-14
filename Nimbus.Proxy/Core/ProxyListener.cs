@@ -21,6 +21,7 @@ internal sealed class ProxyListener
 
     // UDP follows TCP swaps through this per-client-IP table.
     public UdpRouteOverrides UdpOverrides { get; } = new();
+    public UdpAuthorizationTable UdpAuthorizations { get; }
 
     public RegistryConfig RegistryCfg => cfg.Registry;
     public ProxyConfig Cfg => cfg;
@@ -38,6 +39,7 @@ internal sealed class ProxyListener
         PersistentDrainStore? drainStore = null)
     {
         this.cfg = cfg;
+        UdpAuthorizations = new UdpAuthorizationTable(cfg.Advanced.MaxUdpAuthorizations);
         this.stopToken = stopToken;
         Registry = registry;
         Router = new BackendRouter(cfg, registry, drainStore);
@@ -85,7 +87,7 @@ internal sealed class ProxyListener
 
                 long id = Interlocked.Increment(ref sessionCounter);
                 var session = new ProxySession(id, cfg, client, stopToken,
-                    new SessionServices(Stickies, Registry, UdpOverrides, Events, Bans, Whitelist));
+                    new SessionServices(Stickies, Registry, UdpOverrides, Events, Bans, Whitelist, UdpAuthorizations));
                 Sessions[id] = session;
                 ProxyMetrics.SessionAccepted();
                 _ = Task.Run(async () =>
