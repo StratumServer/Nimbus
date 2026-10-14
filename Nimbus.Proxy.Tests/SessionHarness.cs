@@ -290,6 +290,15 @@ internal static class ForgedFrames
 /// <summary>Server-to-client frames, built with the independent wire writer.</summary>
 internal static class ServerFrames
 {
+    /// <summary>ServerReady: the backend acknowledgement that completes login and releases
+    /// pre-authentication frame bounds.</summary>
+    public static byte[] ServerReady()
+    {
+        var envelope = new MemoryStream();
+        ProtoWire.WriteBytes(envelope, 73, Array.Empty<byte>());
+        return ProtoWire.Frame(envelope.ToArray());
+    }
+
     /// <summary>EntityPosition: Packet_Server field 51, tag 410 in PacketDispatch.ServerTags. The
     /// frame a backend sends a player in the world over and over, and one that moves no session
     /// phase, so a test can fill the s->c direction with it without changing what it is testing.

@@ -225,7 +225,7 @@ internal sealed class ClientSessionRunner
         var frame = new byte[4 + len];
         Buffer.BlockCopy(header, 0, frame, 0, 4);
         if (!await ReadExactAsync(stream, frame.AsMemory(4, len), cts.Token).ConfigureAwait(false))
-            return Array.Empty<byte>();
+            throw new InvalidDataException("Incomplete opening frame.");
 
         return frame;
     }
@@ -237,7 +237,11 @@ internal sealed class ClientSessionRunner
         {
             int read;
             try { read = await stream.ReadAsync(buffer.Slice(offset), ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { return false; }
+            catch (OperationCanceledException)
+            {
+                if (offset > 0) throw new InvalidDataException("Incomplete opening frame header.");
+                return false;
+            }
             catch (IOException) { return false; }
             catch (ObjectDisposedException) { return false; }
             if (read <= 0) return false;
