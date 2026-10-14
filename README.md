@@ -316,3 +316,9 @@ dotnet build Nimbus.slnx -c Release
 See [LICENSE](LICENSE). Source-available, no resale, no rebrand-and-redistribute.
 
 Nimbus is an unofficial third-party project. Not affiliated with or endorsed by Anego Studios. "Vintage Story" is a trademark of Anego Studios. See [NOTICE](NOTICE) for the full attribution.
+
+## UDP admission
+
+UDP sessions require the login token observed on the client's TCP connection and a backend login acknowledgement. Each authenticated TCP session can bind one UDP source endpoint; players sharing an address keep separate tokens and backend routes. Closing TCP revokes UDP and closes its upstream socket. Early UDP handshakes are dropped until login succeeds; clients can retry or fall back to TCP. A UDP source-port change requires reconnecting TCP.
+
+The `[advanced]` defaults limit UDP to 1024 sockets globally and 8 per address, with 600 new sockets per minute globally and 60 per address. Configure `max_udp_sessions`, `max_udp_sessions_per_address`, `max_udp_session_creations_per_minute`, and `max_udp_session_creations_per_address_per_minute` for the deployment. `max_udp_tracked_addresses` and `max_udp_authorizations` both default to 4096 and bound admission metadata. These admission settings require a proxy restart.
