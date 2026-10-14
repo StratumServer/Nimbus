@@ -968,14 +968,23 @@ internal sealed partial class ProxySession : IPlayer
                             await to.WriteAsync(frame, token).ConfigureAwait(false);
                         }).ConfigureAwait(false);
                     }
-                    else await to.WriteAsync(chunk, token).ConfigureAwait(false);
+                    else
+                    {
+                        // Publish the backend acknowledgement before the client can react
+                        // to it by sending a larger post-login frame.
+                        sniffer?.OnBytes(chunk.Span);
+                        await to.WriteAsync(chunk, token).ConfigureAwait(false);
+                    }
                 }
-                catch (Exception ex) when (IsStreamGone(ex) || ex is InvalidDataException) { break; }
+                catch (InvalidDataException)
+                {
+                    var rejection = gateDisconnect;
+                    if (rejection != null) await SafeAwait(rejection).ConfigureAwait(false);
+                    Close();
+                    break;
+                }
+                catch (Exception ex) when (IsStreamGone(ex)) { break; }
 
-                // s->c is inspected after the forward instead: nothing here gates it, so the
-                // player's frame is not made to wait on the parse.
-                if (!isC2S)
-                    sniffer?.OnBytes(chunk.Span);
             }
         }
         finally
